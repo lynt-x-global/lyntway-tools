@@ -201,3 +201,34 @@ func TestWhatCannotBeCoveredIsNamed(t *testing.T) {
 		t.Error("JetBrains is not mentioned at all, so its absence is silent")
 	}
 }
+
+// A tool that is installed but needs a manual step must never be reported
+// as absent. `status` had no branch for the JSON-configured kind, so an
+// installed Continue fell through to "not installed" — which somebody
+// reads as nothing to do, leaving an unrouted tool in place until an
+// auditor asks why its traffic is missing. Silence about a gap is the one
+// failure this command exists to prevent.
+func TestEveryKindOfTargetHasSomethingToSay(t *testing.T) {
+	seen := map[targetKind]bool{}
+	for _, tgt := range scan() {
+		seen[tgt.Kind] = true
+	}
+	for _, kind := range []targetKind{kindEnv, kindJSON, kindMCP, kindManual} {
+		if !seen[kind] {
+			t.Errorf("scan() no longer produces any %q target, so the branch "+
+				"reporting it is untested and free to rot", kind)
+		}
+	}
+
+	// The bug itself: a found, JSON-configured target reported honestly.
+	line := statusLineFor(target{
+		Name: "Continue", Kind: kindJSON, Found: true,
+		Path: filepath.Join(t.TempDir(), "config.json"),
+	})
+	if strings.Contains(line, "not installed") {
+		t.Errorf("an installed tool is reported as absent: %q", line)
+	}
+	if !strings.Contains(line, "by hand") {
+		t.Errorf("the manual step is not mentioned: %q", line)
+	}
+}

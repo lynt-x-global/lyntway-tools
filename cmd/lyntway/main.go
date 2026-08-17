@@ -303,38 +303,57 @@ func status() error {
 	fmt.Printf("\nSigned in to %s\n\n", c.Origin)
 
 	for _, t := range scan() {
-		switch {
-		case t.Kind == kindEnv && t.Path != "":
-			body, _ := os.ReadFile(t.Path)
-			if strings.Contains(string(body), markerStart) {
-				fmt.Printf("  ✓ %-46s routed\n", t.Name)
-			} else {
-				fmt.Printf("  ✗ %-46s not routed\n", t.Name)
-			}
-		case t.Kind == kindMCP && t.Found:
-			servers, err := mcpServers(t.Path)
-			if err != nil {
-				fmt.Printf("  ? %-46s unreadable\n", t.Name)
-				continue
-			}
-			var wrapped int
-			for _, entry := range servers {
-				if alreadyWrapped(entry) {
-					wrapped++
-				}
-			}
-			fmt.Printf("  %s %-46s %d of %d tools routed\n",
-				tick(wrapped == len(servers) && wrapped > 0), t.Name, wrapped, len(servers))
-		case t.Kind == kindManual:
-			fmt.Printf("  ~ %-46s %s\n", t.Name, "not covered by this command")
-		default:
-			fmt.Printf("  ✗ %-46s not installed\n", t.Name)
-		}
+		fmt.Println(statusLineFor(t))
 	}
 
 	fmt.Println("\nAnything not listed here is not being recorded. That is what the")
 	fmt.Println("coverage page in your console is for.")
 	return nil
+}
+
+// statusLineFor says where one target stands, in one line.
+//
+// Separated from status so every branch can be exercised without a machine
+// that happens to have the right tools installed. The branch that was
+// missing — a JSON-configured tool that is present — was missing precisely
+// because nothing could reach it from a test.
+func statusLineFor(t target) string {
+	switch {
+	case t.Kind == kindEnv && t.Path != "":
+		body, _ := os.ReadFile(t.Path)
+		if strings.Contains(string(body), markerStart) {
+			return fmt.Sprintf("  ✓ %-46s routed", t.Name)
+		}
+		return fmt.Sprintf("  ✗ %-46s not routed", t.Name)
+
+	case t.Kind == kindMCP && t.Found:
+		servers, err := mcpServers(t.Path)
+		if err != nil {
+			return fmt.Sprintf("  ? %-46s unreadable", t.Name)
+		}
+		var wrapped int
+		for _, entry := range servers {
+			if alreadyWrapped(entry) {
+				wrapped++
+			}
+		}
+		return fmt.Sprintf("  %s %-46s %d of %d tools routed",
+			tick(wrapped == len(servers) && wrapped > 0), t.Name, wrapped, len(servers))
+
+	case t.Kind == kindJSON && t.Found:
+		// Installed, and waiting on a step only a person can take. Without
+		// this branch it fell through to "not installed", which is the
+		// worst thing status could say about it: somebody reads that as
+		// nothing to do, and an unrouted tool sits there until an auditor
+		// asks why its traffic is missing.
+		return fmt.Sprintf("  ~ %-46s found, needs its base URL set by hand", t.Name)
+
+	case t.Kind == kindManual:
+		return fmt.Sprintf("  ~ %-46s not covered by this command", t.Name)
+
+	default:
+		return fmt.Sprintf("  ✗ %-46s not installed", t.Name)
+	}
 }
 
 func tick(ok bool) string {

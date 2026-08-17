@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "lyntway"
+version = "0.1.0"
+description = "Govern content and verify signed action receipts offline."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+keywords = ["governance", "ai-agents", "receipts", "attestation", "pii", "mcp", "audit"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Topic :: Security",
+  "Topic :: Security :: Cryptography",
+  "Programming Language :: Python :: 3",
+]
+
+# The only runtime dependency. Python has no Ed25519 in its standard
+# library, and hand-rolled curve arithmetic has no place in an SDK whose
+# job is deciding whether evidence is genuine. HTTP uses urllib from stdlib.
+dependencies = ["cryptography>=42.0"]
+
+[project.urls]
+Homepage = "https://github.com/lynt-x-global/lyntway-core"
+Source = "https://github.com/lynt-x-global/lyntway-core/tree/main/packages/lyntway-py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lyntway"]

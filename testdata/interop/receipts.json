@@ -1,0 +1,514 @@
+{
+  "attested": {
+    "comment": "Receipts signed by a per-tenant key. They must verify against rootPublicKey alone: no tenant key is ever published, and a verifier holding one receipt must learn nothing about any other customer.",
+    "receipts": [
+      {
+        "action": {
+          "destination": "api.anthropic.com",
+          "direction": "request",
+          "method": "POST /v1/messages",
+          "surface": "model"
+        },
+        "actor": {
+          "id": "agent_interop",
+          "source": "none",
+          "type": "agent",
+          "verified": false
+        },
+        "chain": {
+          "id": "acme/ws_interop",
+          "prev_hash": "",
+          "seq": 0
+        },
+        "content": {
+          "algorithm": "sha-256",
+          "bytes": 22,
+          "input_digest": "8186613bcec90815abd6f4d465b3e25b41d701a83a449bc34865bb4fa4669ffd",
+          "output_digest": "8186613bcec90815abd6f4d465b3e25b41d701a83a449bc34865bb4fa4669ffd"
+        },
+        "governance": {
+          "decision": "allow",
+          "detector": {
+            "engine": "lyntway-core",
+            "engine_version": "0.1.0",
+            "health": "healthy",
+            "ruleset_version": "core-2026.08.13"
+          },
+          "mode": "full",
+          "policy": {
+            "id": "pack.core.default",
+            "version": "v1"
+          }
+        },
+        "id": "rcpt_interop_attested_0001",
+        "issued_at": "2026-08-12T09:00:00Z",
+        "issuer": {
+          "key_attestation": {
+            "algorithm": "ed25519",
+            "key_id": "lyntway-t-interop",
+            "public_key": "rGv1a5oEriM+jaKs3KzrFzzn4Hb180dA4XuZ0bAs/gk=",
+            "root_algorithm": "ed25519",
+            "root_key_id": "interop-root-1",
+            "scope": "acme/",
+            "signature": "EgS+KDozbDh9uzHR87WsfnWB6TIZff4Rp87SGd6KfvM8/EmQCnrFh5FtMSMs7m14V3tSoGTL4USWLNLk7F/5DQ==",
+            "version": "lyntway-key-attestation/1"
+          },
+          "key_id": "lyntway-t-interop",
+          "name": "Lyntway"
+        },
+        "signature": {
+          "algorithm": "ed25519",
+          "canonicalization": "jcs",
+          "key_id": "lyntway-t-interop",
+          "value": "IXhqO/zPM7SJUnu278CJnUZSlJEmJqiO60hkwmMV1xcaDft7Zr8p06I/1JpstDO96iCHtnyjKVZA0BHkYSe6BA=="
+        },
+        "version": "lyntway-receipt/1"
+      }
+    ],
+    "rootKeyId": "interop-root-1",
+    "rootPublicKey": "7VSln7GsOlEjk1E2KUG4aOhaYOPXskhdgogh3Hppwnk=",
+    "scope": "acme/",
+    "tenantKeyId": "lyntway-t-interop"
+  },
+  "es256": {
+    "comment": "ECDSA P-256 receipts. Present because HSMs and key-management services support P-256 far more widely than Ed25519, so a deployment whose signing key lives in hardware will use this. Signatures are the fixed-width 64-byte r-then-s form, never DER.",
+    "keyId": "interop-es256-1",
+    "publicKey": "BHgLL6WMTDH1pejr/pXLZZpYstiZR5Sp1T1gipXjeQ5z7cELR+hKdje2+vdWgn7+NP1JOUUlkxJWEYTV4GEUuAY=",
+    "receipts": [
+      {
+        "version": "lyntway-receipt/1",
+        "id": "rcpt_interop_es256_0001",
+        "issued_at": "2026-08-12T09:00:00Z",
+        "issuer": {
+          "key_id": "interop-es256-1",
+          "name": "Lyntway"
+        },
+        "chain": {
+          "id": "ws_interop_es256",
+          "seq": 0,
+          "prev_hash": ""
+        },
+        "action": {
+          "surface": "database",
+          "direction": "response",
+          "method": "SELECT",
+          "target": "customers"
+        },
+        "actor": {
+          "type": "service",
+          "id": "svc_reporting",
+          "source": "none",
+          "verified": false
+        },
+        "content": {
+          "algorithm": "sha-256",
+          "input_digest": "cd6ab9ad84ffa1ed04177becfb9c43ed63906e1dabc1ef5f060b7701f21fa7dc",
+          "output_digest": "cd6ab9ad84ffa1ed04177becfb9c43ed63906e1dabc1ef5f060b7701f21fa7dc",
+          "bytes": 19
+        },
+        "governance": {
+          "mode": "full",
+          "decision": "allow",
+          "detector": {
+            "engine": "lyntway-core",
+            "engine_version": "0.1.0",
+            "ruleset_version": "core-2026.08.13",
+            "health": "healthy"
+          },
+          "policy": {
+            "id": "pack.core.default",
+            "version": "v1"
+          }
+        },
+        "signature": {
+          "algorithm": "es256",
+          "key_id": "interop-es256-1",
+          "canonicalization": "jcs",
+          "value": "8lnr5BN2w03ZxiUyv0ctl0W1Xh20L6P+3gfqDGnIN2y2SswG3oU2nVK3+5mZgKefSuJNE+kdoLMlarDLlMFBCQ=="
+        }
+      }
+    ],
+    "signingInputs": [
+      "{\"action\":{\"direction\":\"response\",\"method\":\"SELECT\",\"surface\":\"database\",\"target\":\"customers\"},\"actor\":{\"id\":\"svc_reporting\",\"source\":\"none\",\"type\":\"service\",\"verified\":false},\"chain\":{\"id\":\"ws_interop_es256\",\"prev_hash\":\"\",\"seq\":0},\"content\":{\"algorithm\":\"sha-256\",\"bytes\":19,\"input_digest\":\"cd6ab9ad84ffa1ed04177becfb9c43ed63906e1dabc1ef5f060b7701f21fa7dc\",\"output_digest\":\"cd6ab9ad84ffa1ed04177becfb9c43ed63906e1dabc1ef5f060b7701f21fa7dc\"},\"governance\":{\"decision\":\"allow\",\"detector\":{\"engine\":\"lyntway-core\",\"engine_version\":\"0.1.0\",\"health\":\"healthy\",\"ruleset_version\":\"core-2026.08.13\"},\"mode\":\"full\",\"policy\":{\"id\":\"pack.core.default\",\"version\":\"v1\"}},\"id\":\"rcpt_interop_es256_0001\",\"issued_at\":\"2026-08-12T09:00:00Z\",\"issuer\":{\"key_id\":\"interop-es256-1\",\"name\":\"Lyntway\"},\"version\":\"lyntway-receipt/1\"}"
+    ]
+  },
+  "keyId": "interop-key-1",
+  "publicKey": "DwMtJ1Djp1Sm3aErf7C6zjaEXK4iKDtVKK38V8UCKDs=",
+  "receipts": [
+    {
+      "action": {
+        "destination": "api.anthropic.com",
+        "direction": "request",
+        "method": "POST /v1/govern",
+        "surface": "primitive",
+        "target": "pii"
+      },
+      "actor": {
+        "delegation": [
+          {
+            "id": "priya@acme.com",
+            "source": "oidc",
+            "type": "human"
+          }
+        ],
+        "id": "agent_interop",
+        "source": "entra_agent_id",
+        "type": "agent",
+        "verified": true
+      },
+      "chain": {
+        "id": "ws_interop",
+        "prev_hash": "",
+        "seq": 0
+      },
+      "content": {
+        "algorithm": "sha-256",
+        "bytes": 70,
+        "input_digest": "5b985550e0ec2d0312f8cc70b58c827b8e598f5b0bf6b6e245138b97e4c7ab82",
+        "output_digest": "7912d96a0f1eaca4ca8818644cbd95d25d6c6e0cb20a45df92a3075cf0eb740e"
+      },
+      "governance": {
+        "decision": "tokenize",
+        "detector": {
+          "components": [
+            {
+              "health": "healthy",
+              "name": "deterministic"
+            }
+          ],
+          "engine": "lyntway-core",
+          "engine_version": "0.1.0",
+          "health": "healthy",
+          "ruleset_version": "core-2026.08.13"
+        },
+        "findings": [
+          {
+            "class": "pci.card_number",
+            "count": 1,
+            "decision": "tokenize"
+          },
+          {
+            "class": "pii.email",
+            "count": 1,
+            "decision": "tokenize"
+          },
+          {
+            "class": "pii.phone",
+            "count": 1,
+            "decision": "tokenize"
+          }
+        ],
+        "mode": "full",
+        "policy": {
+          "bundle_digest": "8ca03ae6d18fbe097bca1578fef09433ace02c832f7690eefee41553cda1a61a",
+          "id": "pack.core.default",
+          "version": "1"
+        }
+      },
+      "id": "rcpt_interop_0",
+      "issued_at": "2026-08-12T23:00:48Z",
+      "issuer": {
+        "key_id": "interop-key-1",
+        "name": "Lyntway"
+      },
+      "signature": {
+        "algorithm": "ed25519",
+        "canonicalization": "jcs",
+        "key_id": "interop-key-1",
+        "value": "KiGm2YdbxvbXCGk9HXpOewId8/4E/x0oWZra/kBf5qAVbIWYI22lBCjiwrSm/ZaL07hW8n/x+gYxrMvNWbAUBg=="
+      },
+      "version": "lyntway-receipt/1"
+    },
+    {
+      "action": {
+        "destination": "api.anthropic.com",
+        "direction": "request",
+        "method": "POST /v1/govern",
+        "surface": "primitive",
+        "target": "clean"
+      },
+      "actor": {
+        "delegation": [
+          {
+            "id": "priya@acme.com",
+            "source": "oidc",
+            "type": "human"
+          }
+        ],
+        "id": "agent_interop",
+        "source": "entra_agent_id",
+        "type": "agent",
+        "verified": true
+      },
+      "chain": {
+        "id": "ws_interop",
+        "prev_hash": "a41f0de3a37e328d475ca0993964e35d73fef51d5f46f43778ef2d5b7c0ea026",
+        "seq": 1
+      },
+      "content": {
+        "algorithm": "sha-256",
+        "bytes": 44,
+        "input_digest": "f79691ec8c64d2038a1882bb7027c1d73e124843035249f2e90b46bd28653f9d",
+        "output_digest": "f79691ec8c64d2038a1882bb7027c1d73e124843035249f2e90b46bd28653f9d"
+      },
+      "governance": {
+        "decision": "allow",
+        "detector": {
+          "components": [
+            {
+              "health": "healthy",
+              "name": "deterministic"
+            }
+          ],
+          "engine": "lyntway-core",
+          "engine_version": "0.1.0",
+          "health": "healthy",
+          "ruleset_version": "core-2026.08.13"
+        },
+        "mode": "full",
+        "policy": {
+          "bundle_digest": "8ca03ae6d18fbe097bca1578fef09433ace02c832f7690eefee41553cda1a61a",
+          "id": "pack.core.default",
+          "version": "1"
+        }
+      },
+      "id": "rcpt_interop_1",
+      "issued_at": "2026-08-12T23:00:48Z",
+      "issuer": {
+        "key_id": "interop-key-1",
+        "name": "Lyntway"
+      },
+      "signature": {
+        "algorithm": "ed25519",
+        "canonicalization": "jcs",
+        "key_id": "interop-key-1",
+        "value": "ITw2bAKGtkcDDMLO3yIjob8ZzcUyG10EpcFuC5nSIq/jkEGvl5tjEIpdtlwdmbYdq7W0/SgDgKvAlObNtfEUAQ=="
+      },
+      "version": "lyntway-receipt/1"
+    },
+    {
+      "action": {
+        "destination": "api.anthropic.com",
+        "direction": "request",
+        "method": "POST /v1/govern",
+        "surface": "primitive",
+        "target": "unicode"
+      },
+      "actor": {
+        "delegation": [
+          {
+            "id": "priya@acme.com",
+            "source": "oidc",
+            "type": "human"
+          }
+        ],
+        "id": "agent_interop",
+        "source": "entra_agent_id",
+        "type": "agent",
+        "verified": true
+      },
+      "chain": {
+        "id": "ws_interop",
+        "prev_hash": "cd45fff0b1a722342ed92c937d762a291737ecae494965618ee7575e51a1efd9",
+        "seq": 2
+      },
+      "content": {
+        "algorithm": "sha-256",
+        "bytes": 75,
+        "input_digest": "79c5e54ea4a782699f9290bdcfd84ee124693685bf944b101b988ff843984ac9",
+        "output_digest": "b55c28c4b291563833ebbe685ac105b9b2a379fface23db62451f081afec2e2f"
+      },
+      "governance": {
+        "decision": "tokenize",
+        "detector": {
+          "components": [
+            {
+              "health": "healthy",
+              "name": "deterministic"
+            }
+          ],
+          "engine": "lyntway-core",
+          "engine_version": "0.1.0",
+          "health": "healthy",
+          "ruleset_version": "core-2026.08.13"
+        },
+        "findings": [
+          {
+            "class": "pii.email",
+            "count": 1,
+            "decision": "tokenize"
+          }
+        ],
+        "mode": "full",
+        "policy": {
+          "bundle_digest": "8ca03ae6d18fbe097bca1578fef09433ace02c832f7690eefee41553cda1a61a",
+          "id": "pack.core.default",
+          "version": "1"
+        }
+      },
+      "id": "rcpt_interop_2",
+      "issued_at": "2026-08-12T23:00:48Z",
+      "issuer": {
+        "key_id": "interop-key-1",
+        "name": "Lyntway"
+      },
+      "signature": {
+        "algorithm": "ed25519",
+        "canonicalization": "jcs",
+        "key_id": "interop-key-1",
+        "value": "t7LqXvyetbtcn8x5DwWGbifGuwx/wDYf7UpP5m5fyiFqKa0y2bO5hOJ6NXwyfEYucoCKgJYR0EdxLV7WIxoGBQ=="
+      },
+      "version": "lyntway-receipt/1"
+    },
+    {
+      "action": {
+        "destination": "api.anthropic.com",
+        "direction": "request",
+        "method": "POST /v1/govern",
+        "surface": "primitive",
+        "target": "controls"
+      },
+      "actor": {
+        "delegation": [
+          {
+            "id": "priya@acme.com",
+            "source": "oidc",
+            "type": "human"
+          }
+        ],
+        "id": "agent_interop",
+        "source": "entra_agent_id",
+        "type": "agent",
+        "verified": true
+      },
+      "chain": {
+        "id": "ws_interop",
+        "prev_hash": "7793e2fdf8692bf7bf2fbb14539accbeb98c4eae507a13865df0a47582e4c95e",
+        "seq": 3
+      },
+      "content": {
+        "algorithm": "sha-256",
+        "bytes": 47,
+        "input_digest": "10d2e1ed49cc220d9c8f5f00038d22c28b44d4a60af18952251d01b78ec263f7",
+        "output_digest": "e7ca6f54b5565fdad2c4f3fd8726897fc0bc5afdc7478b7353102a2a621c10fb"
+      },
+      "governance": {
+        "decision": "tokenize",
+        "detector": {
+          "components": [
+            {
+              "health": "healthy",
+              "name": "deterministic"
+            }
+          ],
+          "engine": "lyntway-core",
+          "engine_version": "0.1.0",
+          "health": "healthy",
+          "ruleset_version": "core-2026.08.13"
+        },
+        "findings": [
+          {
+            "class": "pii.email",
+            "count": 1,
+            "decision": "tokenize"
+          }
+        ],
+        "mode": "full",
+        "policy": {
+          "bundle_digest": "8ca03ae6d18fbe097bca1578fef09433ace02c832f7690eefee41553cda1a61a",
+          "id": "pack.core.default",
+          "version": "1"
+        }
+      },
+      "id": "rcpt_interop_3",
+      "issued_at": "2026-08-12T23:00:48Z",
+      "issuer": {
+        "key_id": "interop-key-1",
+        "name": "Lyntway"
+      },
+      "signature": {
+        "algorithm": "ed25519",
+        "canonicalization": "jcs",
+        "key_id": "interop-key-1",
+        "value": "GALwP65PZPfhTjGuVtFva/rPI0CFRvZxSynorob2G16174IfXeEveHEI1mMYqhj/2FR7xZXXRpqOOreBmmu9Bw=="
+      },
+      "version": "lyntway-receipt/1"
+    },
+    {
+      "action": {
+        "direction": "request",
+        "method": "POST",
+        "surface": "primitive"
+      },
+      "actor": {
+        "id": "a",
+        "source": "lyntway_key",
+        "type": "agent",
+        "verified": false
+      },
+      "chain": {
+        "id": "ws_degraded",
+        "prev_hash": "",
+        "seq": 0
+      },
+      "content": {
+        "algorithm": "sha-256",
+        "bytes": 20,
+        "input_digest": "c3830092a5f7761cd51bcc834f8107133fd9152b2fff77a6fc84a122a616de1b",
+        "output_digest": "ef0ee9c0aee09c47170926d881af5bf7ad650a7207cce50fbfedfd0f64922675"
+      },
+      "governance": {
+        "decision": "tokenize",
+        "detector": {
+          "components": [
+            {
+              "health": "healthy",
+              "name": "deterministic"
+            },
+            {
+              "health": "unavailable",
+              "name": "ml-sidecar"
+            }
+          ],
+          "engine": "lyntway-core",
+          "engine_version": "0.1.0",
+          "health": "degraded",
+          "ruleset_version": "core-2026.08.13"
+        },
+        "findings": [
+          {
+            "class": "pii.email",
+            "count": 1,
+            "decision": "tokenize"
+          }
+        ],
+        "mode": "degraded",
+        "policy": {
+          "bundle_digest": "8ca03ae6d18fbe097bca1578fef09433ace02c832f7690eefee41553cda1a61a",
+          "id": "pack.core.default",
+          "version": "1"
+        }
+      },
+      "id": "rcpt_degraded",
+      "issued_at": "2026-08-12T23:00:48Z",
+      "issuer": {
+        "key_id": "interop-key-1",
+        "name": "Lyntway"
+      },
+      "signature": {
+        "algorithm": "ed25519",
+        "canonicalization": "jcs",
+        "key_id": "interop-key-1",
+        "value": "guuLgE6228h1qCmHC6LsLBGu7B5/sxO7lIt6pgHWhRpaugKHVPkVrxMhtZkjMVGBDPtbNLEIyNZp7iBrTP18CQ=="
+      },
+      "version": "lyntway-receipt/1"
+    }
+  ],
+  "signingInputs": [
+    "{\"action\":{\"destination\":\"api.anthropic.com\",\"direction\":\"request\",\"method\":\"POST /v1/govern\",\"surface\":\"primitive\",\"target\":\"pii\"},\"actor\":{\"delegation\":[{\"id\":\"priya@acme.com\",\"source\":\"oidc\",\"type\":\"human\"}],\"id\":\"agent_interop\",\"source\":\"entra_agent_id\",\"type\":\"agent\",\"verified\":true},\"chain\":{\"id\":\"ws_interop\",\"prev_hash\":\"\",\"seq\":0},\"content\":{\"algorithm\":\"sha-256\",\"bytes\":70,\"input_digest\":\"5b985550e0ec2d0312f8cc70b58c827b8e598f5b0bf6b6e245138b97e4c7ab82\",\"output_digest\":\"7912d96a0f1eaca4ca8818644cbd95d25d6c6e0cb20a45df92a3075cf0eb740e\"},\"governance\":{\"decision\":\"tokenize\",\"detector\":{\"components\":[{\"health\":\"healthy\",\"name\":\"deterministic\"}],\"engine\":\"lyntway-core\",\"engine_version\":\"0.1.0\",\"health\":\"healthy\",\"ruleset_version\":\"core-2026.08.13\"},\"findings\":[{\"class\":\"pci.card_number\",\"count\":1,\"decision\":\"tokenize\"},{\"class\":\"pii.email\",\"count\":1,\"decision\":\"tokenize\"},{\"class\":\"pii.phone\",\"count\":1,\"decision\":\"tokenize\"}],\"mode\":\"full\",\"policy\":{\"bundle_digest\":\"8ca03ae6d18fbe097bca1578fef09433ace02c832f7690eefee41553cda1a61a\",\"id\":\"pack.core.default\",\"version\":\"1\"}},\"id\":\"rcpt_interop_0\",\"issued_at\":\"2026-08-12T23:00:48Z\",\"issuer\":{\"key_id\":\"interop-key-1\",\"name\":\"Lyntway\"},\"version\":\"lyntway-receipt/1\"}",
+    "{\"action\":{\"destination\":\"api.anthropic.com\",\"direction\":\"request\",\"method\":\"POST /v1/govern\",\"surface\":\"primitive\",\"target\":\"clean\"},\"actor\":{\"delegation\":[{\"id\":\"priya@acme.com\",\"source\":\"oidc\",\"type\":\"human\"}],\"id\":\"agent_interop\",\"source\":\"entra_agent_id\",\"type\":\"agent\",\"verified\":true},\"chain\":{\"id\":\"ws_interop\",\"prev_hash\":\"a41f0de3a37e328d475ca0993964e35d73fef51d5f46f43778ef2d5b7c0ea026\",\"seq\":1},\"content\":{\"algorithm\":\"sha-256\",\"bytes\":44,\"input_digest\":\"f79691ec8c64d2038a1882bb7027c1d73e124843035249f2e90b46bd28653f9d\",\"output_digest\":\"f79691ec8c64d2038a1882bb7027c1d73e124843035249f2e90b46bd28653f9d\"},\"governance\":{\"decision\":\"allow\",\"detector\":{\"components\":[{\"health\":\"healthy\",\"name\":\"deterministic\"}],\"engine\":\"lyntway-core\",\"engine_version\":\"0.1.0\",\"health\":\"healthy\",\"ruleset_version\":\"core-2026.08.13\"},\"mode\":\"full\",\"policy\":{\"bundle_digest\":\"8ca03ae6d18fbe097bca1578fef09433ace02c832f7690eefee41553cda1a61a\",\"id\":\"pack.core.default\",\"version\":\"1\"}},\"id\":\"rcpt_interop_1\",\"issued_at\":\"2026-08-12T23:00:48Z\",\"issuer\":{\"key_id\":\"interop-key-1\",\"name\":\"Lyntway\"},\"version\":\"lyntway-receipt/1\"}",
+    "{\"action\":{\"destination\":\"api.anthropic.com\",\"direction\":\"request\",\"method\":\"POST /v1/govern\",\"surface\":\"primitive\",\"target\":\"unicode\"},\"actor\":{\"delegation\":[{\"id\":\"priya@acme.com\",\"source\":\"oidc\",\"type\":\"human\"}],\"id\":\"agent_interop\",\"source\":\"entra_agent_id\",\"type\":\"agent\",\"verified\":true},\"chain\":{\"id\":\"ws_interop\",\"prev_hash\":\"cd45fff0b1a722342ed92c937d762a291737ecae494965618ee7575e51a1efd9\",\"seq\":2},\"content\":{\"algorithm\":\"sha-256\",\"bytes\":75,\"input_digest\":\"79c5e54ea4a782699f9290bdcfd84ee124693685bf944b101b988ff843984ac9\",\"output_digest\":\"b55c28c4b291563833ebbe685ac105b9b2a379fface23db62451f081afec2e2f\"},\"governance\":{\"decision\":\"tokenize\",\"detector\":{\"components\":[{\"health\":\"healthy\",\"name\":\"deterministic\"}],\"engine\":\"lyntway-core\",\"engine_version\":\"0.1.0\",\"health\":\"healthy\",\"ruleset_version\":\"core-2026.08.13\"},\"findings\":[{\"class\":\"pii.email\",\"count\":1,\"decision\":\"tokenize\"}],\"mode\":\"full\",\"policy\":{\"bundle_digest\":\"8ca03ae6d18fbe097bca1578fef09433ace02c832f7690eefee41553cda1a61a\",\"id\":\"pack.core.default\",\"version\":\"1\"}},\"id\":\"rcpt_interop_2\",\"issued_at\":\"2026-08-12T23:00:48Z\",\"issuer\":{\"key_id\":\"interop-key-1\",\"name\":\"Lyntway\"},\"version\":\"lyntway-receipt/1\"}",
+    "{\"action\":{\"destination\":\"api.anthropic.com\",\"direction\":\"request\",\"method\":\"POST /v1/govern\",\"surface\":\"primitive\",\"target\":\"controls\"},\"actor\":{\"delegation\":[{\"id\":\"priya@acme.com\",\"source\":\"oidc\",\"type\":\"human\"}],\"id\":\"agent_interop\",\"source\":\"entra_agent_id\",\"type\":\"agent\",\"verified\":true},\"chain\":{\"id\":\"ws_interop\",\"prev_hash\":\"7793e2fdf8692bf7bf2fbb14539accbeb98c4eae507a13865df0a47582e4c95e\",\"seq\":3},\"content\":{\"algorithm\":\"sha-256\",\"bytes\":47,\"input_digest\":\"10d2e1ed49cc220d9c8f5f00038d22c28b44d4a60af18952251d01b78ec263f7\",\"output_digest\":\"e7ca6f54b5565fdad2c4f3fd8726897fc0bc5afdc7478b7353102a2a621c10fb\"},\"governance\":{\"decision\":\"tokenize\",\"detector\":{\"components\":[{\"health\":\"healthy\",\"name\":\"deterministic\"}],\"engine\":\"lyntway-core\",\"engine_version\":\"0.1.0\",\"health\":\"healthy\",\"ruleset_version\":\"core-2026.08.13\"},\"findings\":[{\"class\":\"pii.email\",\"count\":1,\"decision\":\"tokenize\"}],\"mode\":\"full\",\"policy\":{\"bundle_digest\":\"8ca03ae6d18fbe097bca1578fef09433ace02c832f7690eefee41553cda1a61a\",\"id\":\"pack.core.default\",\"version\":\"1\"}},\"id\":\"rcpt_interop_3\",\"issued_at\":\"2026-08-12T23:00:48Z\",\"issuer\":{\"key_id\":\"interop-key-1\",\"name\":\"Lyntway\"},\"version\":\"lyntway-receipt/1\"}",
+    "{\"action\":{\"direction\":\"request\",\"method\":\"POST\",\"surface\":\"primitive\"},\"actor\":{\"id\":\"a\",\"source\":\"lyntway_key\",\"type\":\"agent\",\"verified\":false},\"chain\":{\"id\":\"ws_degraded\",\"prev_hash\":\"\",\"seq\":0},\"content\":{\"algorithm\":\"sha-256\",\"bytes\":20,\"input_digest\":\"c3830092a5f7761cd51bcc834f8107133fd9152b2fff77a6fc84a122a616de1b\",\"output_digest\":\"ef0ee9c0aee09c47170926d881af5bf7ad650a7207cce50fbfedfd0f64922675\"},\"governance\":{\"decision\":\"tokenize\",\"detector\":{\"components\":[{\"health\":\"healthy\",\"name\":\"deterministic\"},{\"health\":\"unavailable\",\"name\":\"ml-sidecar\"}],\"engine\":\"lyntway-core\",\"engine_version\":\"0.1.0\",\"health\":\"degraded\",\"ruleset_version\":\"core-2026.08.13\"},\"findings\":[{\"class\":\"pii.email\",\"count\":1,\"decision\":\"tokenize\"}],\"mode\":\"degraded\",\"policy\":{\"bundle_digest\":\"8ca03ae6d18fbe097bca1578fef09433ace02c832f7690eefee41553cda1a61a\",\"id\":\"pack.core.default\",\"version\":\"1\"}},\"id\":\"rcpt_degraded\",\"issued_at\":\"2026-08-12T23:00:48Z\",\"issuer\":{\"key_id\":\"interop-key-1\",\"name\":\"Lyntway\"},\"version\":\"lyntway-receipt/1\"}"
+  ]
+}

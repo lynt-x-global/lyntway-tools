@@ -56,6 +56,33 @@ carry weight with a third party need a key that was not minted on the
 laptop under examination, which is what the hosted service and the
 self-hosted deployment provide.
 
+## Python: the SDK and the LiteLLM callback
+
+```bash
+pip install "lyntway @ git+https://github.com/lynt-x-global/lyntway-tools#subdirectory=python"
+```
+
+The SDK verifies receipts in Python, and carries the LiteLLM callback:
+
+```yaml
+litellm_settings:
+  callbacks: [lyntway.litellm.handler]
+
+environment_variables:
+  LYNTWAY_URL: https://your-lyntway
+  LYNTWAY_KEY: sk-...
+```
+
+This is the only way to record **AWS Bedrock and Google Vertex**. Both sign
+every request in a way that a proxy in the path breaks, so they cannot be
+gatewayed at all — but LiteLLM signs them itself, and a callback running
+inside LiteLLM sees them. The receipt says LiteLLM told us rather than that
+we watched, because it did.
+
+The callback never blocks and never raises: LiteLLM's success hook runs
+after the response is back, so there is nothing left to change, and a
+recorder that can fail somebody's traffic is a recorder they remove.
+
 ## Where the rest of it lives
 
 The gateway, the console, the transparency log and the compliance pack are

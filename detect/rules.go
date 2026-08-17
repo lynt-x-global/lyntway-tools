@@ -153,9 +153,22 @@ func defaultRules() []Rule {
 			Priority:   80,
 		},
 		{
-			ID:         "iban",
-			Class:      ClassIBAN,
-			Pattern:    regexp.MustCompile(`\b([A-Z]{2}\d{2}[A-Z0-9]{11,30})\b`),
+			ID:    "iban",
+			Class: ClassIBAN,
+			// Separators are allowed because the spaced form is the
+			// printed standard: every invoice and bank letter groups an
+			// IBAN in fours. Matching only the unspaced form meant missing
+			// it in exactly the documents it appears in.
+			//
+			// The separated form must be groups of four with a short final
+			// group, which is the actual printed convention. Allowing a
+			// separator between any two characters instead let a run of
+			// unrelated capitals after a genuine IBAN be swallowed into
+			// the match, where it failed the checksum and turned a
+			// detection into a silent miss — the worse of the two
+			// failures, and one a test now holds shut.
+			Pattern: regexp.MustCompile(
+				`\b([A-Z]{2}\d{2}(?:[A-Z0-9]{11,30}|(?:[ -][A-Z0-9]{4})*(?:[ -][A-Z0-9]{1,4})?))\b`),
 			Confidence: ConfidenceExact,
 			Validate:   validIBAN,
 			Priority:   80,

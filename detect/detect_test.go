@@ -86,6 +86,15 @@ func TestDetection(t *testing.T) {
 		{"us ssn", "ssn 123-45-6789 on file", ClassUSSSN},
 		{"visa card", "card 4111 1111 1111 1111 charged", ClassCreditCard},
 		{"iban", "pay GB82WEST12345698765432 today", ClassIBAN},
+		// The spaced form is how an IBAN is printed on every invoice and
+		// bank letter, so it is the form most likely to be in the traffic.
+		{"iban in printed groups", "pay GB82 WEST 1234 5698 7654 32 today", ClassIBAN},
+		{"iban with hyphens", "pay GB82-WEST-1234-5698-7654-32 today", ClassIBAN},
+		{"german iban spaced", "to DE89 3704 0044 0532 0130 00 please", ClassIBAN},
+		// A run of capitals after a real IBAN must not be swallowed into
+		// the match: that would fail the checksum and turn a detection
+		// into a silent miss, which is the worse of the two failures.
+		{"iban followed by capitals", "GB82 WEST 1234 5698 7654 32 URGENT PLEASE", ClassIBAN},
 		{"private key", fakePEMBlock("RSA "), ClassPrivateKey},
 		{"jwt", "token " + fakeJWT(), ClassJWT},
 	}
@@ -128,6 +137,8 @@ func TestFalsePositives(t *testing.T) {
 		{"invalid ssn group 00", "id 123-00-6789", ClassUSSSN},
 		{"invalid ssn serial 0000", "id 123-45-0000", ClassUSSSN},
 		{"bad iban checksum", "acct GB82WEST12345698765433", ClassIBAN},
+		{"bad iban checksum, spaced", "acct GB82 WEST 1234 5698 7654 33", ClassIBAN},
+		{"ordinary capitals are not an iban", "SEE ITEM 4 ON PAGE 12 BELOW", ClassIBAN},
 		{"version string is not an ip", "version 1.2.3.4000 released", ClassIPv4},
 		{"plain word is not a token", "the quick brown fox jumps", ClassGitHubToken},
 		{"short number is not a phone", "+44 is the code", ClassPhone},

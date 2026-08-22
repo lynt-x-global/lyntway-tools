@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -64,6 +66,7 @@ func writeEnv(path, origin, key string) (string, error) {
 		markerStart,
 		"# Added by `lyntway init`. Remove with `lyntway undo`.",
 		"# Your AI traffic is routed through Lyntway so it can be recorded.",
+		`export PATH="$HOME/.lyntway/bin:$PATH"`,
 		fmt.Sprintf("export OPENAI_BASE_URL=%q", origin+"/gw/openai/v1"),
 		fmt.Sprintf("export ANTHROPIC_BASE_URL=%q", origin+"/gw/anthropic"),
 		fmt.Sprintf("export LYNTWAY_KEY=%q", key),
@@ -98,6 +101,128 @@ func removeBlock(body string) string {
 	return strings.TrimRight(body[:start], "\n") + "\n" + rest
 }
 
+// installSelf copies the lyntway and lyntway-mcp binaries to ~/.lyntway/bin/
+// so they can be run from any terminal without remembering where they were
+// extracted. Running `lyntway undo` six months later should not require
+// finding the original download.
+func installSelf() (string, error) {
+	h, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	binDir := filepath.Join(h, ".lyntway", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		return "", err
+	}
+
+	self, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	self, _ = filepath.EvalSymlinks(self)
+	srcDir := filepath.Dir(self)
+
+	ext := ""
+	if runtime.GOOS == "windows" {
+		ext = ".exe"
+	}
+
+	for _, name := range []string{"lyntway", "lyntway-mcp"} {
+		src := filepath.Join(srcDir, name+ext)
+		dst := filepath.Join(binDir, name+ext)
+		if !exists(src) {
+			continue
+		}
+		if sameFile(src, dst) {
+			continue
+		}
+		if err := copyFile(src, dst); err != nil {
+			return "", fmt.Errorf("copying %s: %w", name, err)
+		}
+	}
+
+	return binDir, nil
+}
+
+func sameFile(a, b string) bool {
+	ai, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	bi, err := os.Stat(b)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(ai, bi)
+}
+
+func copyFile(src, dst string) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, 0o755)
+}
+
+// addToUserPath adds a directory to the user's PATH on Windows.
+// On macOS and Linux the shell profile block handled by writeEnv already
+// exports $HOME/.lyntway/bin onto PATH.
+func addToUserPath(dir string) error {
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+
+	// Already there — nothing to do.
+	for _, p := range filepath.SplitList(os.Getenv("PATH")) {
+		if strings.EqualFold(filepath.Clean(p), filepath.Clean(dir)) {
+			return nil
+		}
+	}
+
+	// Modify the user-level PATH through the registry. Using setx directly
+	// can silently truncate a long PATH, so we read and append through
+	// .NET instead.
+	script := fmt.Sprintf(
+		`$p = [Environment]::GetEnvironmentVariable('PATH','User');`+
+			` if (-not $p) { $p = '' };`+
+			` $d = '%s';`+
+			` if ($p -split ';' | Where-Object { $_.Trim() -ieq $d }) { exit 0 };`+
+			` [Environment]::SetEnvironmentVariable('PATH', ($p.TrimEnd(';') + ';' + $d), 'User')`,
+		dir)
+	return exec.Command("powershell", "-NoProfile", "-Command", script).Run()
+}
+
+// shimPath returns the absolute path to the lyntway-mcp binary.
+//
+// Prefers the installed location (~/.lyntway/bin/) which survives the
+// download directory being deleted. Falls back to the directory beside
+// this binary, then to a bare name for PATH lookup.
+func shimPath() string {
+	name := "lyntway-mcp"
+	if runtime.GOOS == "windows" {
+		name = "lyntway-mcp.exe"
+	}
+
+	// Prefer the installed copy — it is the permanent one.
+	if h, err := os.UserHomeDir(); err == nil {
+		installed := filepath.Join(h, ".lyntway", "bin", name)
+		if exists(installed) {
+			return installed
+		}
+	}
+
+	// Fall back to beside this binary.
+	self, err := os.Executable()
+	if err != nil {
+		return "lyntway-mcp"
+	}
+	shim := filepath.Join(filepath.Dir(self), name)
+	if exists(shim) {
+		return shim
+	}
+	return "lyntway-mcp"
+}
+
 // wrapMCP rewrites a config so every server runs through the shim.
 //
 // The original command and arguments are preserved after `--`, so undoing
@@ -121,8 +246,16 @@ func wrapMCP(path string) (changed []string, saved string, err error) {
 		return nil, "", err
 	}
 
+	shim := shimPath()
+
 	wrapped := map[string]json.RawMessage{}
 	for name, entry := range servers {
+		if name == "lyntway" {
+			// The lyntway entry is our own remote connection. Wrapping
+			// it through the shim would govern traffic to ourselves,
+			// which is redundant and creates a circular dependency.
+			continue
+		}
 		if alreadyWrapped(entry) {
 			continue
 		}
@@ -138,7 +271,7 @@ func wrapMCP(path string) (changed []string, saved string, err error) {
 		}
 
 		next := map[string]any{
-			"command": "lyntway-mcp",
+			"command": shim,
 			"args":    append([]string{"--"}, append([]string{s.Command}, s.Args...)...),
 		}
 		if len(s.Env) > 0 {

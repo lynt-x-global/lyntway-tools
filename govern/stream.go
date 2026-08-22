@@ -94,11 +94,19 @@ type StreamGovernor struct {
 	// begin there. Negative means nothing is frozen.
 	frozenAt int
 
+	// restoring reverses substitution instead of applying it, for a stream
+	// travelling back to the party whose data it is.
+	restoring bool
+
 	stopped   bool
 	truncated bool
 }
 
-// NewStreamGovernor starts governing a stream.
+// NewStreamGovernor starts governing a stream on its way out.
+//
+// Sensitive values found in it are substituted, because the reader is
+// somebody else. This is the direction for a tool result arriving from
+// elsewhere and heading for a model's context.
 func (e *Engine) NewStreamGovernor(scope *tokenize.Scope) *StreamGovernor {
 	return &StreamGovernor{
 		engine:   e,
@@ -106,6 +114,23 @@ func (e *Engine) NewStreamGovernor(scope *tokenize.Scope) *StreamGovernor {
 		findings: make(map[detect.Class]int),
 		frozenAt: -1,
 	}
+}
+
+// NewRestoringStreamGovernor starts governing a stream on its way back.
+//
+// A model's reply is written in terms of the tokens it was given, and it is
+// travelling to the party those tokens stand for. So the substitution is
+// reversed rather than repeated: the caller receives its own values, having
+// never let the provider hold them.
+//
+// This is what the buffered path has always done. The streaming path
+// returned before that code and shipped tokens to the application instead,
+// so an identical call answered differently depending on stream=True — with
+// the broken answer going to every chat interface, which all stream.
+func (e *Engine) NewRestoringStreamGovernor(scope *tokenize.Scope) *StreamGovernor {
+	g := e.NewStreamGovernor(scope)
+	g.restoring = true
+	return g
 }
 
 // Write adds received bytes and returns whatever is now safe to release.
@@ -148,6 +173,18 @@ func (s *StreamGovernor) Write(chunk []byte) ([]byte, error) {
 	return s.release(s.safeEnd()), nil
 }
 
+// withinRestored reports whether a span sits inside a value this scope just
+// handed back, which is what separates the caller's own data from data the
+// far end produced.
+func withinRestored(sp detect.Span, marks []tokenize.Restored) bool {
+	for _, m := range marks {
+		if sp.Start < m.End && m.Start < sp.End {
+			return true
+		}
+	}
+	return false
+}
+
 // safeEnd is how far into the buffer it is safe to release.
 func (s *StreamGovernor) safeEnd() int {
 	end := len(s.buffer) - StreamLookback
@@ -180,19 +217,71 @@ func (s *StreamGovernor) Close() ([]byte, error) {
 }
 
 // release governs buffer[:end], records what was found, and returns it.
+//
+// Which way it governs depends on where the text is going. Substituting is
+// for content on its way out to somebody else; restoring is for content on
+// its way back to the person it belongs to. Doing the wrong one is not a
+// smaller mistake than doing neither.
 func (s *StreamGovernor) release(end int) []byte {
 	if end <= 0 {
 		return nil
 	}
 	segment := s.buffer[:end]
 
-	spans := s.engine.ruleset.Scan(segment)
+	out := segment
+
+	// Restoring happens before the scan, and records where each value
+	// landed. A token is format-preserving by design, so once restored a
+	// detector cannot tell a value just handed back from one appearing for
+	// the first time — the marks are how the difference survives.
+	var restoredRanges []tokenize.Restored
+	if s.restoring && s.scope != nil {
+		if restored, marks, err := s.scope.RestoreMarking(segment); err == nil {
+			out, restoredRanges = restored, marks
+		}
+		// A failure leaves the tokens in place. Useless to the caller, but
+		// they are not somebody else's values, which is the error that
+		// matters.
+	}
+
+	spans := s.engine.ruleset.Scan(out)
 	for _, sp := range spans {
 		s.findings[sp.Class]++
 	}
 
-	out := segment
-	if s.scope != nil && len(spans) > 0 {
+	// On the way back, two kinds of value sit in the same sentence and need
+	// opposite handling. What this scope issued has just been restored and
+	// belongs to the caller, so substituting it again would hand somebody
+	// their own data disguised. Anything else was produced by the far end,
+	// was never governed on the way out, and is substituted like any other
+	// value — a model that returns a card number nobody sent it is exactly
+	// the case this must not wave through.
+	//
+	// Both are still counted above, so the receipt describes the whole
+	// reply rather than the half that was acted on.
+	if s.restoring && s.scope != nil && len(spans) > 0 {
+		var fresh []detect.Span
+		for _, sp := range spans {
+			if !withinRestored(sp, restoredRanges) {
+				fresh = append(fresh, sp)
+			}
+		}
+		if len(fresh) > 0 {
+			var toTokenize []detect.Span
+			for _, sp := range fresh {
+				if s.engine.policy.Decide(sp.Class, sp.Confidence) == receipt.DecisionTokenize {
+					toTokenize = append(toTokenize, sp)
+				}
+			}
+			if len(toTokenize) > 0 {
+				if applied, err := s.scope.Apply(out, toTokenize); err == nil {
+					out = applied
+				}
+			}
+		}
+	}
+
+	if !s.restoring && s.scope != nil && len(spans) > 0 {
 		var toTokenize []detect.Span
 		for _, sp := range spans {
 			if s.engine.policy.Decide(sp.Class, sp.Confidence) == receipt.DecisionTokenize {

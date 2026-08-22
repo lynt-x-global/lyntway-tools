@@ -239,6 +239,15 @@ type governor struct {
 
 	sink *os.File
 
+	// reporter sends classes and counts to the account, never content.
+	// nil when this machine is not signed in, which is an ordinary state.
+	reporter *reporter
+
+	// server is what the person calls the thing being wrapped, used as the
+	// destination on the summary. An auditor asking what handled their data
+	// wants "github", not "lyntway-mcp".
+	server string
+
 	mu       sync.Mutex
 	findings map[detect.Class]int
 	messages int
@@ -280,11 +289,16 @@ func newGovernor(receiptsPath, chain string) (*governor, error) {
 		scope:    scope,
 		chain:    "mcp/" + sanitise(chain),
 		sink:     sink,
+		server:   sanitise(chain),
+		reporter: newReporter(),
 		findings: make(map[detect.Class]int),
 	}, nil
 }
 
 func (g *governor) close() {
+	// Drained before the file is closed, so a summary queued by the last
+	// message still has somewhere to be written if the network refuses it.
+	g.reporter.close()
 	if g.sink != nil {
 		g.sink.Close()
 	}
@@ -380,6 +394,25 @@ func (g *governor) record(res *govern.Result) {
 		g.findings[detect.Class(f.Class)] += f.Count
 	}
 	g.mu.Unlock()
+
+	// Classes and counts leave; the content does not, and neither does a
+	// digest of it. A tool result carrying a customer record is the
+	// disclosure this exists to prevent — but "this machine handled three
+	// email addresses" is a number, and it is the number somebody needs to
+	// see to know the thing is working.
+	if g.reporter != nil {
+		classes := make(map[string]int, len(res.Findings))
+		for _, f := range res.Findings {
+			classes[f.Class] += f.Count
+		}
+		g.reporter.report(attestation{
+			Server:   g.server,
+			Chain:    g.chain,
+			Decision: string(res.Decision),
+			Findings: classes,
+			Bytes:    res.Receipt.Content.Bytes,
+		})
+	}
 
 	if g.sink == nil {
 		return

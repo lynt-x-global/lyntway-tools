@@ -52,6 +52,38 @@ validation keeps working instead of rejecting governed content.
 Tokens are stable within a `chain_id`, so an agent can correlate the same
 value across separate responses.
 
+## Record what LiteLLM sends, including Bedrock and Vertex
+
+AWS Bedrock and Google Vertex sign every request in a way that breaks the
+moment a proxy sits in the path, so neither can be routed through a gateway.
+A callback running inside LiteLLM is the only place those calls are visible.
+
+In `config.yaml`:
+
+```yaml
+litellm_settings:
+  callbacks: [lyntway.litellm.handler]
+
+environment_variables:
+  LYNTWAY_URL: https://your-lyntway
+  LYNTWAY_KEY: sk-...
+```
+
+Every call is inspected and signed. Attribution comes from the virtual key,
+so a finding lands on the person who caused it rather than on the proxy, and
+the destination recorded is the model — `bedrock/anthropic.claude-3-sonnet`,
+not `litellm`.
+
+It never blocks and never raises. The hook runs after the response returns,
+so there is nothing left to change, and a recorder that can fail somebody's
+traffic is a recorder they remove. If Lyntway is unreachable the call still
+succeeds and the receipt is simply missing, which the coverage report shows.
+
+The receipt records that your gateway made the call rather than that we
+watched it leave — `asserted` rather than `observed`. Weaker evidence than
+routing through the gateway, and stronger than the alternative for Bedrock
+and Vertex, which is no record at all.
+
 ## Dependencies
 
 One: `cryptography`, for Ed25519. Python has no Ed25519 in its standard
@@ -65,6 +97,14 @@ Receipts are canonicalised with RFC 8785 JCS. This implementation is tested
 byte-for-byte against the Go reference on every commit, alongside the
 TypeScript SDK — a single byte of divergence would make every signature fail
 in a way that looks exactly like tampering.
+
+## Links
+
+- [lyntway.com](https://lyntway.com) — the service, and a receipt verifier
+  that needs no account
+- [Documentation](https://lyntway.com/docs) — including how to check a
+  receipt from scratch, with no tool of ours
+- [Source](https://github.com/lynt-x-global/lyntway-tools/tree/main/python)
 
 ## License
 

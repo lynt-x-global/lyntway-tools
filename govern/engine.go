@@ -251,6 +251,14 @@ func (e *Engine) Govern(req Request) (*Result, error) {
 	// Health is sampled before detection so the receipt describes the
 	// conditions the decision was actually made under.
 	components, health := e.sampleHealth()
+
+	// A payload can be perfectly healthy to scan and still contain
+	// something no scanner can read — a base64 image on a vision request,
+	// a document uploaded the same way. Finding nothing in it is honest;
+	// letting the receipt read as though it had been examined is not.
+	if carriesUnreadableContent(req.Content) {
+		components, health = withUnreadableContent(components, health)
+	}
 	mode := modeFor(health)
 
 	ruleset := e.ruleset
@@ -321,8 +329,18 @@ func (e *Engine) Govern(req Request) (*Result, error) {
 		ID:       req.ReceiptID,
 		IssuedAt: receipt.Now(),
 		Issuer: receipt.Issuer{
-			KeyID:          signer.KeyID(),
-			Name:           "Lyntway",
+			KeyID: signer.KeyID(),
+			// Named with an address, because the person most likely to read
+			// this has never heard of us. A receipt reaches an auditor, an
+			// underwriter or opposing counsel long after it leaves the
+			// customer, and a bare word gives them nowhere to go to find out
+			// what it is or how to check it themselves.
+			//
+			// Advisory only, and the field's own documentation says so: a
+			// verifier selects a key by KeyID and checks the signature.
+			// Anyone can write any name here, which is exactly why nothing
+			// depends on it.
+			Name:           issuerName,
 			KeyAttestation: req.KeyAttestation,
 		},
 		Action:   req.Action,
@@ -412,12 +430,26 @@ func alter(req Request, spans []detect.Span, p *Policy) ([]byte, error) {
 	out := make([]byte, 0, len(content))
 	prev := 0
 
+	// Computed once, and nil for anything that is not JSON.
+	keys := jsonObjectKeys(content)
+
 	for _, s := range spans {
 		decision := p.Decide(s.Class, s.Confidence)
 		if decision != receipt.DecisionRedact && decision != receipt.DecisionTokenize {
 			// Logged, allowed, or otherwise left alone. A finding the
 			// policy merely records must not be rewritten because another
 			// class in the same payload triggered a transform.
+			continue
+		}
+		if withinKey(s.Start, s.End, keys) {
+			// The name of a field, not the data under it. Detection reads
+			// raw bytes and cannot tell the two apart, so "jsonrpc" was
+			// reported as a person and the key was rewritten — leaving
+			// valid JSON that was no longer a JSON-RPC message, and an MCP
+			// server that answered "Parse error" to every request.
+			//
+			// Still counted as a finding. Nobody has ever asked for the
+			// name of a field to be protected.
 			continue
 		}
 		if s.Start < prev {
@@ -650,3 +682,11 @@ func withAnalyzerHealth(components []Component, analyzers []Analyzer) []Componen
 	}
 	return out
 }
+
+// issuerName labels receipts for whoever reads one.
+//
+// A constant rather than configuration. The name is not a security
+// property — a verifier trusts the key, never the label — so making it
+// settable would only invite a deployment to write somebody else's name on
+// its own statements.
+const issuerName = "Lyntway (lyntway.com)"

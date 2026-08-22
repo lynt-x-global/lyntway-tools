@@ -66,6 +66,16 @@ func exists(path string) bool {
 	return err == nil && !info.IsDir()
 }
 
+// claudeCodeConfig is where Claude Code keeps its MCP servers.
+// Same mcpServers structure as Claude Desktop, single location on all platforms.
+func claudeCodeConfig() string {
+	h := home()
+	if h == "" {
+		return ""
+	}
+	return filepath.Join(h, ".claude", "settings.json")
+}
+
 // claudeDesktopConfig is where Claude Desktop keeps its MCP servers.
 func claudeDesktopConfig() string {
 	h := home()
@@ -139,6 +149,15 @@ func scan() []target {
 		Found: exists(cd),
 	})
 
+	// Claude Code, same MCP structure in a different file.
+	cc := claudeCodeConfig()
+	found = append(found, target{
+		Name:  "Claude Code",
+		Path:  cc,
+		Kind:  kindMCP,
+		Found: exists(cc),
+	})
+
 	// Cursor keeps its settings in the VS Code layout.
 	cursor := ""
 	if h != "" {
@@ -156,8 +175,9 @@ func scan() []target {
 		Path:  cursor,
 		Kind:  kindManual,
 		Found: exists(cursor),
-		Why: "Cursor's model settings are not in a file this can safely edit. " +
-			"Two lines to paste, printed below.",
+		Why: "only the models you add with your own key can be routed. Whatever " +
+			"comes with Cursor's own subscription goes to their servers and " +
+			"nothing here changes that. Two lines to paste, printed below.",
 	})
 
 	// Continue, in VS Code or JetBrains.

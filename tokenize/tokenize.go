@@ -493,6 +493,56 @@ func (s *Scope) Restore(content []byte) ([]byte, error) {
 	return append(out, content[prev:]...), nil
 }
 
+// Restored marks a range in the output of RestoreMarking that came from
+// resolving a token rather than from the input.
+type Restored struct{ Start, End int }
+
+// RestoreMarking restores like Restore and says where each value landed.
+//
+// The ranges exist because of what a token is. Substitution is
+// format-preserving — a tokenised card is a valid card number, a tokenised
+// address is a valid address — so after restoring, a detector cannot tell a
+// value it has just handed back from one it is seeing for the first time.
+// Without the ranges the only options are to substitute everything, which
+// hands somebody their own data disguised, or to substitute nothing, which
+// lets a value the far end invented pass straight through. Both have
+// shipped from this file's callers.
+//
+// Restore keeps its signature: it is published, and most callers restore a
+// whole document with nothing to decide afterwards.
+func (s *Scope) RestoreMarking(content []byte) ([]byte, []Restored, error) {
+	matches := tokenPattern.FindAllIndex(content, -1)
+	if len(matches) == 0 {
+		out := make([]byte, len(content))
+		copy(out, content)
+		return out, nil, nil
+	}
+
+	out := make([]byte, 0, len(content))
+	var marks []Restored
+	prev := 0
+	for _, m := range matches {
+		token := string(content[m[0]:m[1]])
+		value, ok, err := s.store.Get(token)
+		if err != nil {
+			return nil, nil, fmt.Errorf("tokenize: resolving token: %w", err)
+		}
+		out = append(out, content[prev:m[0]]...)
+		if ok {
+			marks = append(marks, Restored{Start: len(out), End: len(out) + len(value)})
+			out = append(out, value...)
+		} else {
+			// Not a token this scope issued, so it is ordinary content that
+			// happens to look like one. Left alone, and deliberately not
+			// marked: it was not restored, so it is still a candidate for
+			// substitution like any other value.
+			out = append(out, token...)
+		}
+		prev = m[1]
+	}
+	return append(out, content[prev:]...), marks, nil
+}
+
 // CountTokens reports how many token-shaped strings appear in content.
 //
 // Shape only: it does not consult the store, so it counts strings that look

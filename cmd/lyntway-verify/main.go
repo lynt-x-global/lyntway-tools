@@ -16,6 +16,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -29,6 +30,7 @@ import (
 
 	"github.com/lynt-x-global/lyntway-tools/anchor"
 	"github.com/lynt-x-global/lyntway-tools/cose"
+	"github.com/lynt-x-global/lyntway-tools/detect"
 	"github.com/lynt-x-global/lyntway-tools/receipt"
 )
 
@@ -290,6 +292,41 @@ func looksLikeCOSE(data []byte) bool {
 	return false
 }
 
+// unwrapEnvelope returns the receipt inside a document that carries one.
+//
+// Detected rather than declared, for the same reason looksLikeCOSE is:
+// somebody handed a file should not have to know its shape before they can
+// check it. /v1/demo answers with the governed content, the decision, the
+// findings and the receipt together, because a person looking at the demo
+// wants all four. Piping that straight into this tool is the obvious next
+// move, and it used to fail with a type error about Receipt.content — which
+// reads as "your receipt is malformed" rather than "look one level down".
+// Our own analyst brief shipped that exact broken sequence.
+//
+// The bytes returned are the inner document verbatim. The signature covers
+// those and not the envelope, and re-encoding here would drop any field
+// this build has never heard of and report a good receipt as tampered.
+func unwrapEnvelope(data []byte) ([]byte, bool) {
+	var envelope struct {
+		Receipt json.RawMessage `json:"receipt"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return data, false
+	}
+	inner := bytes.TrimSpace(envelope.Receipt)
+	if len(inner) == 0 || inner[0] != '{' {
+		return data, false
+	}
+	// A receipt nested under "receipt" inside something that is itself a
+	// receipt would be a different document; only unwrap when the outer one
+	// is not already valid on its own terms.
+	var outer receipt.Receipt
+	if err := json.Unmarshal(data, &outer); err == nil && outer.Version != "" {
+		return data, false
+	}
+	return inner, true
+}
+
 func verifyOne(data []byte, keys receipt.KeyResolver, opts receipt.VerifyOptions, jsonOut bool) int {
 	if looksLikeCOSE(data) {
 		r, err := cose.DecodeReceipt(data, keys)
@@ -307,6 +344,17 @@ func verifyOne(data []byte, keys receipt.KeyResolver, opts receipt.VerifyOptions
 		}
 		fmt.Println("  (COSE_Sign1 envelope verified; reporting the receipt inside)")
 		data = encoded
+	}
+
+	// Say so when the receipt came out of something larger. The signature
+	// covers the receipt and nothing around it, so a person who edits the
+	// surrounding fields and sees VERIFIED has been told the truth by a tool
+	// that failed to make it obvious — and the demo in our own analyst brief
+	// invites exactly that edit.
+	data, unwrapped := unwrapEnvelope(data)
+	if unwrapped && !jsonOut {
+		fmt.Println("  (verifying the receipt inside this document; the fields around it" +
+			" are not covered by its signature)")
 	}
 
 	var r receipt.Receipt
@@ -459,7 +507,15 @@ func report(jsonOut bool, res *receipt.Result, r *receipt.Receipt, policyErr err
 	if len(r.Governance.Findings) > 0 {
 		var parts []string
 		for _, f := range r.Governance.Findings {
-			parts = append(parts, fmt.Sprintf("%s ×%d → %s", f.Class, f.Count, f.Decision))
+			// Named as well as identified. Whoever is reading this is
+			// often an auditor rather than an engineer, and they are the
+			// least likely person in the chain to know that
+			// "injection.instruction_override" describes somebody trying
+			// to talk the assistant out of its instructions. The
+			// identifier stays so the line can still be matched against
+			// the receipt it came from.
+			parts = append(parts, fmt.Sprintf("%s (%s) ×%d → %s",
+				detect.Label(detect.Class(f.Class)), f.Class, f.Count, f.Decision))
 		}
 		fmt.Printf("  findings       %s\n", strings.Join(parts, ", "))
 	}

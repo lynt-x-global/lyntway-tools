@@ -5,17 +5,44 @@ build-backend = "hatchling.build"
 [project]
 name = "lyntway"
 version = "0.1.0"
-description = "Govern content and verify signed action receipts offline."
+description = "Verify signed AI action receipts offline, and govern content before it leaves."
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"
-keywords = ["governance", "ai-agents", "receipts", "attestation", "pii", "mcp", "audit"]
+authors = [{ name = "Lynt-X Global", email = "hello@lyntway.com" }]
+keywords = [
+  "ai-governance",
+  "audit",
+  "attestation",
+  "receipts",
+  "pii",
+  "prompt-injection",
+  "compliance",
+  "litellm",
+  "mcp",
+  "cose",
+]
+
+# Alpha at 0.1.0, and deliberately so. The package is tested and running,
+# but this is its first public release and nobody outside has depended on
+# it yet. A security package claiming "Production/Stable" on the day it
+# appears is making the sort of claim this project exists to argue against.
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
+  "Intended Audience :: Information Technology",
+  "Intended Audience :: Legal Industry",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Topic :: Security",
   "Topic :: Security :: Cryptography",
-  "Programming Language :: Python :: 3",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Topic :: System :: Monitoring",
+  "Typing :: Typed",
 ]
 
 # The only runtime dependency. Python has no Ed25519 in its standard
@@ -23,9 +50,22 @@ classifiers = [
 # job is deciding whether evidence is genuine. HTTP uses urllib from stdlib.
 dependencies = ["cryptography>=42.0"]
 
+# Every one of these has to resolve for somebody who has never heard of us.
+# The first version of this file pointed at a repository that is internal,
+# so all of them answered 404 to everybody except the person who wrote them
+# — on a package whose entire pitch is that you can check it yourself.
 [project.urls]
-Homepage = "https://github.com/lynt-x-global/lyntway-core"
-Source = "https://github.com/lynt-x-global/lyntway-core/tree/main/packages/lyntway-py"
+Homepage = "https://lyntway.com"
+Documentation = "https://lyntway.com/docs"
+Source = "https://github.com/lynt-x-global/lyntway-tools/tree/main/python"
+Issues = "https://github.com/lynt-x-global/lyntway-tools/issues"
+"Verify a receipt" = "https://lyntway.com/verify"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/lyntway"]
+
+[tool.hatch.build.targets.sdist]
+# The tests travel with the source distribution. A package that asks to be
+# trusted about signatures should let a packager run its checks rather than
+# take the badge on the README for it.
+include = ["src/", "tests/", "README.md", "LICENSE", "pyproject.toml"]

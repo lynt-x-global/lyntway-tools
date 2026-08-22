@@ -302,3 +302,19 @@ func TestScopePrefixDoesNotLeakAcrossSimilarNames(t *testing.T) {
 		t.Error("scope \"acme/\" did not match its own chain")
 	}
 }
+
+// The domain separator is part of the wire format, not an implementation
+// detail. Somebody verifying a receipt with their own code — which is the
+// entire promise of these receipts — has to prepend exactly this, and will
+// otherwise conclude our signatures do not verify.
+//
+// It went undocumented until somebody tried to check a receipt from
+// outside and could not. This test exists so that changing it silently
+// breaks the build rather than every independent verifier.
+func TestTheDomainSeparatorIsPartOfThePublishedFormat(t *testing.T) {
+	const published = "lyntway-key-attestation-v1\x00"
+	if keyAttestationDomain != published {
+		t.Errorf("the domain separator is %q but the documentation says %q; "+
+			"every independent verifier now fails", keyAttestationDomain, published)
+	}
+}

@@ -158,6 +158,127 @@ func TestAnAlreadyWrappedServerIsLeftAlone(t *testing.T) {
 	}
 }
 
+// The "lyntway" entry is our own remote connection. Wrapping it through
+// the shim would govern traffic to ourselves — redundant and circular.
+func TestTheLyntwayEntryIsPreservedNotWrapped(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	original := `{
+  "mcpServers": {
+    "lyntway": {"command": "npx", "args": ["-y", "mcp-remote", "https://mcp.lyntway.com/u/abc"]},
+    "suno": {"command": "node", "args": ["suno.js"]}
+  }
+}`
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, _, err := wrapMCP(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changed) != 1 || changed[0] != "suno" {
+		t.Fatalf("changed = %v, want [suno]", changed)
+	}
+
+	servers, err := mcpServers(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The lyntway entry must be exactly as it was.
+	var lw struct {
+		Command string   `json:"command"`
+		Args    []string `json:"args"`
+	}
+	if err := json.Unmarshal(servers["lyntway"], &lw); err != nil {
+		t.Fatal(err)
+	}
+	if lw.Command != "npx" {
+		t.Errorf("the lyntway entry was rewritten: command = %q", lw.Command)
+	}
+
+	// Suno must be wrapped.
+	var sn struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal(servers["suno"], &sn); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sn.Command, "lyntway-mcp") {
+		t.Errorf("suno was not wrapped: command = %q", sn.Command)
+	}
+}
+
+// Claude Code keeps its MCP servers in ~/.claude/settings.json with the same
+// mcpServers structure. Wrapping must work the same way it does for Desktop.
+func TestWrappingClaudeCodeSettingsWorks(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	original := `{
+  "mcpServers": {
+    "filesystem": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]},
+    "pii_test": {"command": "node", "args": ["pii_server.js"]}
+  },
+  "permissions": {"allow": ["Bash(*)"]}
+}`
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, saved, err := wrapMCP(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changed) != 2 {
+		t.Fatalf("changed = %v, want [filesystem pii_test]", changed)
+	}
+	if saved == "" {
+		t.Fatal("no backup was left")
+	}
+
+	body, _ := os.ReadFile(path)
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatalf("the config is no longer valid JSON: %v", err)
+	}
+	if _, kept := doc["permissions"]; !kept {
+		t.Error("unrelated settings were dropped")
+	}
+
+	servers, err := mcpServers(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"filesystem", "pii_test"} {
+		var s struct {
+			Command string `json:"command"`
+		}
+		if err := json.Unmarshal(servers[name], &s); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(s.Command, "lyntway-mcp") {
+			t.Errorf("%s: command = %q, want lyntway-mcp", name, s.Command)
+		}
+	}
+}
+
+// Claude Code must appear in scan() so `lyntway init` lists it.
+func TestClaudeCodeAppearsInScan(t *testing.T) {
+	var found bool
+	for _, tgt := range scan() {
+		if tgt.Name == "Claude Code" {
+			found = true
+			if tgt.Kind != kindMCP {
+				t.Errorf("Claude Code kind = %q, want %q", tgt.Kind, kindMCP)
+			}
+		}
+	}
+	if !found {
+		t.Error("Claude Code is not listed in scan()")
+	}
+}
+
 // A config shaped in a way this does not understand is one to leave alone
 // rather than guess at.
 func TestAnUnfamiliarServerShapeIsNotGuessedAt(t *testing.T) {
@@ -230,5 +351,35 @@ func TestEveryKindOfTargetHasSomethingToSay(t *testing.T) {
 	}
 	if !strings.Contains(line, "by hand") {
 		t.Errorf("the manual step is not mentioned: %q", line)
+	}
+}
+
+// Cursor and editors like it are only partly reachable, and the part that
+// is not reachable is the part most people use. A base URL applies to
+// models somebody added with their own key; whatever comes with the
+// editor's own subscription goes to that vendor's servers, and no setting
+// anywhere changes it.
+//
+// Saying "found, here are two lines to paste" without that caveat sells
+// coverage the product cannot deliver, and the person discovers it from an
+// empty Traffic page rather than from us.
+func TestCursorSaysWhatItCannotCover(t *testing.T) {
+	var found bool
+	for _, tgt := range scan() {
+		if tgt.Name != "Cursor" {
+			continue
+		}
+		found = true
+		if tgt.Kind != kindManual {
+			t.Errorf("Cursor is %q; it cannot be configured automatically", tgt.Kind)
+		}
+		for _, must := range []string{"your own key", "subscription"} {
+			if !strings.Contains(tgt.Why, must) {
+				t.Errorf("the Cursor note does not mention %q: %q", must, tgt.Why)
+			}
+		}
+	}
+	if !found {
+		t.Error("Cursor is not listed at all, so its limits are never stated")
 	}
 }

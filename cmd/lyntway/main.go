@@ -224,6 +224,19 @@ func initialise(args []string) error {
 	}
 
 	fmt.Println()
+
+	// Install to ~/.lyntway/bin/ so `lyntway undo` works from any terminal
+	// without remembering where the download was extracted.
+	binDir, installErr := installSelf()
+	if installErr != nil {
+		fmt.Printf("  ~ could not install to ~/.lyntway/bin: %v\n", installErr)
+	} else {
+		fmt.Printf("  ✓ Installed to %s\n", binDir)
+		if err := addToUserPath(binDir); err != nil {
+			fmt.Printf("    (could not add to PATH automatically — add %s yourself)\n", binDir)
+		}
+	}
+
 	for _, t := range actionable {
 		switch t.Kind {
 		case kindEnv:
@@ -291,6 +304,9 @@ func printManual(c config, targets []target) {
 			fmt.Printf("    API key:\n")
 			fmt.Printf("      %s~YOUR_OPENAI_KEY\n", c.Key)
 			fmt.Printf("    (the two keys joined by a tilde — Cursor has only one field)\n")
+			fmt.Printf("\n    This covers models you add with your own key. Anything\n")
+			fmt.Printf("    included in Cursor's subscription goes to their servers\n")
+			fmt.Printf("    and cannot be routed here by any setting.\n")
 		}
 	}
 }
@@ -331,14 +347,18 @@ func statusLineFor(t target) string {
 		if err != nil {
 			return fmt.Sprintf("  ? %-46s unreadable", t.Name)
 		}
-		var wrapped int
-		for _, entry := range servers {
+		var wrapped, total int
+		for name, entry := range servers {
+			if name == "lyntway" {
+				continue // our own remote connection, not a tool to wrap
+			}
+			total++
 			if alreadyWrapped(entry) {
 				wrapped++
 			}
 		}
 		return fmt.Sprintf("  %s %-46s %d of %d tools routed",
-			tick(wrapped == len(servers) && wrapped > 0), t.Name, wrapped, len(servers))
+			tick(wrapped == total && wrapped > 0), t.Name, wrapped, total)
 
 	case t.Kind == kindJSON && t.Found:
 		// Installed, and waiting on a step only a person can take. Without

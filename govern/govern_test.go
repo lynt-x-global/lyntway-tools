@@ -539,3 +539,16 @@ func TestEngineCarriesEvidenceIntoTheReceipt(t *testing.T) {
 		})
 	}
 }
+
+// The receipt reaches people who have never heard of us — an auditor, an
+// underwriter, opposing counsel — long after it leaves the customer. A bare
+// word gives them nowhere to go; an address turns the moment somebody
+// checks a receipt into the moment they can find out what issued it.
+func TestAReceiptSaysWhereToFindWhoIssuedIt(t *testing.T) {
+	if !strings.Contains(issuerName, "lyntway.com") {
+		t.Errorf("issuer name %q gives a reader no way to find us", issuerName)
+	}
+	if !strings.Contains(issuerName, "Lyntway") {
+		t.Errorf("issuer name %q does not name us", issuerName)
+	}
+}

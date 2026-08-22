@@ -35,7 +35,13 @@ func streamEngine(t *testing.T) (*Engine, *tokenize.Scope) {
 // streamAll feeds content through in chunks of the given size.
 func streamAll(t *testing.T, engine *Engine, scope *tokenize.Scope, content string, chunk int) (string, *StreamGovernor, error) {
 	t.Helper()
-	g := engine.NewStreamGovernor(scope)
+	return streamAllWith(t, engine.NewStreamGovernor(scope), content, chunk)
+}
+
+// streamAllWith is the same for a governor the caller has already chosen,
+// so the outbound and returning directions can both be exercised.
+func streamAllWith(t *testing.T, g *StreamGovernor, content string, chunk int) (string, *StreamGovernor, error) {
+	t.Helper()
 	var out bytes.Buffer
 
 	for i := 0; i < len(content); i += chunk {
@@ -229,5 +235,120 @@ func TestOrdinaryContentFlowsThrough(t *testing.T) {
 	}
 	if g.Truncated() {
 		t.Error("an ordinary stream reported truncation")
+	}
+}
+
+// A streamed reply must come back in the caller's own values, not in the
+// tokens the provider was handed.
+//
+// The buffered path restored them and the streaming path did not, because
+// the streaming branch returns before the code that does it. So the same
+// account, the same vault setting and the same prompt gave two different
+// answers depending on stream=True — and the streaming answer was the one
+// every chat interface gets.
+//
+// Found by running a real application against the deployed service. No unit
+// test could see it: both halves were correct on their own.
+func TestAStreamedReplyComesBackInTheCallersOwnValues(t *testing.T) {
+	engine, scope := streamEngine(t)
+
+	// What the application sent, and what the provider was allowed to see.
+	original := "Charge card 4111 1111 1111 1111 and email priya@acme.co.uk."
+	spans := engine.ruleset.Scan([]byte(original))
+	if len(spans) == 0 {
+		t.Fatal("the sample tripped no rule, so this test proves nothing")
+	}
+	tokenized, err := scope.Apply([]byte(original), spans)
+	if err != nil {
+		t.Fatalf("tokenising the sample: %v", err)
+	}
+	if bytes.Contains(tokenized, []byte("4111 1111 1111 1111")) {
+		t.Fatal("the card survived tokenisation; the rest of this test is meaningless")
+	}
+
+	// The provider replies in terms of what it was given.
+	reply := "Confirmed: " + string(tokenized)
+
+	// Chunked small on purpose, so tokens straddle chunk boundaries the way
+	// they do in a real event stream.
+	for _, chunk := range []int{1, 7, 64} {
+		got, _, err := streamAllWith(t, engine.NewRestoringStreamGovernor(scope), reply, chunk)
+		if err != nil {
+			t.Fatalf("chunk %d: streaming failed: %v", chunk, err)
+		}
+		if !strings.Contains(got, "4111 1111 1111 1111") {
+			t.Errorf("chunk %d: the caller got tokens back instead of their own card number:\n%s",
+				chunk, got)
+		}
+		if !strings.Contains(got, "priya@acme.co.uk") {
+			t.Errorf("chunk %d: the caller got a token back instead of their own address:\n%s",
+				chunk, got)
+		}
+		if strings.Contains(got, "tokenized.invalid") {
+			t.Errorf("chunk %d: a token was left in what the caller received:\n%s", chunk, got)
+		}
+	}
+}
+
+// The hard case, and the one that made the first two fixes wrong.
+//
+// A single reply carries both kinds of value: tokens this scope issued,
+// which belong to the caller and must come back as themselves, and a value
+// the model produced that was never sent to it, which must be substituted
+// like any other. They are indistinguishable by inspection — substitution
+// is format-preserving, so a tokenised card is a valid card number.
+//
+// Restoring everything hands the caller their own data and lets the model's
+// invention through. Substituting everything protects the invention and
+// hands the caller their own data disguised. Only telling them apart works.
+func TestAReturningStreamSeparatesTheCallersDataFromTheModelsInvention(t *testing.T) {
+	engine, scope := streamEngine(t)
+
+	sent := "Charge card 4111 1111 1111 1111."
+	spans := engine.ruleset.Scan([]byte(sent))
+	tokenized, err := scope.Apply([]byte(sent), spans)
+	if err != nil {
+		t.Fatalf("tokenising: %v", err)
+	}
+
+	// The model echoes the token it was given and volunteers a card number
+	// nobody sent it.
+	const invented = "5500 0000 0000 0004"
+	reply := string(tokenized) + " I also found card " + invented + " on file."
+
+	for _, chunk := range []int{1, 9, 128} {
+		got, g, err := streamAllWith(t, engine.NewRestoringStreamGovernor(scope), reply, chunk)
+		if err != nil {
+			t.Fatalf("chunk %d: %v", chunk, err)
+		}
+		// The caller's own card, back as itself.
+		if !strings.Contains(got, "4111 1111 1111 1111") {
+			t.Errorf("chunk %d: the caller did not get their own card back:\n%s", chunk, got)
+		}
+		// The model's invention, substituted.
+		if strings.Contains(got, invented) {
+			t.Errorf("chunk %d: a card the model produced reached the caller unsubstituted:\n%s",
+				chunk, got)
+		}
+		// Both counted, so the receipt describes the whole reply.
+		if n := g.Findings(); len(n) == 0 {
+			t.Errorf("chunk %d: nothing was recorded for a reply carrying two card numbers", chunk)
+		}
+	}
+}
+
+// A deployment that keeps no mappings must be unaffected: there is nothing
+// to restore, and the stream must pass through rather than fail.
+func TestAOneWayDeploymentStreamsUnchanged(t *testing.T) {
+	engine, _ := streamEngine(t)
+
+	// No scope at all is the strongest form of "retains nothing".
+	got, _, err := streamAllWith(t, engine.NewRestoringStreamGovernor(nil),
+		"Confirmed: nothing sensitive here.", 8)
+	if err != nil {
+		t.Fatalf("streaming without a scope failed: %v", err)
+	}
+	if got != "Confirmed: nothing sensitive here." {
+		t.Errorf("the stream was altered with no scope in play: %q", got)
 	}
 }

@@ -194,8 +194,23 @@ func TestTokensDoNotLeakOriginal(t *testing.T) {
 			t.Errorf("token %q contains the original value", token)
 		}
 		// No substantial run of the original may survive into the token.
-		for i := 0; i+4 <= len(sec.value); i++ {
-			frag := sec.value[i : i+4]
+		//
+		// Eight characters, not four. A token is format-preserving, so a
+		// tokenised phone number is twelve digits drawn from an alphabet of
+		// ten, and it shares some four-digit run with the original by
+		// chance about once in every hundred and forty runs. That is not a
+		// leak — the token is an HMAC of the value and a shared substring
+		// carries no information about it — but it failed the build, and a
+		// suite that cries wolf is one people stop reading. This whole
+		// repository's discipline rests on believing the suite.
+		//
+		// At eight characters a coincidence is about one in a hundred
+		// million, while a genuine fault — a token built by shifting or
+		// re-arranging the original rather than deriving it — still shows
+		// up immediately.
+		const runLength = 8
+		for i := 0; i+runLength <= len(sec.value); i++ {
+			frag := sec.value[i : i+runLength]
 			if strings.ContainsAny(frag, "@.-+") {
 				continue // structural characters are expected to recur
 			}

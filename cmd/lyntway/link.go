@@ -1,12 +1,12 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"runtime"
@@ -57,8 +57,14 @@ func linkLogin(origin, label string, open func(string), sleep func(time.Duration
 		sleep = time.Sleep
 	}
 
+	// No key yet, so nothing signs these; they still go through the one
+	// request builder so that this file cannot drift from the others.
 	body, _ := json.Marshal(map[string]string{"label": label})
-	resp, err := linkClient.Post(origin+"/v1/link", "application/json", bytes.NewReader(body))
+	req, err := newAPIRequest(config{Origin: origin}, nil, http.MethodPost, "/v1/link", body, "application/json")
+	if err != nil {
+		return linkResult{}, err
+	}
+	resp, err := linkClient.Do(req)
 	if err != nil {
 		return linkResult{}, fmt.Errorf("reaching %s: %w", origin, err)
 	}
@@ -104,7 +110,11 @@ func linkLogin(origin, label string, open func(string), sleep func(time.Duration
 	for time.Now().Before(deadline) {
 		sleep(time.Duration(started.PollAfter) * time.Second)
 
-		resp, err := linkClient.Get(origin + "/v1/link/" + started.Code)
+		req, err := newAPIRequest(config{Origin: origin}, nil, http.MethodGet, "/v1/link/"+url.PathEscape(started.Code), nil, "")
+		if err != nil {
+			return linkResult{}, err
+		}
+		resp, err := linkClient.Do(req)
 		if err != nil {
 			// One failed poll is a dropped connection, not a verdict.
 			continue

@@ -1015,3 +1015,75 @@ func TestFlagsKeepTheirValuesInEitherOrder(t *testing.T) {
 		}
 	}
 }
+
+// A provider key bound to another application's key id is not one this
+// machine's key can use, so it is not "already held". Found on the live
+// service: the only openai key on the account belonged to a different
+// application, and the CLI warned about replacing it.
+func TestMigrateCountsOnlyKeysThisKeyWouldUseAsAlreadyHeld(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	env := "OPENAI_API_KEY=sk-proj-openai0000ABCD\n"
+
+	// Bound to somebody else: no warning, no question, stored as new.
+	dir := t.TempDir()
+	fake := &fakeServer{existing: []map[string]string{{"upstream": "openai", "last4": "0000", "key_id": "key_other"}}}
+	srv := httptest.NewServer(fake.handler())
+	defer srv.Close()
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(env), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := capture(t, "y\n", func() {
+		if err := runMigrate(dir, config{Origin: srv.URL, Key: "lyk_mine", KeyID: "key_mine"}, migrateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if strings.Contains(out, "already holds") || strings.Contains(out, "Replace the stored") {
+		t.Errorf("a key bound to another application was treated as this machine's:\n%s", out)
+	}
+	if len(fake.stored) != 1 || fake.stored[0]["key_id"] != "" {
+		t.Errorf("stored %v, want one account-wide key", fake.stored)
+	}
+
+	// Bound to this key, beside an account-wide one: the bound one is
+	// what the gateway resolves, so it is the one named, and the
+	// replacement lands on it rather than beside it.
+	dir = t.TempDir()
+	fake = &fakeServer{existing: []map[string]string{
+		{"upstream": "openai", "last4": "WIDE", "key_id": ""},
+		{"upstream": "openai", "last4": "MINE", "key_id": "key_mine"},
+		{"upstream": "openai", "last4": "THEM", "key_id": "key_other"},
+	}}
+	srv2 := httptest.NewServer(fake.handler())
+	defer srv2.Close()
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(env), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out = capture(t, "y\ny\n", func() {
+		if err := runMigrate(dir, config{Origin: srv2.URL, Key: "lyk_mine", KeyID: "key_mine"}, migrateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "already holds a key for openai ending MINE") || !strings.Contains(out, "Replace the stored openai key ending MINE") {
+		t.Errorf("the key bound to this machine was not the one named:\n%s", out)
+	}
+	if len(fake.stored) != 1 || fake.stored[0]["key_id"] != "key_mine" {
+		t.Errorf("stored %v, want the replacement bound to key_mine", fake.stored)
+	}
+
+	// Account-wide alone, for a machine whose key id is unknown: held.
+	dir = t.TempDir()
+	fake = &fakeServer{existing: []map[string]string{{"upstream": "openai", "last4": "WIDE"}}}
+	srv3 := httptest.NewServer(fake.handler())
+	defer srv3.Close()
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(env), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out = capture(t, "y\nn\n", func() {
+		if err := runMigrate(dir, config{Origin: srv3.URL, Key: "lyk_mine"}, migrateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "already holds a key for openai ending WIDE") || len(fake.stored) != 0 {
+		t.Errorf("an account-wide key was not treated as held:\n%s\nstored %v", out, fake.stored)
+	}
+}

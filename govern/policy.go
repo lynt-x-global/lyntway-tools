@@ -10,6 +10,7 @@ package govern
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/lynt-x-global/lyntway-tools/detect"
 	"github.com/lynt-x-global/lyntway-tools/receipt"
@@ -32,6 +33,12 @@ type Policy struct {
 	// Rules are evaluated in order; the first match wins. Order is
 	// significant and therefore explicit, rather than depending on map
 	// iteration.
+	//
+	// That includes rules scoped to an upstream. They are not sorted to the
+	// front: a rule that applies only to one destination placed after a
+	// general rule for the same class never fires, and the policy author
+	// has to know that rather than have the engine quietly reorder what
+	// they wrote. Warnings reports the rules this makes unreachable.
 	Rules []PolicyRule
 
 	// Default applies when no rule matches. Allow rather than block: a
@@ -56,11 +63,26 @@ type PolicyRule struct {
 	// rule.
 	MinConfidence detect.Confidence
 
+	// Upstream confines this rule to one destination: it matches only when
+	// the governed action's Target is exactly this name, lower-case. Empty
+	// applies everywhere. This is how "tokenise names to the model, allow
+	// them to the CRM" is written, since the class alone cannot say where
+	// the content is going.
+	//
+	// A decision made without a target — Decide rather than DecideFor —
+	// never matches a scoped rule. The rule asked for a condition that
+	// could not be checked, and silently treating that as met would let a
+	// destination-specific allowance apply to every destination.
+	Upstream string
+
 	// Decision is the action to take.
 	Decision receipt.Decision
 }
 
-func (r PolicyRule) matches(class detect.Class, conf detect.Confidence) bool {
+func (r PolicyRule) matches(target string, class detect.Class, conf detect.Confidence) bool {
+	if r.Upstream != "" && r.Upstream != target {
+		return false
+	}
 	if conf < r.MinConfidence {
 		return false
 	}
@@ -70,10 +92,17 @@ func (r PolicyRule) matches(class detect.Class, conf detect.Confidence) bool {
 	return r.Class == class
 }
 
-// Decide returns the action for a single finding.
+// Decide returns the action for a single finding when the destination is
+// not known. Rules scoped to an upstream cannot match; see PolicyRule.Upstream.
 func (p *Policy) Decide(class detect.Class, conf detect.Confidence) receipt.Decision {
+	return p.DecideFor("", class, conf)
+}
+
+// DecideFor returns the action for a single finding bound for target, the
+// receipt.Action.Target of the governed action.
+func (p *Policy) DecideFor(target string, class detect.Class, conf detect.Confidence) receipt.Decision {
 	for _, rule := range p.Rules {
-		if rule.matches(class, conf) {
+		if rule.matches(target, class, conf) {
 			return rule.Decision
 		}
 	}
@@ -81,6 +110,11 @@ func (p *Policy) Decide(class detect.Class, conf detect.Confidence) receipt.Deci
 }
 
 // Validate reports whether the policy is usable.
+//
+// A rule that can never fire is not an error here — the policy still
+// decides every finding, just not the way its author expected — so that is
+// reported by Warnings instead, and a caller assembling a policy from
+// somebody else's input should show them.
 func (p *Policy) Validate() error {
 	if p.ID == "" {
 		return fmt.Errorf("govern: policy ID must not be empty")
@@ -101,8 +135,79 @@ func (p *Policy) Validate() error {
 		if !isKnownDecision(r.Decision) {
 			return fmt.Errorf("govern: policy rule %d has unrecognised decision %q", i, r.Decision)
 		}
+		if r.Upstream != strings.ToLower(strings.TrimSpace(r.Upstream)) {
+			// Compared exactly against a name the gateway lower-cases, so
+			// anything else would be a rule that looks scoped and matches
+			// nothing.
+			return fmt.Errorf("govern: policy rule %d names upstream %q; upstream names are lower-case with no surrounding space", i, r.Upstream)
+		}
 	}
 	return nil
+}
+
+// Warnings lists rules that no finding can ever reach, one line each.
+//
+// The case this exists for: a rule scoped to one upstream placed after a
+// general rule that already covers its class. First match wins, so the
+// general rule takes every finding and the scoped one — usually the more
+// deliberate of the two — never runs. Nothing about the policy is invalid,
+// which is exactly why it needs saying: the failure is a decision that
+// looks right and is quietly the wrong one.
+//
+// Only shadowing an earlier rule can cause is reported. Two rules can also
+// be unreachable together for reasons no static check can settle, such as a
+// class no ruleset emits.
+func (p *Policy) Warnings() []string {
+	var out []string
+	for j, later := range p.Rules {
+		for i := 0; i < j; i++ {
+			if p.Rules[i].covers(later) {
+				out = append(out, fmt.Sprintf("govern: policy rule %d (%s) can never fire: rule %d (%s) matches everything it would, and comes first",
+					j, later.describe(), i, p.Rules[i].describe()))
+				break
+			}
+		}
+	}
+	return out
+}
+
+// covers reports whether every finding r matches, other also matches, so
+// other placed after r is unreachable.
+func (r PolicyRule) covers(other PolicyRule) bool {
+	if r.Upstream != "" && r.Upstream != other.Upstream {
+		return false
+	}
+	// A stricter threshold leaves the weaker findings for the later rule.
+	if r.MinConfidence > other.MinConfidence {
+		return false
+	}
+	switch {
+	case r.Family != "" && other.Family != "":
+		return detect.HasClassPrefix(detect.Class(other.Family), r.Family)
+	case r.Family != "":
+		return detect.HasClassPrefix(other.Class, r.Family)
+	case other.Family != "":
+		// An exact class never covers a whole family.
+		return false
+	default:
+		return r.Class == other.Class
+	}
+}
+
+func (r PolicyRule) describe() string {
+	var b strings.Builder
+	if r.Family != "" {
+		b.WriteString("family " + r.Family)
+	} else {
+		b.WriteString("class " + string(r.Class))
+	}
+	if r.Upstream != "" {
+		b.WriteString(" to " + r.Upstream)
+	}
+	if r.MinConfidence > 0 {
+		fmt.Fprintf(&b, " at confidence >= %d", r.MinConfidence)
+	}
+	return b.String()
 }
 
 func isKnownDecision(d receipt.Decision) bool {
@@ -191,11 +296,12 @@ func DefaultPolicy() *Policy {
 	}
 }
 
-// findingDecisions computes the per-class decisions for a set of spans.
+// findingDecisions computes the per-class decisions for a set of spans
+// bound for target.
 //
 // Returned sorted by class so receipts for identical content are
 // byte-identical: map iteration order must never reach a signed payload.
-func findingDecisions(p *Policy, spans []detect.Span) ([]receipt.Finding, receipt.Decision) {
+func findingDecisions(p *Policy, target string, spans []detect.Span) ([]receipt.Finding, receipt.Decision) {
 	type agg struct {
 		count    int
 		decision receipt.Decision
@@ -213,7 +319,7 @@ func findingDecisions(p *Policy, spans []detect.Span) ([]receipt.Finding, receip
 
 	overall := receipt.DecisionAllow
 	for _, s := range spans {
-		d := p.Decide(s.Class, s.Confidence)
+		d := p.DecideFor(target, s.Class, s.Confidence)
 		a, ok := byClass[s.Class]
 		if !ok {
 			a = &agg{decision: d}

@@ -145,6 +145,27 @@ type Chain struct {
 	PrevHash string `json:"prev_hash"`
 }
 
+// A receipt that refers to another one must reference it by the digest of its
+// signing input, never by ReceiptID.
+//
+// Nothing does this yet. It is written here because the decision is free now
+// and unfixable later: an approval receipt saying "a human authorised the
+// action in receipt X" is only evidence if X cannot be swapped. An ID is a
+// pointer and a pointer can be repointed; a digest names the exact bytes, so
+// substituting the target breaks the reference and anyone checking sees it.
+//
+// Chain.PrevHash is not this. It links a receipt to the one before it in a
+// sequence, which proves ordering and that nothing was removed. It cannot
+// express "this receipt is about that one", because the referent may sit in a
+// different chain entirely — a different session, a different actor, a later
+// moment.
+//
+// Adding the field itself can wait. Receipts are canonicalised per RFC 8785
+// and each signature covers only the fields present, so a later optional
+// field verifies alongside every receipt already issued. What cannot wait is
+// choosing the wrong reference: receipts signed with a pointer stay weak for
+// as long as they exist.
+
 // Surface names the data plane an action crossed.
 type Surface string
 
@@ -155,6 +176,10 @@ const (
 	SurfaceMCP Surface = "mcp"
 	// SurfaceDatabase is database wire protocol traffic.
 	SurfaceDatabase Surface = "database"
+	// SurfaceHTTP is a generic HTTP service that is none of the above:
+	// not a model, not MCP, not a database. Email APIs, payment APIs,
+	// internal services — anything reachable over HTTPS.
+	SurfaceHTTP Surface = "http"
 	// SurfacePrimitive is a direct call to the govern API, where the caller
 	// hands us content rather than us intercepting it.
 	SurfacePrimitive Surface = "primitive"
@@ -162,7 +187,7 @@ const (
 
 func (s Surface) valid() bool {
 	switch s {
-	case SurfaceModel, SurfaceMCP, SurfaceDatabase, SurfacePrimitive:
+	case SurfaceModel, SurfaceMCP, SurfaceDatabase, SurfaceHTTP, SurfacePrimitive:
 		return true
 	}
 	return false
@@ -288,6 +313,11 @@ type Actor struct {
 	// authority down to the acting agent, outermost first. Empty means the
 	// actor acted on its own authority.
 	Delegation []DelegationHop `json:"delegation,omitempty"`
+
+	// Agent binds the action to a registered agent and the manifest it
+	// declared. A claim, like Source: it says who vouches for the agent,
+	// never that the bytes were watched. See AgentIdentity.
+	Agent *AgentIdentity `json:"agent,omitempty"`
 }
 
 // DelegationHop is one step in an on-behalf-of chain.
@@ -346,6 +376,21 @@ type Content struct {
 	// instead is honest and useful, and presenting that digest without
 	// saying so would let a reader believe the prompt had been hashed.
 	Subject ContentSubject `json:"subject,omitempty"`
+
+	// Truncated means the digests cover a prefix of what the provider
+	// sent: the remainder was withheld and never reached the caller.
+	//
+	// Only a streamed response can be in this state. Bytes already
+	// released cannot be recalled, so when a refused class appears
+	// mid-stream the only enforcement available is to stop. A receipt
+	// that recorded the delivered prefix as though it were the whole
+	// response would let a cut stream read as a complete one — the one
+	// outcome the streaming path exists to prevent.
+	//
+	// Absent means complete, which every receipt before this field
+	// existed was: the streaming path issued no receipt at all for a cut
+	// stream until this was added.
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 // ContentSubject names what a receipt's digests are taken over.
@@ -491,6 +536,67 @@ type Governance struct {
 
 	// Policy identifies the ruleset that turned findings into a decision.
 	Policy Policy `json:"policy"`
+
+	// Refusal explains a block that no finding accounts for.
+	//
+	// A gateway sometimes refuses an action for a reason of its own rather
+	// than because of what the content held: a statement arriving in a
+	// transaction an earlier refusal already aborted, a message it could
+	// not examine. Recording such an action as allowed would tell a reader
+	// it went through; recording it as blocked with no finding would leave
+	// them guessing why. Absent when the findings explain the decision.
+	Refusal string `json:"refusal,omitempty"`
+
+	// Approval records how a hold was resolved, when it was.
+	//
+	// A require_approval decision on its own means the action was held
+	// and nothing left. Once a person has decided, the receipt issued for
+	// the resolution carries the decision that held it and this record of
+	// who resolved it and which way — so a reader can see that the content
+	// digested below left because somebody named said it could, not
+	// because policy allowed it. Absent on every receipt where nobody had
+	// to decide anything, which is nearly all of them.
+	Approval *Approval `json:"approval,omitempty"`
+}
+
+// Approval is a person's resolution of a held action.
+type Approval struct {
+	// ID identifies the approval record the deployment kept, so the
+	// receipt can be matched to the request that was parked and to the
+	// audit entry for the decision.
+	ID string `json:"id"`
+
+	// Outcome is approved, denied or expired.
+	Outcome ApprovalOutcome `json:"outcome"`
+
+	// DecidedBy names who decided, as the deployment knew them — a
+	// console sign-in's address or an API key's label. Empty when nobody
+	// did and the hold expired.
+	DecidedBy string `json:"decided_by,omitempty"`
+
+	// DecidedAt is when, RFC 3339 UTC.
+	DecidedAt string `json:"decided_at"`
+}
+
+// ApprovalOutcome is how a hold ended.
+type ApprovalOutcome string
+
+const (
+	// ApprovalApproved means a person released the action.
+	ApprovalApproved ApprovalOutcome = "approved"
+	// ApprovalDenied means a person refused it.
+	ApprovalDenied ApprovalOutcome = "denied"
+	// ApprovalExpired means nobody decided before the caller stopped
+	// waiting.
+	ApprovalExpired ApprovalOutcome = "expired"
+)
+
+func (o ApprovalOutcome) valid() bool {
+	switch o {
+	case ApprovalApproved, ApprovalDenied, ApprovalExpired:
+		return true
+	}
+	return false
 }
 
 // Finding is one class of detection and how it was handled.
@@ -742,6 +848,9 @@ func (r *Receipt) Validate() error {
 	if !r.Actor.Source.valid() {
 		errs.add("actor.source", "unrecognised identity source")
 	}
+	if r.Actor.Agent != nil {
+		r.Actor.Agent.validateInto(&errs)
+	}
 	// An unverified claim cannot come from a source whose entire purpose is
 	// cryptographic verification; that combination means a bug upstream.
 	if !r.Actor.Verified && r.Actor.Source == IdentityWebBotAuth {
@@ -774,9 +883,14 @@ func (r *Receipt) Validate() error {
 		errs.add("content.bytes", "must not be negative")
 	}
 	// A blocked action releases nothing, so an output digest would be a
-	// claim about content that never existed.
-	if r.Governance.Decision == DecisionBlock && r.Content.OutputDigest != "" {
+	// claim about content that never existed. The exception is a stream
+	// cut part-way: the prefix was released before the block, and its
+	// digest is exactly what the receipt must show.
+	if r.Governance.Decision == DecisionBlock && r.Content.OutputDigest != "" && !r.Content.Truncated {
 		errs.add("content.output_digest", "must be empty when the decision was block")
+	}
+	if r.Content.Truncated && r.Content.OutputDigest == "" {
+		errs.add("content.output_digest", "required when the stream was truncated: it is the digest of what was delivered")
 	}
 	if r.Content.OutputDigest != "" && !isHexDigest(r.Content.OutputDigest) {
 		errs.add("content.output_digest", "must be a lowercase hex SHA-256 digest")
@@ -787,6 +901,14 @@ func (r *Receipt) Validate() error {
 		r.Governance.Decision != DecisionRequireApproval &&
 		r.Content.OutputDigest == "" {
 		errs.add("content.output_digest", "required unless the action was blocked or held for approval")
+	}
+	// A held action releases nothing, so an output digest on one is a
+	// claim that content left — and the only thing that can explain it
+	// is a person approving the release. Without that record the receipt
+	// would read as though a hold had been quietly waved through.
+	if r.Governance.Decision == DecisionRequireApproval && r.Content.OutputDigest != "" &&
+		(r.Governance.Approval == nil || r.Governance.Approval.Outcome != ApprovalApproved) {
+		errs.add("content.output_digest", "must be empty on a held action unless an approval released it")
 	}
 	// Passing content through unchanged means the digests must match. A
 	// mismatch here means the pipeline mutated content it claimed not to.
@@ -819,6 +941,44 @@ func (r *Receipt) Validate() error {
 // validate checks the governance block's internal consistency.
 func (g *Governance) validate() FieldErrors {
 	var errs FieldErrors
+	if g.Refusal != "" && g.Decision != DecisionBlock {
+		errs.add("governance.refusal", "only a blocked action carries a refusal")
+	}
+
+	if a := g.Approval; a != nil {
+		if strings.TrimSpace(a.ID) == "" {
+			errs.add("governance.approval.id", "must not be empty")
+		}
+		if !a.Outcome.valid() {
+			errs.add("governance.approval.outcome", "must be one of: approved, denied, expired")
+		}
+		if _, err := ParseTime(a.DecidedAt); err != nil {
+			errs.add("governance.approval.decided_at", "not a valid RFC 3339 timestamp")
+		}
+		// The outcome and the decision must tell the same story. An
+		// approval that released something belongs on the held decision;
+		// a refusal belongs on a block, and the block has to say why.
+		switch a.Outcome {
+		case ApprovalApproved:
+			if g.Decision != DecisionRequireApproval {
+				errs.add("governance.approval.outcome", "approved only resolves a require_approval decision")
+			}
+			if strings.TrimSpace(a.DecidedBy) == "" {
+				errs.add("governance.approval.decided_by", "required: somebody approved this")
+			}
+		case ApprovalDenied:
+			if g.Decision != DecisionBlock || g.Refusal == "" {
+				errs.add("governance.approval.outcome", "denied must be recorded as a block with a refusal")
+			}
+			if strings.TrimSpace(a.DecidedBy) == "" {
+				errs.add("governance.approval.decided_by", "required: somebody denied this")
+			}
+		case ApprovalExpired:
+			if g.Decision != DecisionBlock || g.Refusal == "" {
+				errs.add("governance.approval.outcome", "expired must be recorded as a block with a refusal")
+			}
+		}
+	}
 
 	if !g.Mode.valid() {
 		errs.add("governance.mode", "must be one of: full, degraded, bypassed")

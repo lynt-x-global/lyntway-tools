@@ -76,7 +76,9 @@ agent at this instead:
   }}}
 
 Flags:
-  -receipts FILE   append receipts here (default ~/.lyntway/receipts.jsonl)
+  -receipts FILE   append receipts here (default ~/.lyntway/receipts.jsonl);
+                   the key that verifies them is published beside it as
+                   FILE-keys.json, for lyntway-verify -keys
   -chain NAME      receipt chain for this server (default: the command name)
   -quiet           do not report what was governed on stderr
   -h, -help        show this message
@@ -84,6 +86,10 @@ Flags:
 Content never leaves this machine. Detection and substitution happen here;
 only receipts are written, and a receipt carries digests rather than
 content.
+
+Receipts are signed with a key generated on this machine and kept in
+~/.lyntway/mcp-signing.key. It is not a lyntway.com key, and the receipts
+say so.
 `
 
 // version is stamped at link time by the release workflow. "dev" means a
@@ -128,7 +134,7 @@ func run() int {
 	}
 	defer g.close()
 
-	code := proxy(command, g, *quiet)
+	code := proxy(command, g, os.Stdin, os.Stdout)
 	if !*quiet {
 		g.report()
 	}
@@ -136,7 +142,10 @@ func run() int {
 }
 
 // proxy runs the server and relays governed messages in both directions.
-func proxy(command []string, g *governor, quiet bool) int {
+//
+// The agent's streams are parameters rather than os.Stdin and os.Stdout so
+// a test can be the agent.
+func proxy(command []string, g *governor, agentIn io.Reader, agentOut io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -161,6 +170,9 @@ func proxy(command []string, g *governor, quiet bool) int {
 		return 2
 	}
 
+	agent := &lineWriter{w: bufio.NewWriter(agentOut)}
+	server := &lineWriter{w: bufio.NewWriter(serverIn)}
+
 	var wg sync.WaitGroup
 	wg.Add(2)
 
@@ -168,7 +180,7 @@ func proxy(command []string, g *governor, quiet bool) int {
 	go func() {
 		defer wg.Done()
 		defer serverIn.Close()
-		relay(os.Stdin, serverIn, g, directionToServer)
+		relay(agentIn, server, agent, g, directionToServer)
 	}()
 
 	// Server to agent. This is the direction that matters: a tool result is
@@ -176,7 +188,7 @@ func proxy(command []string, g *governor, quiet bool) int {
 	// is what stops the values leaving at all.
 	go func() {
 		defer wg.Done()
-		relay(serverOut, os.Stdout, g, directionToAgent)
+		relay(serverOut, agent, agent, g, directionToAgent)
 	}()
 
 	wg.Wait()
@@ -197,15 +209,39 @@ const (
 	directionToAgent
 )
 
+// lineWriter writes one message per line, under a lock.
+//
+// Locked because two goroutines write to the agent: the relay carrying the
+// server's replies, and the relay carrying the agent's own requests, which
+// answers for the server when a request is refused before reaching it.
+// Two unlocked writers interleave bytes, and the agent receives a line
+// that is not JSON.
+type lineWriter struct {
+	mu sync.Mutex
+	w  *bufio.Writer
+}
+
+func (l *lineWriter) writeLine(message []byte) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.w.Write(message)
+	l.w.WriteByte('\n')
+	// Flushed per message because this is a conversation, not a stream:
+	// the agent is waiting for each reply before it acts.
+	l.w.Flush()
+}
+
 // relay reads newline-delimited JSON-RPC, governs it, and writes it on.
-func relay(src io.Reader, dst io.Writer, g *governor, dir direction) {
+//
+// agent is where the agent listens. It is the same writer as dst for the
+// server-to-agent direction, and a different one for agent-to-server —
+// where it carries the one thing this relay sends backwards, an error for
+// a request that was refused.
+func relay(src io.Reader, dst, agent *lineWriter, g *governor, dir direction) {
 	scanner := bufio.NewScanner(src)
 	// A tool result carrying a page of database rows is easily past the
 	// default limit, and a truncated message is worse than a slow one.
 	scanner.Buffer(make([]byte, 0, 64<<10), 8<<20)
-
-	writer := bufio.NewWriter(dst)
-	defer writer.Flush()
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -218,16 +254,89 @@ func relay(src io.Reader, dst io.Writer, g *governor, dir direction) {
 			// A message that cannot be governed is not forwarded. Passing
 			// it through would mean the one message this could not inspect
 			// is the one that gets out unexamined.
+			//
+			// Withheld is not the same as dropped. The agent sent a request
+			// and is blocked until something carrying that id comes back;
+			// a message that simply vanishes leaves Claude Desktop or
+			// Cursor waiting forever on a tool call that has already been
+			// decided. So the agent is answered — an error in place of the
+			// result, or in place of the reply the server will never send.
 			fmt.Fprintf(os.Stderr, "lyntway-mcp: withheld a message: %v\n", err)
+			if reply := answerFor(line, err); reply != nil {
+				agent.writeLine(reply)
+			}
 			continue
 		}
 
-		writer.Write(out)
-		writer.WriteByte('\n')
-		// Flushed per message because this is a conversation, not a
-		// stream: the agent is waiting for each reply before it acts.
-		writer.Flush()
+		dst.writeLine(out)
 	}
+}
+
+// JSON-RPC 2.0 reserves -32000 to -32099 for the server's own errors.
+// Governance is neither a parse error nor a method the server lacks; it is
+// a decision, and it gets its own code so an agent can tell it apart.
+const (
+	codeRefused      = -32050
+	codeUngovernable = -32051
+)
+
+// refusal is govern's error when policy declined to release a message. It
+// carries what the agent is told: which receipt records the decision.
+type refusal struct {
+	receiptID string
+	decision  receipt.Decision
+}
+
+func (r *refusal) Error() string {
+	return fmt.Sprintf("policy refused this message (%s); receipt %s", r.decision, r.receiptID)
+}
+
+// answerFor builds the JSON-RPC error the agent receives for a withheld
+// message, or nil when there is nobody to answer.
+//
+// Nil for a notification: it carries no id, so nothing is waiting on it
+// and the protocol forbids replying. Everything else is either a request
+// the server will now never see, or a result the agent will now never see,
+// and in both cases the agent is the party left waiting.
+func answerFor(message []byte, err error) []byte {
+	var envelope struct {
+		ID json.RawMessage `json:"id"`
+	}
+	if json.Unmarshal(message, &envelope) != nil || len(envelope.ID) == 0 || string(envelope.ID) == "null" {
+		return nil
+	}
+
+	code, text := codeUngovernable, "lyntway-mcp could not govern this message and withheld it: "+err.Error()
+	data := map[string]any{"source": "lyntway-mcp"}
+	var refused *refusal
+	if errors.As(err, &refused) {
+		code = codeRefused
+		text = "lyntway-mcp: governance refused this message; see receipt " + refused.receiptID
+		data["receipt_id"] = refused.receiptID
+		data["decision"] = string(refused.decision)
+	}
+
+	reply, marshalErr := json.Marshal(struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Error   struct {
+			Code    int            `json:"code"`
+			Message string         `json:"message"`
+			Data    map[string]any `json:"data"`
+		} `json:"error"`
+	}{
+		JSONRPC: "2.0",
+		ID:      envelope.ID,
+		Error: struct {
+			Code    int            `json:"code"`
+			Message string         `json:"message"`
+			Data    map[string]any `json:"data"`
+		}{Code: code, Message: text, Data: data},
+	})
+	if marshalErr != nil {
+		return nil
+	}
+	return reply
 }
 
 // governor holds the local detection engine and the receipt sink.
@@ -235,7 +344,6 @@ type governor struct {
 	engine *govern.Engine
 	scope  *tokenize.Scope
 	chain  string
-	seq    uint64
 
 	sink *os.File
 
@@ -251,18 +359,42 @@ type governor struct {
 	mu       sync.Mutex
 	findings map[detect.Class]int
 	messages int
+
+	// pending is every request awaiting a reply, by the direction the
+	// request travelled, so a reply can be receipted under the method it
+	// answers. Without it every reply looked like a tool result, and the
+	// initialize handshake was recorded as governed tool traffic.
+	pending [2]map[string]string
 }
 
+// maxPending bounds the correlation table. A peer that never answers is
+// not holding a conversation, and the table is cleared rather than grown
+// for it; the cost is a few replies receipted as unmatched.
+const maxPending = 4096
+
 func newGovernor(receiptsPath, chain string) (*governor, error) {
-	// An ephemeral key. Receipts issued here are evidence that tool traffic
-	// was governed and by which ruleset; they are not intended to verify
-	// against a published deployment key, because nothing on a laptop
-	// should hold one.
-	signer, err := receipt.GenerateEd25519Signer("lyntway-mcp-local")
+	signer, err := loadOrCreateSigner()
 	if err != nil {
-		return nil, fmt.Errorf("generating a local signing key: %w", err)
+		return nil, err
 	}
-	engine, err := govern.New(govern.Config{Signer: signer})
+
+	receiptsPath, err = resolveReceiptsPath(receiptsPath)
+	if err != nil {
+		return nil, err
+	}
+	var store govern.ChainStore
+	if receiptsPath != "" {
+		if err := publishKey(besideReceipts(receiptsPath, "-keys.json"), signer); err != nil {
+			return nil, fmt.Errorf("publishing the verifying key: %w", err)
+		}
+		store = &fileChainStore{path: besideReceipts(receiptsPath, "-chain.json")}
+	}
+
+	engine, err := govern.New(govern.Config{
+		Signer:     signer,
+		Issuer:     issuerName,
+		ChainStore: store,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("starting the engine: %w", err)
 	}
@@ -292,6 +424,7 @@ func newGovernor(receiptsPath, chain string) (*governor, error) {
 		server:   sanitise(chain),
 		reporter: newReporter(),
 		findings: make(map[detect.Class]int),
+		pending:  [2]map[string]string{{}, {}},
 	}, nil
 }
 
@@ -306,9 +439,48 @@ func (g *governor) close() {
 
 // jsonRPC is the part of a message this needs to see.
 type jsonRPC struct {
+	ID     json.RawMessage `json:"id,omitempty"`
 	Method string          `json:"method,omitempty"`
 	Result json.RawMessage `json:"result,omitempty"`
+	Error  json.RawMessage `json:"error,omitempty"`
 	Params json.RawMessage `json:"params,omitempty"`
+}
+
+// correlate records a request, or names the request a reply answers, and
+// returns the method a receipt for this message should carry.
+//
+// Ids are only unique per requester: the agent and the server each number
+// their own requests, so a reply is matched against the table for the
+// opposite direction. A reply nothing is waiting on is labelled as such
+// rather than guessed at, because the label goes into a signed receipt.
+func (g *governor) correlate(m jsonRPC, dir direction) string {
+	if len(m.ID) == 0 || string(m.ID) == "null" {
+		// A notification. Nothing answers it.
+		return m.Method
+	}
+	key := string(m.ID)
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	if m.Method != "" {
+		table := g.pending[dir]
+		if len(table) >= maxPending {
+			clear(table)
+		}
+		table[key] = m.Method
+		return m.Method
+	}
+
+	from := directionToAgent
+	if dir == directionToAgent {
+		from = directionToServer
+	}
+	if method, ok := g.pending[from][key]; ok {
+		delete(g.pending[from], key)
+		return method
+	}
+	return "unmatched-response"
 }
 
 // govern inspects a message and returns what should be forwarded.
@@ -326,6 +498,10 @@ func (g *governor) govern(message []byte, dir direction) ([]byte, error) {
 		return message, nil
 	}
 
+	// Every message is correlated, governed or not, so a reply to an
+	// ungoverned request still clears its entry.
+	method := g.correlate(envelope, dir)
+
 	var payload []byte
 	switch {
 	case dir == directionToAgent && len(envelope.Result) > 0:
@@ -336,19 +512,18 @@ func (g *governor) govern(message []byte, dir direction) ([]byte, error) {
 		return message, nil
 	}
 
-	g.mu.Lock()
-	g.seq++
-	seq := g.seq
-	g.mu.Unlock()
-
+	id, err := newReceiptID()
+	if err != nil {
+		return nil, err
+	}
 	res, err := g.engine.Govern(govern.Request{
 		ChainID:   g.chain,
-		ReceiptID: fmt.Sprintf("rcpt_mcp_%d", seq),
+		ReceiptID: id,
 		Content:   payload,
 		Action: receipt.Action{
 			Surface:   receipt.SurfaceMCP,
 			Direction: directionOf(dir),
-			Method:    orDefault(envelope.Method, "tools/result"),
+			Method:    method,
 		},
 		Actor: receipt.Actor{
 			Type: receipt.ActorAgent, ID: "local-agent", Source: receipt.IdentityNone,
@@ -364,13 +539,19 @@ func (g *governor) govern(message []byte, dir direction) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if res.Warning != "" {
+		// The receipt is signed and kept; what failed is remembering where
+		// the chain now stands, and the next restart will fork it.
+		fmt.Fprintf(os.Stderr, "lyntway-mcp: %s\n", res.Warning)
+	}
 
 	g.record(res)
 
 	if res.Content == nil {
-		// Refused. The agent is told rather than left waiting, and the
-		// message never reaches the other side.
-		return nil, errors.New("policy refused this message")
+		// Refused. The message never reaches the other side; the relay
+		// answers the agent with this, so it is told rather than left
+		// waiting.
+		return nil, &refusal{receiptID: res.Receipt.ID, decision: res.Decision}
 	}
 
 	// Substituted content goes back into the envelope it came from, so the
@@ -455,20 +636,29 @@ func directionOf(d direction) receipt.Direction {
 	return receipt.DirectionResponse
 }
 
-// openReceiptSink opens the receipt file, creating its directory.
+// resolveReceiptsPath fills in the default receipts file. Empty means none
+// will be kept: no home directory is not a reason to stop governing, only a
+// reason not to keep receipts.
+func resolveReceiptsPath(path string) (string, error) {
+	if path != "" {
+		return path, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", nil
+	}
+	dir := home + "/.lyntway"
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", nil
+	}
+	return dir + "/receipts.jsonl", nil
+}
+
+// openReceiptSink opens the receipt file for appending, or returns nil
+// when there is none to keep.
 func openReceiptSink(path string) (*os.File, error) {
 	if path == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			// No home directory is not a reason to stop governing, only a
-			// reason not to keep receipts.
-			return nil, nil
-		}
-		dir := home + "/.lyntway"
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return nil, nil
-		}
-		path = dir + "/receipts.jsonl"
+		return nil, nil
 	}
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {

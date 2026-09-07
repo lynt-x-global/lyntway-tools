@@ -87,15 +87,23 @@ const AnalyzerTimeout = 800 * time.Millisecond
 // request failure: refusing to govern because a model is unreachable would
 // turn their outage into the customer's, which is the trade this whole
 // package refuses everywhere else.
-func (e *Engine) runAnalyzers(content []byte) []detect.Span {
+//
+// The second result names every analyzer that was called and did not
+// answer, with the reason. Health is sampled before detection, so an
+// analyzer that reported healthy and then timed out, refused, or returned
+// something unreadable would otherwise leave the receipt claiming a scan
+// that did not happen. Presidio marks itself unhealthy on failure, but
+// only for the *next* request; this request still has to tell the truth.
+func (e *Engine) runAnalyzers(content []byte) ([]detect.Span, map[string]string) {
 	if len(e.analyzers) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), AnalyzerTimeout)
 	defer cancel()
 
 	var found []detect.Span
+	var failed map[string]string
 	for _, a := range e.analyzers {
 		if a.Health() == receipt.HealthUnavailable {
 			// Skipped rather than called. A detector that has just told us
@@ -105,6 +113,10 @@ func (e *Engine) runAnalyzers(content []byte) []detect.Span {
 		}
 		spans, err := a.Analyze(ctx, content)
 		if err != nil {
+			if failed == nil {
+				failed = make(map[string]string)
+			}
+			failed[a.Name()] = err.Error()
 			continue
 		}
 		name := a.Name()
@@ -125,7 +137,7 @@ func (e *Engine) runAnalyzers(content []byte) []detect.Span {
 		}
 		found = append(found, spans...)
 	}
-	return found
+	return found, failed
 }
 
 // mergeSpans combines deterministic and probabilistic findings.

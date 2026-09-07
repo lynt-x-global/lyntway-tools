@@ -1,0 +1,183 @@
+{
+  "description": "Web Bot Auth (RFC 9421) request signatures produced by the Lyntway SDKs. Each vector's expected headers must be reproduced exactly by the Python and TypeScript signers, and must verify with webbotauth.Verify in Go when the clock is set to verify_at and the key id resolves to public_key.",
+  "profile": {
+    "label": "sig1",
+    "covered": [
+      "@method",
+      "@authority",
+      "@path",
+      "content-digest"
+    ],
+    "content_digest_when": "the body is non-empty; then Content-Digest: sha-256=:base64:",
+    "params": "created, expires=created+300, nonce (16 random bytes, base64url, unpadded), keyid, alg=ed25519, tag=web-bot-auth",
+    "authority": "host lowercased; :443 dropped on https and :80 on http; any other port kept",
+    "path": "the URL path without the query; / when empty",
+    "signature_base": "RFC 9421 section 2.5: one \"name\": value line per covered component, then \"@signature-params\": <inner list and params exactly as in Signature-Input>, newline-separated, no trailing newline"
+  },
+  "key_id": "key_5f3a9c1e7b2d4680a1b2c3d4e5f60718",
+  "private_key_pem": "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIGeamKHIxeukLjKaM7/qlYin1+Sl8/+xlCzzqFNQENGn\n-----END PRIVATE KEY-----\n",
+  "private_key_seed_b64": "Z5qYocjF66QuMpozv+qViKfX5KXz/7GULPOoU1AQ0ac=",
+  "public_key_b64": "WEk+j/1T6GnuBUiM+C5F/FsgVNl86WY5FwpV+njlj2o=",
+  "vectors": [
+    {
+      "name": "post_with_body",
+      "note": "the common case: JSON body, content-digest covered",
+      "request": {
+        "method": "POST",
+        "url": "https://govern.lyntway.com/v1/govern",
+        "body": "{\"chain_id\": \"ws_acme\", \"content\": \"Customer priya@acme.com paid with 4111111111111111.\", \"actor\": {\"type\": \"agent\", \"id\": \"agent_support\", \"source\": \"lyntway_key\"}}"
+      },
+      "created": 1757203200,
+      "expires": 1757203500,
+      "nonce": "c2lnbmluZy12ZWN0b3Jz",
+      "verify_at": 1757203210,
+      "expected": {
+        "authority": "govern.lyntway.com",
+        "path": "/v1/govern",
+        "content_digest": "sha-256=:ljdbxIE/WF7zeP1ZPOuWh6aC7t3heDlmoYsqaQBiUNo=:",
+        "signature_input": "sig1=(\"@method\" \"@authority\" \"@path\" \"content-digest\");created=1757203200;expires=1757203500;nonce=\"c2lnbmluZy12ZWN0b3Jz\";keyid=\"key_5f3a9c1e7b2d4680a1b2c3d4e5f60718\";alg=\"ed25519\";tag=\"web-bot-auth\"",
+        "signature": "sig1=:r8rBxirq1WvhqaVxMoNUG5Ejg7FaTtLGlqL/06uBNl1bhvbsQQTPlS5SjNnVS8bQ05LGxVhr8G8tYZ8DHMijDw==:"
+      }
+    },
+    {
+      "name": "get_without_body",
+      "note": "no body, so content-digest is neither sent nor covered",
+      "request": {
+        "method": "GET",
+        "url": "https://govern.lyntway.com/v1/keys",
+        "body": null
+      },
+      "created": 1757203200,
+      "expires": 1757203500,
+      "nonce": "c2lnbmluZy12ZWN0b3Jz",
+      "verify_at": 1757203210,
+      "expected": {
+        "authority": "govern.lyntway.com",
+        "path": "/v1/keys",
+        "content_digest": null,
+        "signature_input": "sig1=(\"@method\" \"@authority\" \"@path\");created=1757203200;expires=1757203500;nonce=\"c2lnbmluZy12ZWN0b3Jz\";keyid=\"key_5f3a9c1e7b2d4680a1b2c3d4e5f60718\";alg=\"ed25519\";tag=\"web-bot-auth\"",
+        "signature": "sig1=:0nW8Dyrl9PLBy0ty6kcr62cwLCF9GOe1xInDkbdl9p3GIc+da+mrEFGPQICVAlHF5lf2eKGyeoqwP9t6Y93vAw==:"
+      }
+    },
+    {
+      "name": "default_port_and_case_folded",
+      "note": "@authority is lowercased and :443 dropped on https",
+      "request": {
+        "method": "POST",
+        "url": "https://GOVERN.Lyntway.com:443/v1/govern",
+        "body": "{\"chain_id\": \"ws_acme\", \"content\": \"Customer priya@acme.com paid with 4111111111111111.\", \"actor\": {\"type\": \"agent\", \"id\": \"agent_support\", \"source\": \"lyntway_key\"}}"
+      },
+      "created": 1757203200,
+      "expires": 1757203500,
+      "nonce": "c2lnbmluZy12ZWN0b3Jz",
+      "verify_at": 1757203210,
+      "expected": {
+        "authority": "govern.lyntway.com",
+        "path": "/v1/govern",
+        "content_digest": "sha-256=:ljdbxIE/WF7zeP1ZPOuWh6aC7t3heDlmoYsqaQBiUNo=:",
+        "signature_input": "sig1=(\"@method\" \"@authority\" \"@path\" \"content-digest\");created=1757203200;expires=1757203500;nonce=\"c2lnbmluZy12ZWN0b3Jz\";keyid=\"key_5f3a9c1e7b2d4680a1b2c3d4e5f60718\";alg=\"ed25519\";tag=\"web-bot-auth\"",
+        "signature": "sig1=:r8rBxirq1WvhqaVxMoNUG5Ejg7FaTtLGlqL/06uBNl1bhvbsQQTPlS5SjNnVS8bQ05LGxVhr8G8tYZ8DHMijDw==:"
+      }
+    },
+    {
+      "name": "nondefault_port_kept",
+      "note": "a non-default port stays in @authority",
+      "request": {
+        "method": "POST",
+        "url": "http://localhost:8899/gw/openai/v1/chat/completions",
+        "body": "{\"model\": \"gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}"
+      },
+      "created": 1757203200,
+      "expires": 1757203500,
+      "nonce": "c2lnbmluZy12ZWN0b3Jz",
+      "verify_at": 1757203210,
+      "expected": {
+        "authority": "localhost:8899",
+        "path": "/gw/openai/v1/chat/completions",
+        "content_digest": "sha-256=:RfiFjLTgqpNu97MEzn7B906WRY4ItlcZPNNuTLj9/Dk=:",
+        "signature_input": "sig1=(\"@method\" \"@authority\" \"@path\" \"content-digest\");created=1757203200;expires=1757203500;nonce=\"c2lnbmluZy12ZWN0b3Jz\";keyid=\"key_5f3a9c1e7b2d4680a1b2c3d4e5f60718\";alg=\"ed25519\";tag=\"web-bot-auth\"",
+        "signature": "sig1=:o6/x+c4Z3act+LhMMWyjGEFJqGAn+jF90cH/+UD+7VkbYaroKE7caDm83c0FZe5ada35hPu35ws++ikRLb5kCw==:"
+      }
+    },
+    {
+      "name": "query_not_in_path",
+      "note": "@path is the path alone; the query is not covered",
+      "request": {
+        "method": "GET",
+        "url": "https://govern.lyntway.com/v1/receipts?limit=5&after=rcpt_01",
+        "body": null
+      },
+      "created": 1757203200,
+      "expires": 1757203500,
+      "nonce": "c2lnbmluZy12ZWN0b3Jz",
+      "verify_at": 1757203210,
+      "expected": {
+        "authority": "govern.lyntway.com",
+        "path": "/v1/receipts",
+        "content_digest": null,
+        "signature_input": "sig1=(\"@method\" \"@authority\" \"@path\");created=1757203200;expires=1757203500;nonce=\"c2lnbmluZy12ZWN0b3Jz\";keyid=\"key_5f3a9c1e7b2d4680a1b2c3d4e5f60718\";alg=\"ed25519\";tag=\"web-bot-auth\"",
+        "signature": "sig1=:IroKzxQoWZZGy+u20SUOQlBUkvjQojWFbI61+u+l0UF74XRHIwnpuTp0fzKizxENNR/Sv+t76nATtfglfXOPBA==:"
+      }
+    },
+    {
+      "name": "empty_path_is_slash",
+      "note": "a URL with no path signs @path as /",
+      "request": {
+        "method": "GET",
+        "url": "https://govern.lyntway.com",
+        "body": null
+      },
+      "created": 1757203200,
+      "expires": 1757203500,
+      "nonce": "c2lnbmluZy12ZWN0b3Jz",
+      "verify_at": 1757203210,
+      "expected": {
+        "authority": "govern.lyntway.com",
+        "path": "/",
+        "content_digest": null,
+        "signature_input": "sig1=(\"@method\" \"@authority\" \"@path\");created=1757203200;expires=1757203500;nonce=\"c2lnbmluZy12ZWN0b3Jz\";keyid=\"key_5f3a9c1e7b2d4680a1b2c3d4e5f60718\";alg=\"ed25519\";tag=\"web-bot-auth\"",
+        "signature": "sig1=:rSO7P+oA9sIH5gdID76oVrV3nRPMaFVvv76PdPydhyRNW35jiiWk3PDAw/OAsKnwNysE9ECaP2C1yuM5YofiCA==:"
+      }
+    },
+    {
+      "name": "utf8_body",
+      "note": "the digest is over the UTF-8 bytes, not the code points",
+      "request": {
+        "method": "POST",
+        "url": "https://govern.lyntway.com/v1/govern",
+        "body": "{\"content\": \"Priya a payé 1 200 € — carte 4111 1111 1111 1111\"}"
+      },
+      "created": 1757203200,
+      "expires": 1757203500,
+      "nonce": "c2lnbmluZy12ZWN0b3Jz",
+      "verify_at": 1757203210,
+      "expected": {
+        "authority": "govern.lyntway.com",
+        "path": "/v1/govern",
+        "content_digest": "sha-256=:dasTYY3Fe9OKuvPxv4LntZ4jGmdugL+DgEqP+Jw5gZE=:",
+        "signature_input": "sig1=(\"@method\" \"@authority\" \"@path\" \"content-digest\");created=1757203200;expires=1757203500;nonce=\"c2lnbmluZy12ZWN0b3Jz\";keyid=\"key_5f3a9c1e7b2d4680a1b2c3d4e5f60718\";alg=\"ed25519\";tag=\"web-bot-auth\"",
+        "signature": "sig1=:JFmNZKL51/wvFYQPpdltmL8uZH2vPWkaUJeMAKo6yo6d2Vc+Np4dJEIZfzA7jY2PFiSlCbES5JEcT92vnw5tCw==:"
+      }
+    },
+    {
+      "name": "empty_body_no_digest",
+      "note": "an empty body counts as no body: nothing to digest",
+      "request": {
+        "method": "POST",
+        "url": "https://govern.lyntway.com/v1/govern",
+        "body": ""
+      },
+      "created": 1757203200,
+      "expires": 1757203500,
+      "nonce": "c2lnbmluZy12ZWN0b3Jz",
+      "verify_at": 1757203210,
+      "expected": {
+        "authority": "govern.lyntway.com",
+        "path": "/v1/govern",
+        "content_digest": null,
+        "signature_input": "sig1=(\"@method\" \"@authority\" \"@path\");created=1757203200;expires=1757203500;nonce=\"c2lnbmluZy12ZWN0b3Jz\";keyid=\"key_5f3a9c1e7b2d4680a1b2c3d4e5f60718\";alg=\"ed25519\";tag=\"web-bot-auth\"",
+        "signature": "sig1=:WaqIQ6+UIUy5p8lL6VjvQe7Z9F702dOtmtzGHUiE8fGbA8HrW387Gl8IfYBIY5tySC3IW7Q66tlSQUxb4/OEDA==:"
+      }
+    }
+  ]
+}

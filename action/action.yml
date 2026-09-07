@@ -1,0 +1,167 @@
+# Fail a pull request that adds a provider API key.
+#
+# Runs `lyntway scan --diff=<base> --format=github` on the runner: the
+# lines the change adds are read there, the finding is annotated on the
+# line, and the job fails with what to do about it. The key's value is
+# never printed and nothing is sent anywhere — the scan is the same
+# deterministic rules the gateway uses, run locally.
+#
+# Composite rather than Docker or JavaScript so that what runs is readable
+# in this one file plus install.sh, with no image to trust and no bundle
+# to unpick.
+name: Lyntway scan
+description: >-
+  Fails a pull request that adds an OpenAI, Anthropic, AWS, GitHub, Slack or
+  Stripe key. Reads the diff on the runner; sends nothing anywhere.
+author: Lynt-X Global
+
+branding:
+  icon: shield
+  color: gray-dark
+
+inputs:
+  version:
+    description: >-
+      Release of the lyntway tools to install, such as 0.2.0. "latest"
+      resolves to the newest release at github.com/lynt-x-global/lyntway-tools.
+    required: false
+    default: latest
+  sha256:
+    description: >-
+      Expected SHA-256 of this platform's release tarball. When set, the
+      download is checked against it instead of the release's SHA256SUMS,
+      which pins the install to bytes you have seen rather than to whatever
+      the release currently lists.
+    required: false
+    default: ''
+  base:
+    description: >-
+      Commit to diff against. Defaults to the pull request's base commit, or
+      to the commit before the push on a push event.
+    required: false
+    default: ''
+  working-directory:
+    description: Directory of the checkout to scan.
+    required: false
+    default: '.'
+
+outputs:
+  version:
+    description: The lyntway version that ran.
+    value: ${{ steps.install.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - id: install
+      shell: bash
+      env:
+        LYNTWAY_VERSION: ${{ inputs.version }}
+        LYNTWAY_SHA256: ${{ inputs.sha256 }}
+      run: bash "$GITHUB_ACTION_PATH/install.sh"
+
+    # The base commit is usually absent from the checkout: actions/checkout
+    # fetches one commit by default, and on a pull request that commit is
+    # the merge of the branch into its base. `lyntway scan --diff` compares
+    # against the merge base rather than the tip, so that a key somebody
+    # removed on main is not reported as added here — which means the
+    # checkout has to hold enough history to find that merge base. The
+    # base is fetched by its sha, then HEAD's history is deepened in steps
+    # until the two meet; on a pull request that is one step, on a push of
+    # many commits it is a few.
+    #
+    # Inputs and event fields reach the shell through the environment, not
+    # by interpolation into the script: a value with a quote and a
+    # semicolon in it would otherwise be a command, not a commit.
+    - id: base
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        INPUT_BASE: ${{ inputs.base }}
+        PR_BASE: ${{ github.event.pull_request.base.sha }}
+        PUSH_BEFORE: ${{ github.event.before }}
+      run: |
+        base="$INPUT_BASE"
+        if [ -z "$base" ]; then
+          base="$PR_BASE"
+        fi
+        if [ -z "$base" ]; then
+          # A push to a new branch reports the all-zero sha as "before".
+          # There is no diff to take, so the whole tree is scanned instead
+          # and the summary says so.
+          case "$PUSH_BEFORE" in
+            ''|0000000000000000000000000000000000000000) base='' ;;
+            *) base="$PUSH_BEFORE" ;;
+          esac
+        fi
+        if [ -n "$base" ]; then
+          if ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            git fetch --no-tags --depth=1 origin "$base" \
+              || { echo "::error::could not fetch the base commit $base"; exit 1; }
+          fi
+          rounds=0
+          while ! git merge-base "$base" HEAD >/dev/null 2>&1; do
+            if [ "$rounds" -ge 10 ]; then
+              echo "::error::no merge base between $base and HEAD within 500 commits; check out with fetch-depth: 0 for this repository"
+              exit 1
+            fi
+            git fetch --no-tags --deepen=50 origin "$(git rev-parse HEAD)" \
+              || { echo "::error::could not deepen the checkout to find the merge base"; exit 1; }
+            rounds=$((rounds + 1))
+          done
+        fi
+        echo "base=$base" >> "$GITHUB_OUTPUT"
+
+    # `lyntway scan` exits 1 when it found a key, and also when git or a
+    # flag refused it — the CLI has one failure exit. The output tells them
+    # apart: a finding is printed as a `::error file=` annotation and
+    # nothing else is. The two are reported differently because a scan
+    # that did not run must never read as a scan that found nothing.
+    - id: scan
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        BASE: ${{ steps.base.outputs.base }}
+      run: |
+        out="$RUNNER_TEMP/lyntway-scan.out"
+        set +e
+        if [ -n "$BASE" ]; then
+          lyntway scan --diff="$BASE" --format=github 2>&1 | tee "$out"
+        else
+          echo "no base commit to diff against; scanning the whole tree"
+          lyntway scan --format=github . 2>&1 | tee "$out"
+        fi
+        status=${PIPESTATUS[0]}
+        set -e
+        if [ "$status" -eq 1 ] && ! grep -q '^::error file=' "$out"; then
+          status=3
+        fi
+        case "$status" in
+          0)
+            echo "no provider keys in the change"
+            ;;
+          1)
+            cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+        ## A provider key is in this change
+
+        `lyntway scan` found what looks like a provider API key in the lines
+        this change adds. The annotations on the diff name the file, the line
+        and the provider; the value itself is not printed anywhere.
+
+        **What to do**
+
+        1. Remove the key from the change.
+        2. Rotate it at the provider. It has been in a commit, and a commit is
+           already a copy.
+        3. Keep it out of the code from now on: `lyntway keys migrate` stores
+           a provider key with Lyntway once and hands the application a
+           Lyntway key in its place, so nothing that can reach git carries it.
+        EOF
+            echo "::error::a provider key is in this change — remove it, rotate it, and store it with \`lyntway keys migrate\` (details in the job summary)"
+            exit 1
+            ;;
+          *)
+            echo "::error::lyntway scan did not complete (exit $status); nothing was checked"
+            exit "$status"
+            ;;
+        esac

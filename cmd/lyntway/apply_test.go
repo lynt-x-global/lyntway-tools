@@ -3,7 +3,9 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -20,7 +22,7 @@ func TestAShellProfileRoundTripsExactly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := writeEnv(path, "https://lyntway.example", "lyk_test"); err != nil {
+	if _, err := writeEnv(path, config{Origin: "https://lyntway.example", Key: "lyk_test"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -52,7 +54,7 @@ func TestRunningTwiceLeavesOneBlock(t *testing.T) {
 	}
 
 	for i := 0; i < 3; i++ {
-		if _, err := writeEnv(path, "https://lyntway.example", "lyk_test"); err != nil {
+		if _, err := writeEnv(path, config{Origin: "https://lyntway.example", Key: "lyk_test"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -345,7 +347,7 @@ func TestEveryKindOfTargetHasSomethingToSay(t *testing.T) {
 	line := statusLineFor(target{
 		Name: "Continue", Kind: kindJSON, Found: true,
 		Path: filepath.Join(t.TempDir(), "config.json"),
-	})
+	}, config{}, func(string) string { return "" })
 	if strings.Contains(line, "not installed") {
 		t.Errorf("an installed tool is reported as absent: %q", line)
 	}
@@ -381,5 +383,150 @@ func TestCursorSaysWhatItCannotCover(t *testing.T) {
 	}
 	if !found {
 		t.Error("Cursor is not listed at all, so its limits are never stated")
+	}
+}
+
+// Pointing an SDK at the gateway is half of routing it. The other half is
+// the credential: the gateway authenticates our key and forwards the
+// provider's, and an SDK has one field for both. Before this, init set the
+// base URL, left OPENAI_API_KEY as it was, and every call was refused with
+// 401 — while `lyntway status` called the shell routed.
+//
+// Proved by sourcing the profile in a real shell rather than by reading the
+// block back, because the block is shell syntax and the only test of shell
+// syntax is a shell.
+func TestTheShellBlockPairsTheProviderKeyWhenTheShellStarts(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shells only")
+	}
+	for _, shell := range []string{"sh", "bash", "zsh"} {
+		t.Run(shell, func(t *testing.T) {
+			if _, err := exec.LookPath(shell); err != nil {
+				t.Skipf("%s is not installed here", shell)
+			}
+			dir := t.TempDir()
+			profile := filepath.Join(dir, ".profile")
+			own := "export OPENAI_API_KEY=sk-real\nexport ANTHROPIC_API_KEY=sk-ant-real\n"
+			if err := os.WriteFile(profile, []byte(own), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := writeEnv(profile, config{Origin: "https://lyntway.example", Key: "lyk_test"}); err != nil {
+				t.Fatal(err)
+			}
+
+			want := "lyk_test~sk-real\nlyk_test\nsk-ant-real\n"
+			if got := sourced(t, shell, dir, profile, 1); got != want {
+				t.Errorf("after sourcing once:\n got %q\nwant %q", got, want)
+			}
+			// A profile is often read twice — a login shell and then an
+			// interactive one — and pairing twice produces a key with two
+			// tildes that the gateway splits in the wrong place.
+			if got := sourced(t, shell, dir, profile, 2); got != want {
+				t.Errorf("after sourcing twice:\n got %q\nwant %q", got, want)
+			}
+		})
+	}
+}
+
+// A shell with no provider key of its own must not be handed a broken one.
+// "lyk_test~" with nothing after the tilde authenticates to us and then
+// forwards no credential at all, which the provider reports as our fault.
+func TestAShellWithNoProviderKeyIsNotGivenABrokenOne(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shells only")
+	}
+	dir := t.TempDir()
+	profile := filepath.Join(dir, ".profile")
+	if err := os.WriteFile(profile, []byte("export EDITOR=vim\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writeEnv(profile, config{Origin: "https://lyntway.example", Key: "lyk_test"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := sourced(t, "sh", dir, profile, 1), "\nlyk_test\n\n"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// sourced reads the profile in a clean environment and reports the three
+// variables that decide whether a call reaches the gateway authenticated.
+func sourced(t *testing.T, shell, home, profile string, times int) string {
+	t.Helper()
+	script := strings.Repeat(". "+profile+"; ", times) +
+		`printf '%s\n%s\n%s\n' "$OPENAI_API_KEY" "$ANTHROPIC_AUTH_TOKEN" "$ANTHROPIC_API_KEY"`
+	cmd := exec.Command(shell, "-c", script)
+	cmd.Env = []string{"HOME=" + home, "PATH=/usr/bin:/bin"}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s failed: %v\n%s", shell, err, out)
+	}
+	return string(out)
+}
+
+// Status must report the shell it runs in, not the file it wrote. A block
+// in the profile proves nothing about the environment an SDK will read:
+// the terminal may be old, the provider key may be set after the block,
+// or the pair may have been put in a header the gateway never reads.
+func TestStatusDoesNotCallAShellRoutedUntilTheKeyIsPaired(t *testing.T) {
+	dir := t.TempDir()
+	profile := filepath.Join(dir, ".zshrc")
+	c := config{Origin: "https://lyntway.example", Key: "lyk_test"}
+	if _, err := writeEnv(profile, c); err != nil {
+		t.Fatal(err)
+	}
+	tgt := target{Name: "Your shell", Kind: kindEnv, Found: true, Path: profile}
+	env := func(vars map[string]string) func(string) string {
+		return func(name string) string { return vars[name] }
+	}
+	openaiAt := c.Origin + "/gw/openai/v1"
+	anthropicAt := c.Origin + "/gw/anthropic"
+
+	// The block is written but this shell has not read it yet.
+	line := statusLineFor(tgt, c, env(nil))
+	if strings.Contains(line, "✓") {
+		t.Errorf("a shell that has not read the block is called routed:\n%s", line)
+	}
+	if !strings.Contains(line, "new terminal") {
+		t.Errorf("the reader is not told to open a new terminal:\n%s", line)
+	}
+
+	// The exact shape that fails: base URL set, key sent as-is, 401.
+	line = statusLineFor(tgt, c, env(map[string]string{
+		"OPENAI_BASE_URL": openaiAt, "OPENAI_API_KEY": "sk-real",
+	}))
+	if strings.Contains(line, "✓") {
+		t.Errorf("a shell whose every call is refused is called routed:\n%s", line)
+	}
+	if !strings.Contains(line, "401") || !strings.Contains(line, "lyk_test~") {
+		t.Errorf("the failure and the exact fix are not both stated:\n%s", line)
+	}
+
+	// Paired, and therefore routed.
+	line = statusLineFor(tgt, c, env(map[string]string{
+		"OPENAI_BASE_URL": openaiAt, "OPENAI_API_KEY": "lyk_test~sk-real",
+	}))
+	if !strings.Contains(line, "✓") || !strings.Contains(line, "OpenAI") {
+		t.Errorf("a correctly paired shell is not called routed:\n%s", line)
+	}
+
+	// Anthropic's SDK sends ANTHROPIC_API_KEY in its own header, which the
+	// gateway does not authenticate against. The tilde pair there is the
+	// documented OpenAI shape applied to the wrong provider, and it 401s.
+	line = statusLineFor(tgt, c, env(map[string]string{
+		"ANTHROPIC_BASE_URL": anthropicAt, "ANTHROPIC_API_KEY": "lyk_test~sk-ant-real",
+	}))
+	if strings.Contains(line, "✓") {
+		t.Errorf("a pair in the header the gateway ignores is called routed:\n%s", line)
+	}
+	if !strings.Contains(line, "ANTHROPIC_AUTH_TOKEN") {
+		t.Errorf("the variable that fixes it is not named:\n%s", line)
+	}
+
+	// Our key as the bearer, theirs in its own header: this is what works.
+	line = statusLineFor(tgt, c, env(map[string]string{
+		"ANTHROPIC_BASE_URL": anthropicAt, "ANTHROPIC_AUTH_TOKEN": "lyk_test", "ANTHROPIC_API_KEY": "sk-ant-real",
+	}))
+	if !strings.Contains(line, "✓") || !strings.Contains(line, "Anthropic") {
+		t.Errorf("a correctly configured Anthropic shell is not called routed:\n%s", line)
 	}
 }

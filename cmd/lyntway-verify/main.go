@@ -17,6 +17,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -48,13 +49,22 @@ Keys:
                      {"keys": {"<id>": "..."}, "algorithms": {"<id>": "es256"}}
 
 Options:
-  -chain             input is a JSON array of receipts; verify links between them
+  -chain             input is a chain of receipts — a JSON array or one
+                     receipt per line, as the local tools write — and the
+                     links between them are verified
   -require-full      exit non-zero unless governance ran at full strength
   -max-age DURATION  reject receipts older than this (e.g. 720h)
   -json              emit machine-readable JSON instead of text
 
 Both serialisations are accepted. A COSE_Sign1 envelope is recognised by its
 tag, so nobody handed a receipt needs to know which form it is first.
+
+Transparency:
+  -inclusion FILE    a COSE Receipt (RFC 9942) from the transparency log,
+                     raw or hex, proving this receipt is in the log; the
+                     tree size and root it reconstructs are printed
+  -log-keys FILE     key file for the log's signing key; the keys given
+                     with -key and -keys are used when absent
   -h, -help          show this message
 
 Exit codes:
@@ -150,6 +160,8 @@ func run() int {
 	requireFull := fs.Bool("require-full", false, "require full-strength governance")
 	maxAge := fs.Duration("max-age", 0, "reject receipts older than this")
 	asJSON := fs.Bool("json", false, "emit JSON output")
+	inclusionPath := fs.String("inclusion", "", "path to a COSE Receipt proving inclusion in the transparency log")
+	logKeysPath := fs.String("log-keys", "", "path to a JSON key file for the transparency log")
 	help := fs.Bool("help", false, "show usage")
 	fs.BoolVar(help, "h", false, "show usage")
 
@@ -204,9 +216,114 @@ func run() int {
 	}
 
 	if *asChain {
+		if *inclusionPath != "" {
+			fmt.Fprintf(os.Stderr, "lyntway-verify: -inclusion proves one receipt; it cannot be combined with -chain\n")
+			return 2
+		}
 		return verifyChain(data, resolver, opts, *asJSON)
 	}
-	return verifyOne(data, resolver, opts, *asJSON)
+
+	var incl *inclusionOutput
+	if *inclusionPath != "" {
+		logResolver := resolver
+		if *logKeysPath != "" {
+			logKeys := keyFlag{}
+			if err := loadKeyFile(*logKeysPath, logKeys); err != nil {
+				fmt.Fprintf(os.Stderr, "lyntway-verify: %v\n", err)
+				return 2
+			}
+			if logResolver, err = buildResolver(logKeys); err != nil {
+				fmt.Fprintf(os.Stderr, "lyntway-verify: %v\n", err)
+				return 2
+			}
+		}
+		var code int
+		if incl, code = verifyInclusion(data, *inclusionPath, resolver, logResolver, *asJSON); code != 0 {
+			return code
+		}
+	}
+	return verifyOne(data, resolver, opts, *asJSON, incl)
+}
+
+// inclusionOutput is what a verified COSE Receipt established.
+type inclusionOutput struct {
+	// Entry is the receipt digest as logged: the value a verifier hands to
+	// the log to ask for a proof, and the one a successor receipt records
+	// as its prev_hash.
+	Entry    string `json:"entry"`
+	TreeSize uint64 `json:"tree_size"`
+	Root     string `json:"root"`
+}
+
+// verifyInclusion checks a COSE Receipt from the transparency log against
+// the receipt's digest.
+//
+// The digest is taken over the document as read, exactly as the signature
+// is, so a receipt carrying fields this build does not know about is still
+// looked up under the digest the log holds for it.
+func verifyInclusion(data []byte, proofPath string, keys, logKeys receipt.KeyResolver, jsonOut bool) (*inclusionOutput, int) {
+	proof, err := readProof(proofPath)
+	if err != nil {
+		return nil, fail(jsonOut, err, 2)
+	}
+	entry, err := receiptEntry(data, keys)
+	if err != nil {
+		return nil, fail(jsonOut, fmt.Errorf("computing the receipt's digest: %w", err), 2)
+	}
+	size, root, err := cose.VerifyInclusionReceipt(proof, entry, logKeys)
+	if err != nil {
+		// The receipt itself may be perfectly sound; what failed is its
+		// claim to be in the log. The headline says which, because
+		// "NOT VERIFIED" alone reads as forgery.
+		if jsonOut {
+			emitJSON(output{Status: "NOT VERIFIED — INCLUSION NOT PROVEN", Valid: false, Error: err.Error()})
+			return nil, 1
+		}
+		fmt.Printf("%s\n\n  the log's receipt does not prove that entry %s is in the log:\n  %v\n\n",
+			statusLine("NOT VERIFIED — INCLUSION NOT PROVEN", false), entry, err)
+		return nil, 1
+	}
+	return &inclusionOutput{Entry: string(entry), TreeSize: size, Root: hex.EncodeToString(root)}, 0
+}
+
+// readProof reads a COSE Receipt, accepting hex because that is how the log
+// hands it over in JSON and how a person pastes it.
+func readProof(path string) ([]byte, error) {
+	raw, err := readInput(path)
+	if err != nil {
+		return nil, err
+	}
+	trimmed := bytes.TrimSpace(raw)
+	if decoded, err := hex.DecodeString(string(trimmed)); err == nil && len(decoded) > 0 {
+		return decoded, nil
+	}
+	return raw, nil
+}
+
+// receiptEntry returns the bytes the transparency log hashed for this
+// receipt: its digest, as 64 characters of lowercase hex.
+//
+// The digest is SHA-256 over the receipt's signing input, derived from the
+// document as it arrived rather than from a parsed struct, for the same
+// reason the signature is: a field this build does not know must not
+// change which entry is looked up.
+func receiptEntry(data []byte, keys receipt.KeyResolver) ([]byte, error) {
+	raw := data
+	if looksLikeCOSE(data) {
+		res, err := cose.Verify1(data, keys)
+		if err != nil {
+			return nil, err
+		}
+		raw = res.Payload
+	} else {
+		raw, _ = unwrapEnvelope(data)
+	}
+	input, err := receipt.SigningInputFromJSON(raw)
+	if err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256(input)
+	return []byte(hex.EncodeToString(sum[:])), nil
 }
 
 func readInput(path string) ([]byte, error) {
@@ -252,24 +369,41 @@ func loadKeyFile(path string, into keyFlag) error {
 
 // output is the machine-readable shape emitted under -json.
 type output struct {
-	Status       string   `json:"status"`
-	Valid        bool     `json:"valid"`
-	FullStrength bool     `json:"full_strength"`
-	Mode         string   `json:"mode,omitempty"`
-	Decision     string   `json:"decision,omitempty"`
-	KeyID        string   `json:"key_id,omitempty"`
-	Provenance   string   `json:"provenance,omitempty"`
-	Vantage      string   `json:"vantage,omitempty"`
-	Algorithm    string   `json:"algorithm,omitempty"`
-	IssuedAt     string   `json:"issued_at,omitempty"`
-	Digest       string   `json:"digest,omitempty"`
-	ChainID      string   `json:"chain_id,omitempty"`
-	ChainLength  int      `json:"chain_length,omitempty"`
-	ChainHead    string   `json:"chain_head,omitempty"`
-	Degraded     int      `json:"degraded_count,omitempty"`
-	Bypassed     int      `json:"bypassed_count,omitempty"`
-	Warnings     []string `json:"warnings,omitempty"`
-	Error        string   `json:"error,omitempty"`
+	Status       string `json:"status"`
+	Valid        bool   `json:"valid"`
+	FullStrength bool   `json:"full_strength"`
+	Mode         string `json:"mode,omitempty"`
+	Decision     string `json:"decision,omitempty"`
+	// Approval is who resolved a held action and which way. Without it a
+	// require_approval decision with a digest of released content reads
+	// as a hold that was quietly waved through.
+	Approval   *receipt.Approval `json:"approval,omitempty"`
+	KeyID      string            `json:"key_id,omitempty"`
+	Provenance string            `json:"provenance,omitempty"`
+	Vantage    string            `json:"vantage,omitempty"`
+	Algorithm  string            `json:"algorithm,omitempty"`
+	IssuedAt   string            `json:"issued_at,omitempty"`
+	Digest     string            `json:"digest,omitempty"`
+	// Subject is what the digest was taken over. Absent from the receipt
+	// means the payload; anything else means a record about the traffic,
+	// and a consumer reading the digest without this field would take it
+	// for a hash of the data.
+	Subject string `json:"subject,omitempty"`
+	// Truncated means the digests cover the prefix of a stream that policy
+	// cut; the remainder never reached the caller.
+	Truncated   bool     `json:"truncated,omitempty"`
+	ChainID     string   `json:"chain_id,omitempty"`
+	ChainLength int      `json:"chain_length,omitempty"`
+	ChainHead   string   `json:"chain_head,omitempty"`
+	Degraded    int      `json:"degraded_count,omitempty"`
+	Bypassed    int      `json:"bypassed_count,omitempty"`
+	Warnings    []string `json:"warnings,omitempty"`
+	Error       string   `json:"error,omitempty"`
+
+	// Inclusion is present when -inclusion was given and the log's receipt
+	// verified. Its absence means nothing was checked, not that the
+	// receipt is absent from the log.
+	Inclusion *inclusionOutput `json:"inclusion,omitempty"`
 }
 
 // looksLikeCOSE reports whether the input is a COSE_Sign1 rather than JSON.
@@ -327,7 +461,7 @@ func unwrapEnvelope(data []byte) ([]byte, bool) {
 	return inner, true
 }
 
-func verifyOne(data []byte, keys receipt.KeyResolver, opts receipt.VerifyOptions, jsonOut bool) int {
+func verifyOne(data []byte, keys receipt.KeyResolver, opts receipt.VerifyOptions, jsonOut bool, incl *inclusionOutput) int {
 	if looksLikeCOSE(data) {
 		r, err := cose.DecodeReceipt(data, keys)
 		if err != nil {
@@ -386,17 +520,17 @@ func verifyOne(data []byte, keys receipt.KeyResolver, opts receipt.VerifyOptions
 		// cryptographically but was refused by policy, typically
 		// -require-full. Say so precisely rather than implying forgery.
 		if res != nil {
-			return report(jsonOut, res, &r, err)
+			return reportWith(jsonOut, res, &r, err, incl)
 		}
 		return fail(jsonOut, err, 1)
 	}
-	return report(jsonOut, res, &r, nil)
+	return reportWith(jsonOut, res, &r, nil, incl)
 }
 
 func verifyChain(data []byte, keys receipt.KeyResolver, opts receipt.VerifyOptions, jsonOut bool) int {
-	var rs []*receipt.Receipt
-	if err := json.Unmarshal(data, &rs); err != nil {
-		return fail(jsonOut, fmt.Errorf("parsing receipt array: %w", err), 2)
+	rs, err := decodeReceipts(data)
+	if err != nil {
+		return fail(jsonOut, err, 2)
 	}
 
 	chain, err := receipt.VerifyChain(rs, keys, opts)
@@ -440,19 +574,42 @@ func verifyChain(data []byte, keys receipt.KeyResolver, opts receipt.VerifyOptio
 }
 
 func report(jsonOut bool, res *receipt.Result, r *receipt.Receipt, policyErr error) int {
+	return reportWith(jsonOut, res, r, policyErr, nil)
+}
+
+// reportWith is report with the result of an inclusion check, when one
+// was asked for.
+func reportWith(jsonOut bool, res *receipt.Result, r *receipt.Receipt, policyErr error, incl *inclusionOutput) int {
 	out := output{
+		Inclusion:    incl,
 		Valid:        res.Valid,
 		FullStrength: res.FullStrength,
 		Mode:         string(res.Mode),
 		Decision:     string(res.Decision),
+		Approval:     r.Governance.Approval,
 		KeyID:        res.KeyID,
 		Provenance:   string(res.Provenance),
 		Vantage:      res.Vantage,
 		Algorithm:    string(res.Algorithm),
 		IssuedAt:     res.IssuedAt.UTC().Format(time.RFC3339),
 		Digest:       res.Digest,
+		Subject:      string(r.EffectiveSubject()),
 		ChainID:      r.Chain.ID,
 		Warnings:     res.Warnings,
+	}
+	// The receipt library's warnings say nothing about the subject, and a
+	// JSON consumer that only reads warnings would otherwise take a
+	// metadata digest for a hash of the data.
+	if note := subjectWarning(r.EffectiveSubject()); note != "" {
+		out.Warnings = append(append([]string(nil), out.Warnings...), note)
+	}
+	if r.Content.Truncated {
+		// A cut stream carries "block" beside an output digest, which on
+		// any other receipt would be a contradiction. Said plainly so a
+		// reader neither takes the prefix for the whole response nor
+		// takes the pairing for tampering.
+		out.Truncated = true
+		out.Warnings = append(append([]string(nil), out.Warnings...), truncatedWarning)
 	}
 
 	// Anchors are checked before the headline is chosen. A token that
@@ -504,6 +661,19 @@ func report(jsonOut bool, res *receipt.Result, r *receipt.Receipt, policyErr err
 		fmt.Printf("  on behalf of   %s (%s)\n", hop.ID, hop.Source)
 	}
 	fmt.Printf("  decision       %s\n", res.Decision)
+	if a := r.Governance.Approval; a != nil {
+		// Directly under the decision, because it changes what the
+		// decision means: require_approval with content released is a
+		// person's doing, and the person is named here or nowhere.
+		switch a.Outcome {
+		case receipt.ApprovalApproved:
+			fmt.Printf("  approval       released by %s at %s (%s)\n", a.DecidedBy, a.DecidedAt, a.ID)
+		case receipt.ApprovalDenied:
+			fmt.Printf("  approval       denied by %s at %s (%s)\n", a.DecidedBy, a.DecidedAt, a.ID)
+		default:
+			fmt.Printf("  approval       nobody decided by %s (%s)\n", a.DecidedAt, a.ID)
+		}
+	}
 	if len(r.Governance.Findings) > 0 {
 		var parts []string
 		for _, f := range r.Governance.Findings {
@@ -534,7 +704,15 @@ func report(jsonOut bool, res *receipt.Result, r *receipt.Receipt, policyErr err
 	// issuer saw this or was told about it before they read the details.
 	switch res.Provenance {
 	case receipt.ProvenanceObserved:
-		fmt.Printf("  evidence       first-hand, observed at %s\n", res.Vantage)
+		if r.EffectiveSubject() != receipt.SubjectPayload {
+			// A tunnel receipt is first-hand about the connection and
+			// blind to its content. "Observed" on its own reads as
+			// observation of the bytes, which is the one thing the
+			// issuer never did.
+			fmt.Printf("  evidence       first-hand, observed at %s (the connection only; the content was not read)\n", res.Vantage)
+		} else {
+			fmt.Printf("  evidence       first-hand, observed at %s\n", res.Vantage)
+		}
 	case receipt.ProvenanceAttested:
 		fmt.Printf("  evidence       second-hand, reported by %s\n", res.Vantage)
 	default:
@@ -549,17 +727,23 @@ func report(jsonOut bool, res *receipt.Result, r *receipt.Receipt, policyErr err
 		fmt.Printf("  authorised by  %s for chains under %q\n", att.RootKeyID, att.Scope)
 	}
 	fmt.Printf("  issued         %s\n", res.IssuedAt.UTC().Format(time.RFC3339))
-	if r.EffectiveSubject() == receipt.SubjectTelemetry {
+	if incl != nil {
+		// Stated as what was checked: the log's own signature over a root
+		// this receipt's digest leads to. Nothing here says the log is
+		// honest, only that it has committed to this entry.
+		fmt.Printf("  logged         proven by the log's receipt at tree size %d\n                 root %s\n", incl.TreeSize, incl.Root)
+	}
+	if r.EffectiveSubject() != receipt.SubjectPayload {
 		// Without this a reader sees a digest and reasonably assumes the
 		// data was hashed, when what was hashed is a record describing it.
-		fmt.Printf("  digest         %s\n                 (covers a telemetry record, not the data itself)\n", res.Digest)
+		fmt.Printf("  digest         %s\n                 (covers a record about the traffic, not the traffic itself)\n", res.Digest)
 	} else {
 		fmt.Printf("  digest         %s\n", res.Digest)
 	}
 
-	if len(res.Warnings) > 0 {
+	if len(out.Warnings) > 0 {
 		fmt.Println()
-		for _, w := range res.Warnings {
+		for _, w := range out.Warnings {
 			fmt.Printf("  ! %s\n", w)
 		}
 	}
@@ -575,6 +759,29 @@ func report(jsonOut bool, res *receipt.Result, r *receipt.Receipt, policyErr err
 		return 1
 	}
 	return 0
+}
+
+// truncatedWarning is shared word for word with the SDKs and the verify page.
+const truncatedWarning = "stream cut by policy — digests cover the delivered prefix only"
+
+// subjectWarning states what a digest covers when it is not the data.
+//
+// Every value other than payload is treated as "a record about the traffic",
+// including values this build has never heard of. A future subject that
+// this verifier does not recognise must read weak, not strong: an unknown
+// word next to a digest would otherwise be taken for a hash of the data.
+func subjectWarning(subject receipt.ContentSubject) string {
+	const head = "the digests cover a record about the traffic, not the traffic itself: "
+	switch subject {
+	case receipt.SubjectPayload:
+		return ""
+	case receipt.SubjectMetadata:
+		return head + "the issuer carried the bytes without reading them, so nothing here attests to what they contained"
+	case receipt.SubjectTelemetry:
+		return head + "another system reported the action, so nothing here attests to what it carried"
+	default:
+		return head + fmt.Sprintf("subject %q is not one this verifier knows, so nothing here attests to what the traffic contained", string(subject))
+	}
 }
 
 func fail(jsonOut bool, err error, code int) int {
@@ -670,4 +877,37 @@ func reportAnchors(r *receipt.Receipt, results []anchor.AnchorResult, err error)
 			fmt.Printf("                 authority serial %s\n", res.SerialNumber)
 		}
 	}
+}
+
+// decodeReceipts accepts a chain as a JSON array or as one receipt per line.
+//
+// The local tools append a line per receipt, because a file that is
+// rewritten as an array on every event is a file that is corrupt whenever
+// the process dies mid-write. Asking a person to convert the format before
+// they can check it is one more reason not to check.
+func decodeReceipts(data []byte) ([]*receipt.Receipt, error) {
+	trimmed := bytes.TrimLeft(data, " \t\r\n")
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		var rs []*receipt.Receipt
+		if err := json.Unmarshal(trimmed, &rs); err != nil {
+			return nil, fmt.Errorf("parsing receipt array: %w", err)
+		}
+		return rs, nil
+	}
+	var rs []*receipt.Receipt
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	for {
+		var r receipt.Receipt
+		if err := dec.Decode(&r); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, fmt.Errorf("parsing receipt %d: %w", len(rs)+1, err)
+		}
+		rs = append(rs, &r)
+	}
+	if len(rs) == 0 {
+		return nil, fmt.Errorf("no receipts in input")
+	}
+	return rs, nil
 }

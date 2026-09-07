@@ -11,7 +11,7 @@ import (
 // Bump it on ANY change to rule content. The digest will change regardless
 // and would expose an unbumped edit, but a stale version string makes a
 // receipt harder to interpret for anyone reading it later.
-const RulesetVersion = "core-2026.08.15"
+const RulesetVersion = "core-2026.09.04"
 
 // Classes detected by the default ruleset.
 const (
@@ -23,6 +23,7 @@ const (
 	ClassUSSSN      Class = "pii.us_ssn"
 	ClassINPAN      Class = "pii.in_pan"
 	ClassINAadhaar  Class = "pii.in_aadhaar"
+	ClassUKNINO     Class = "pii.uk_nino"
 
 	ClassAWSAccessKey Class = "secret.aws_access_key"
 	ClassGitHubToken  Class = "secret.github_token"
@@ -196,6 +197,27 @@ func defaultRules() []Rule {
 			Priority:   70,
 		},
 		{
+			ID:    "uk-nino",
+			Class: ClassUKNINO,
+			// Two letters, six digits, one letter, written either unbroken
+			// or in the spaced groups printed on the card and on every
+			// HMRC letter. The demo text on the playground carried the
+			// spaced form and nothing detected it.
+			//
+			// No checksum exists for these, so the structural rules HMRC
+			// publishes do the work instead and live in the validator:
+			// which letters may open the number, which prefixes were never
+			// allocated, and that the suffix is one of A to D. A number
+			// printed without its suffix — a form some old payslips use —
+			// is two letters and six digits, which is also a product code,
+			// and is deliberately not matched: the rule that caught it
+			// would flag half of every parts catalogue.
+			Pattern:    regexp.MustCompile(`\b([A-Z]{2} ?\d{2} ?\d{2} ?\d{2} ?[A-D])\b`),
+			Confidence: ConfidenceHigh,
+			Validate:   validUKNINO,
+			Priority:   70,
+		},
+		{
 			ID:    "india-aadhaar",
 			Class: ClassINAadhaar,
 			// Aadhaar never begins 0 or 1, and carries a Verhoeff check
@@ -357,6 +379,28 @@ func validUSSSN(s string) bool {
 		return false
 	}
 	return group != "00" && serial != "0000"
+}
+
+// validUKNINO applies the allocation rules HMRC publishes for National
+// Insurance numbers.
+//
+// The first letter is never D, F, I, Q, U or V; the second is never D, F,
+// I, O, Q, U or V; and the prefixes BG, GB, KN, NK, NT, TN and ZZ have
+// never been allocated. The suffix, when the number carries one, is A to D.
+// The pattern already insists on the suffix, so this checks the prefix.
+func validUKNINO(s string) bool {
+	if len(s) < 2 {
+		return false
+	}
+	first, second := s[0], s[1]
+	if strings.IndexByte("DFIQUV", first) >= 0 || strings.IndexByte("DFIOQUV", second) >= 0 {
+		return false
+	}
+	switch s[:2] {
+	case "BG", "GB", "KN", "NK", "NT", "TN", "ZZ":
+		return false
+	}
+	return true
 }
 
 // validLuhn reports whether s passes the Luhn checksum.

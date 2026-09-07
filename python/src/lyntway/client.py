@@ -13,7 +13,9 @@ import json
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Optional, Sequence, Union
+
+from .signing import RequestSigner
 
 __all__ = ["Lyntway", "LyntwayError", "GovernResponse"]
 
@@ -44,7 +46,23 @@ class GovernResponse:
 class Lyntway:
     """Client for a Lyntway govern deployment."""
 
-    def __init__(self, base_url: str, api_key: str, *, timeout: float = 30.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        *,
+        timeout: float = 30.0,
+        signer: Union[RequestSigner, None, bool] = None,
+    ) -> None:
+        """
+        :param signer: Signs every authenticated request so the receipt can
+            record the actor as verified rather than asserted. ``None`` (the
+            default) reads ``LYNTWAY_SIGNING_KEY`` and ``LYNTWAY_KEY_ID`` from
+            the environment and signs when both are set; ``False`` never
+            signs, whatever the environment says. The bearer key is sent
+            either way — the signature upgrades identity, it does not
+            replace authentication.
+        """
         if not base_url:
             raise ValueError("base_url is required")
         if not api_key:
@@ -52,6 +70,20 @@ class Lyntway:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._timeout = timeout
+        self._signer: Optional[RequestSigner]
+        if signer is None:
+            self._signer = RequestSigner.from_env()
+        elif signer is False:
+            self._signer = None
+        elif isinstance(signer, RequestSigner):
+            self._signer = signer
+        else:
+            raise TypeError("signer must be a RequestSigner, None, or False")
+
+    @property
+    def signer(self) -> Optional[RequestSigner]:
+        """The signer in use, or ``None`` when requests go out unsigned."""
+        return self._signer
 
     def govern(
         self,
@@ -147,12 +179,15 @@ class Lyntway:
         headers = {"Accept": "application/json"}
         if data is not None:
             headers["Content-Type"] = "application/json"
+        url = f"{self._base_url}{path}"
         if auth:
             headers["Authorization"] = f"Bearer {self._api_key}"
+            if self._signer is not None:
+                # Signed over the exact bytes in `data`, which is why the
+                # body is encoded once above and never re-serialised.
+                headers.update(self._signer.sign(method, url, data))
 
-        request = urllib.request.Request(
-            f"{self._base_url}{path}", data=data, headers=headers, method=method
-        )
+        request = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
             with urllib.request.urlopen(request, timeout=self._timeout) as response:
                 return json.loads(response.read().decode("utf-8"))

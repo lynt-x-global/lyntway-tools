@@ -30,6 +30,7 @@ var classLabels = map[Class]string{
 	ClassUSSSN:      "US Social Security number",
 	ClassINPAN:      "Indian PAN",
 	ClassINAadhaar:  "Aadhaar number",
+	ClassUKNINO:     "UK National Insurance number",
 
 	ClassAWSAccessKey: "AWS access key",
 	ClassGitHubToken:  "GitHub token",

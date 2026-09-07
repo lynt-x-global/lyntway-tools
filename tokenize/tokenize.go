@@ -44,6 +44,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base32"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"regexp"
@@ -209,26 +210,76 @@ func NewScope(key []byte, store Store) (*Scope, error) {
 	return &Scope{key: k, store: store}, nil
 }
 
+// ErrTokenSpaceExhausted is returned when every token a format can express
+// is already held by some other value in this scope.
+//
+// It is an error and not a fallback because the alternatives are worse. A
+// token outside the reserved ranges could route, dial or deliver; a token
+// already held would reverse to somebody else's value. In a shared vault
+// that is another customer's data, which is the one outcome this package
+// exists to prevent.
+var ErrTokenSpaceExhausted = errors.New("tokenize: every token this format can express is already in use in this scope")
+
+// maxDerivations bounds the collision walk for formats whose space is too
+// large to enumerate.
+//
+// A phone token has ten free digits and a card twelve; needing this many
+// fresh derivations to find a free one means the scope is holding on the
+// order of a billion distinct values of that class, at which point the
+// format is exhausted in every sense that matters and saying so beats
+// searching forever.
+const maxDerivations = 256
+
 // Tokenize returns a stable, format-preserving token for value.
 //
 // Calling it repeatedly with the same class and value returns the same
 // token and does not grow the store.
+//
+// A token is never shared. Format preservation makes the token spaces
+// small — an IPv4 token is one of 762 reserved addresses — so two distinct
+// values landing on the same token is not a cryptographic accident but a
+// certainty once a scope holds enough of them. When the natural token is
+// already held by a different value, the next derivation is tried, and so
+// on until a free one is found or the format runs out. The walk is
+// deterministic, so a value keeps the token it was first issued however
+// many others are tokenised around it.
 //
 // Returns an error when the mapping could not be recorded. That error must
 // not be ignored: releasing a token whose reverse mapping was never stored
 // hands the caller something they believe is reversible and is not, and the
 // failure is silent — Restore would simply leave the token in place.
 func (s *Scope) Tokenize(class detect.Class, value string) (string, error) {
-	token := s.derive(class, value)
-
-	// Recorded before the token is returned. An existing entry is left
-	// alone: derivation is deterministic, so a collision would mean two
-	// distinct values produced the same token, which HMAC makes
-	// infeasible.
-	if err := s.store.Put(token, value); err != nil {
-		return "", fmt.Errorf("tokenize: recording token mapping: %w", err)
+	limit := maxDerivations
+	if class == detect.ClassIPv4 {
+		// Small enough to enumerate, so exhaustion is exact rather than
+		// probable.
+		limit = ipTokenSpace
 	}
-	return token, nil
+
+	for attempt := 0; attempt < limit; attempt++ {
+		token := s.derive(class, value, attempt)
+
+		// Recorded before the token is returned. A store keeps the first
+		// value written under a token, so this is a claim rather than an
+		// overwrite, and reading it back is what says whether the claim
+		// succeeded: the store may have been holding another value all
+		// along, or another replica may have written one in between.
+		if err := s.store.Put(token, value); err != nil {
+			return "", fmt.Errorf("tokenize: recording token mapping: %w", err)
+		}
+		held, known, err := s.store.Get(token)
+		if err != nil {
+			return "", fmt.Errorf("tokenize: confirming token mapping: %w", err)
+		}
+		if !known || held == value {
+			// Unknown after a successful Put means the store retains
+			// nothing. A one-way scope has no mapping to collide with,
+			// and no mapping to reverse, so the first token is as good
+			// as any.
+			return token, nil
+		}
+	}
+	return "", fmt.Errorf("%w: %s after %d derivations", ErrTokenSpaceExhausted, class, limit)
 }
 
 // Detokenize resolves a token back to its original value.
@@ -289,25 +340,49 @@ func (s *Scope) Erase() (removed int64, supported bool, err error) {
 // The class is bound into the HMAC input alongside the value, so the same
 // string appearing as two different classes yields different tokens. That
 // prevents a token from silently carrying a type it was not issued for.
-func (s *Scope) derive(class detect.Class, value string) string {
+//
+// attempt selects among the tokens a value may receive when its natural
+// one is taken. Attempt zero is byte-for-byte the derivation this package
+// has always used: vaults hold tokens issued before there was a second
+// attempt, and changing the first would leave every one of them
+// unresolvable — silently, because Restore leaves an unknown token where it
+// stands.
+func (s *Scope) derive(class detect.Class, value string, attempt int) string {
+	switch class {
+	case detect.ClassEmail:
+		return emailToken(s.mac(class, value, attempt))
+	case detect.ClassPhone:
+		return phoneToken(s.mac(class, value, attempt))
+	case detect.ClassCreditCard:
+		return cardToken(s.mac(class, value, attempt), len(digitsOnly(value)))
+	case detect.ClassIPv4:
+		// The address space is walked rather than re-hashed, so that
+		// exhaustion is exact: a re-hash could revisit the same few
+		// addresses forever while free ones sat unvisited.
+		return ipToken(s.mac(class, value, 0), attempt)
+	default:
+		return genericToken(class, s.mac(class, value, attempt))
+	}
+}
+
+// mac is the keyed digest a token is cut from.
+//
+// The attempt is appended only when non-zero, so the first digest is
+// unchanged from before attempts existed. It is separated from the value
+// by the same NUL that separates the class, and written as a fixed-width
+// integer so no two attempts can share an encoding.
+func (s *Scope) mac(class detect.Class, value string, attempt int) []byte {
 	mac := hmac.New(sha256.New, s.key)
 	mac.Write([]byte(class))
 	mac.Write([]byte{0})
 	mac.Write([]byte(value))
-	sum := mac.Sum(nil)
-
-	switch class {
-	case detect.ClassEmail:
-		return emailToken(sum)
-	case detect.ClassPhone:
-		return phoneToken(sum)
-	case detect.ClassCreditCard:
-		return cardToken(sum, len(digitsOnly(value)))
-	case detect.ClassIPv4:
-		return ipToken(sum)
-	default:
-		return genericToken(class, sum)
+	if attempt > 0 {
+		var n [4]byte
+		binary.BigEndian.PutUint32(n[:], uint32(attempt))
+		mac.Write([]byte{0})
+		mac.Write(n[:])
 	}
+	return mac.Sum(nil)
 }
 
 // emailToken produces a syntactically valid address in a domain that can
@@ -382,10 +457,33 @@ func luhnCheckDigit(prefix []int) int {
 	return (10 - sum%10) % 10
 }
 
-// ipToken produces an address in 192.0.2.0/24, the RFC 5737 documentation
-// range, so it is syntactically valid and guaranteed not to route.
-func ipToken(sum []byte) string {
-	return fmt.Sprintf("192.0.2.%d", sum[0]%254+1)
+// ipTokenRanges are the three RFC 5737 documentation networks, the only
+// IPv4 space a token may be cut from.
+//
+// Reserved means guaranteed not to route: a token that reached a real
+// host would be a token that could receive the traffic the original
+// address was withheld from. Three /24s are all the RFC sets aside, so
+// they are the whole space, and widening into anything else is not an
+// option however full they get.
+var ipTokenRanges = [...]string{"192.0.2.", "198.51.100.", "203.0.113."}
+
+// ipTokenHosts is the usable hosts per range: .1 through .254, leaving the
+// network and broadcast addresses alone so the token reads as a host.
+const ipTokenHosts = 254
+
+// ipTokenSpace is every address a scope can issue.
+const ipTokenSpace = len(ipTokenRanges) * ipTokenHosts
+
+// ipToken produces an address in one of the RFC 5737 documentation ranges,
+// so it is syntactically valid and guaranteed not to route.
+//
+// The digest chooses a starting host in the first range — exactly the
+// address this function has always produced — and each further attempt
+// walks one address on, wrapping through the other two ranges, so that
+// every address is visited exactly once before the space is declared full.
+func ipToken(sum []byte, attempt int) string {
+	index := (int(sum[0]%ipTokenHosts) + attempt) % ipTokenSpace
+	return fmt.Sprintf("%s%d", ipTokenRanges[index/ipTokenHosts], index%ipTokenHosts+1)
 }
 
 // genericToken produces a labelled token for classes with no format worth
@@ -555,6 +653,14 @@ func CountTokens(content []byte) int {
 	return len(tokenPattern.FindAllIndex(content, -1))
 }
 
+// IsToken reports whether s is, in its entirety, a token this package
+// would issue. Shape only, like CountTokens: it says the string is a
+// substitute, not that this deployment made it.
+func IsToken(s string) bool {
+	loc := tokenPattern.FindStringIndex(s)
+	return loc != nil && loc[0] == 0 && loc[1] == len(s)
+}
+
 // tokenPattern matches every token shape this package issues.
 //
 // Anchored on the fixed prefixes and reserved ranges the generators use, so
@@ -563,7 +669,7 @@ var tokenPattern = regexp.MustCompile(
 	`lynt-[a-z2-7]{13}@tokenized\.invalid` +
 		`|\+99\d{10}` +
 		`|\b9999\d{9,15}\b` +
-		`|192\.0\.2\.\d{1,3}` +
+		`|(?:192\.0\.2|198\.51\.100|203\.0\.113)\.\d{1,3}` +
 		`|LYNT_[A-Z0-9_]+_[a-z2-7]{16}`)
 
 // KeyMatches reports whether other holds the same key as s, in constant

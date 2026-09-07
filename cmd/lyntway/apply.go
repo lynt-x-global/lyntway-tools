@@ -45,7 +45,25 @@ func backup(path string) (string, error) {
 }
 
 // writeEnv adds the environment variables to a shell profile.
-func writeEnv(path, origin, key string) (string, error) {
+//
+// Two variables per provider, not one. The base URL sends the SDK to the
+// gateway; the credential is what lets it in. The gateway authenticates
+// our key and forwards the provider's, and an SDK has one field for both,
+// so setting the base URL alone sends the customer's own provider key as
+// the bearer and every call is refused. That is what this did for a while,
+// while `status` reported the shell routed.
+//
+// The provider's key is not something this command knows, so the pairing
+// is done by the shell at start-up from whatever the profile already sets.
+// A key set later, or in a .env file the application reads itself, is not
+// reached, which is why `status` checks the live environment rather than
+// this file.
+//
+// The signing lines are written only when `keys sign` has run: an absent
+// LYNTWAY_SIGNING_KEY is how an SDK knows not to sign, and a line pointing
+// at a file that does not exist would turn every request into an error.
+func writeEnv(path string, c config) (string, error) {
+	origin, key := c.Origin, c.Key
 	existing, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return "", err
@@ -62,7 +80,7 @@ func writeEnv(path, origin, key string) (string, error) {
 	// this twice does not leave two blocks disagreeing about the base URL.
 	body := removeBlock(string(existing))
 
-	block := strings.Join([]string{
+	lines := []string{
 		markerStart,
 		"# Added by `lyntway init`. Remove with `lyntway undo`.",
 		"# Your AI traffic is routed through Lyntway so it can be recorded.",
@@ -70,9 +88,20 @@ func writeEnv(path, origin, key string) (string, error) {
 		fmt.Sprintf("export OPENAI_BASE_URL=%q", origin+"/gw/openai/v1"),
 		fmt.Sprintf("export ANTHROPIC_BASE_URL=%q", origin+"/gw/anthropic"),
 		fmt.Sprintf("export LYNTWAY_KEY=%q", key),
-		markerEnd,
-		"",
-	}, "\n")
+		"# The gateway authenticates the Lyntway key and forwards yours. OpenAI's",
+		"# SDK has one field for both, so they are joined with a tilde — only when",
+		"# your own key is set, and only once, so a profile read twice is not",
+		"# paired twice. Anthropic's SDK sends its bearer token separately.",
+	}
+	lines = append(lines, pairingLines(path)...)
+	if c.SigningKey != "" {
+		lines = append(lines,
+			"# Requests are signed with this key, so the receipt records who sent them.",
+			fmt.Sprintf("export LYNTWAY_SIGNING_KEY=%q", c.SigningKey),
+			fmt.Sprintf("export LYNTWAY_KEY_ID=%q", c.KeyID))
+	}
+	lines = append(lines, markerEnd, "")
+	block := strings.Join(lines, "\n")
 
 	if body != "" && !strings.HasSuffix(body, "\n") {
 		body += "\n"
@@ -81,6 +110,25 @@ func writeEnv(path, origin, key string) (string, error) {
 		return "", err
 	}
 	return saved, nil
+}
+
+// pairingLines are the shell-specific half of the block.
+//
+// fish shares neither `case` nor `[` with the Bourne family, so its lines
+// are written in its own syntax. `export` itself is fine: fish ships it as
+// a compatibility function, which is why the base URLs above need no
+// special case.
+func pairingLines(profile string) []string {
+	if strings.HasSuffix(profile, ".fish") {
+		return []string{
+			`if set -q OPENAI_API_KEY; and not string match -q '*~*' -- $OPENAI_API_KEY; set -gx OPENAI_API_KEY "$LYNTWAY_KEY~$OPENAI_API_KEY"; end`,
+			`set -gx ANTHROPIC_AUTH_TOKEN "$LYNTWAY_KEY"`,
+		}
+	}
+	return []string{
+		`if [ -n "$OPENAI_API_KEY" ]; then case "$OPENAI_API_KEY" in *~*) ;; *) export OPENAI_API_KEY="$LYNTWAY_KEY~$OPENAI_API_KEY" ;; esac; fi`,
+		`export ANTHROPIC_AUTH_TOKEN="$LYNTWAY_KEY"`,
+	}
 }
 
 // removeBlock strips a previously written block, markers included.

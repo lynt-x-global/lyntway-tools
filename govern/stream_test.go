@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"crypto/rand"
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/lynt-x-global/lyntway-tools/detect"
 	"github.com/lynt-x-global/lyntway-tools/receipt"
 	"github.com/lynt-x-global/lyntway-tools/tokenize"
 )
@@ -350,5 +352,149 @@ func TestAOneWayDeploymentStreamsUnchanged(t *testing.T) {
 	}
 	if got != "Confirmed: nothing sensitive here." {
 		t.Errorf("the stream was altered with no scope in play: %q", got)
+	}
+}
+
+// findingDecision returns the decision recorded for a class, or "" when
+// the class was not found at all.
+func findingDecision(g *StreamGovernor, class string) receipt.Decision {
+	for _, f := range g.Findings() {
+		if f.Class == class {
+			return f.Decision
+		}
+	}
+	return ""
+}
+
+// The same bytes, two destinations, two decisions. A rule scoped to one
+// upstream must apply on a stream exactly as it does on a buffered reply,
+// and must not apply when the stream's destination is unknown.
+func TestAStreamIsDecidedForItsDestination(t *testing.T) {
+	engine, scope := streamEngine(t)
+	policy := &Policy{
+		ID: "scoped", Version: "1", Default: receipt.DecisionAllow,
+		Rules: []PolicyRule{
+			{Class: "pii.email", Upstream: "crm", Decision: receipt.DecisionLogOnly},
+			{Class: "pii.email", Decision: receipt.DecisionTokenize},
+		},
+	}
+	const content = "Write to priya@acme.com about the invoice before Friday."
+
+	for _, chunk := range []int{1, 7, 64} {
+		toCRM, g, err := streamAllWith(t, engine.NewStreamGovernor(scope, WithPolicy(policy), WithTarget("crm")), content, chunk)
+		if err != nil {
+			t.Fatalf("chunk %d, to crm: %v", chunk, err)
+		}
+		if !strings.Contains(toCRM, "priya@acme.com") {
+			t.Errorf("chunk %d, to crm: the scoped log_only rule did not hold on the stream:\n%s", chunk, toCRM)
+		}
+		if d := findingDecision(g, "pii.email"); d != receipt.DecisionLogOnly {
+			t.Errorf("chunk %d, to crm: finding decision = %q, want log_only", chunk, d)
+		}
+
+		toModel, g, err := streamAllWith(t, engine.NewStreamGovernor(scope, WithPolicy(policy), WithTarget("openai")), content, chunk)
+		if err != nil {
+			t.Fatalf("chunk %d, to openai: %v", chunk, err)
+		}
+		if strings.Contains(toModel, "priya@acme.com") || !strings.Contains(toModel, "@tokenized.invalid") {
+			t.Errorf("chunk %d, to openai: the general rule did not substitute:\n%s", chunk, toModel)
+		}
+		if d := findingDecision(g, "pii.email"); d != receipt.DecisionTokenize {
+			t.Errorf("chunk %d, to openai: finding decision = %q, want tokenize", chunk, d)
+		}
+
+		// No destination: the scoped rule asked for a condition that cannot
+		// be checked, and must not be treated as met.
+		unknown, _, err := streamAllWith(t, engine.NewStreamGovernor(scope, WithPolicy(policy)), content, chunk)
+		if err != nil {
+			t.Fatalf("chunk %d, no target: %v", chunk, err)
+		}
+		if strings.Contains(unknown, "priya@acme.com") {
+			t.Errorf("chunk %d, no target: a scoped allowance applied to an unknown destination:\n%s", chunk, unknown)
+		}
+	}
+}
+
+// A refusal scoped to one upstream cuts the stream bound there and leaves
+// the same stream to anywhere else flowing. This is the path through the
+// marker freeze and the completed-match cut, both of which decide by
+// destination too.
+func TestAScopedRefusalCutsOnlyTheStreamBoundForItsTarget(t *testing.T) {
+	engine, scope := streamEngine(t)
+	policy := &Policy{
+		ID: "scoped-refusal", Version: "1", Default: receipt.DecisionAllow,
+		Rules: []PolicyRule{
+			{Class: "pii.email", Upstream: "crm", Decision: receipt.DecisionBlock},
+			{Class: "pii.email", Decision: receipt.DecisionTokenize},
+		},
+	}
+	const content = "Write to priya@acme.com about the invoice before Friday."
+
+	toCRM, g, err := streamAllWith(t, engine.NewStreamGovernor(scope, WithPolicy(policy), WithTarget("crm")), content, 4)
+	if !errors.Is(err, ErrStreamUnsafe) {
+		t.Fatalf("to crm: err = %v, want ErrStreamUnsafe", err)
+	}
+	if strings.Contains(toCRM, "priya@acme.com") {
+		t.Errorf("to crm: the refused value reached the caller:\n%s", toCRM)
+	}
+	if !g.Truncated() {
+		t.Error("to crm: a cut stream is not reported as truncated")
+	}
+	if d := findingDecision(g, "pii.email"); d != receipt.DecisionBlock {
+		t.Errorf("to crm: finding decision = %q, want block", d)
+	}
+
+	toModel, g, err := streamAllWith(t, engine.NewStreamGovernor(scope, WithPolicy(policy), WithTarget("openai")), content, 4)
+	if err != nil {
+		t.Fatalf("to openai: %v", err)
+	}
+	if g.Truncated() || !strings.Contains(toModel, "@tokenized.invalid") || !strings.Contains(toModel, "Friday") {
+		t.Errorf("to openai: the stream should have been substituted and delivered whole:\n%s", toModel)
+	}
+}
+
+// A ruleset handed to the governor is what the stream is scanned with —
+// a tenant's own rule finds, and its policy decides, on the streaming path
+// as on the buffered one.
+func TestAStreamIsScannedWithTheRulesetItIsGiven(t *testing.T) {
+	engine, scope := streamEngine(t)
+	rules := append([]detect.Rule{}, detect.Default().Rules()...)
+	rules = append(rules, detect.Rule{
+		ID: "custom-codename", Class: "custom.codename",
+		Pattern: regexp.MustCompile(`Project Voyager`), Confidence: detect.ConfidenceHigh, Priority: 10,
+	})
+	tenant := detect.NewRuleset("tenant-1", rules)
+	policy := &Policy{
+		ID: "tenant", Version: "1", Default: receipt.DecisionAllow,
+		Rules: []PolicyRule{{Class: "custom.codename", Decision: receipt.DecisionBlock}},
+	}
+	const content = "The Project Voyager budget is attached."
+
+	_, g, err := streamAllWith(t, engine.NewStreamGovernor(scope, WithRuleset(tenant), WithPolicy(policy), WithTarget("openai")), content, 5)
+	if !errors.Is(err, ErrStreamUnsafe) {
+		t.Fatalf("with the tenant ruleset: err = %v, want ErrStreamUnsafe", err)
+	}
+	if d := findingDecision(g, "custom.codename"); d != receipt.DecisionBlock {
+		t.Errorf("with the tenant ruleset: finding decision = %q, want block", d)
+	}
+
+	// The engine's own ruleset knows nothing of the codename, whatever the
+	// policy says about it.
+	out, g, err := streamAllWith(t, engine.NewStreamGovernor(scope, WithPolicy(policy), WithTarget("openai")), content, 5)
+	if err != nil {
+		t.Fatalf("with the engine ruleset: %v", err)
+	}
+	if out != content || len(g.Findings()) != 0 {
+		t.Errorf("with the engine ruleset: got %q with findings %v, want the content untouched", out, g.Findings())
+	}
+}
+
+// A nil option leaves the engine's own configuration in place, so a caller
+// holding a per-tenant ruleset that may be absent need not branch.
+func TestNilStreamOptionsKeepTheEngineDefaults(t *testing.T) {
+	engine, scope := streamEngine(t)
+	g := engine.NewStreamGovernor(scope, WithRuleset(nil), WithPolicy(nil))
+	if g.ruleset != engine.ruleset || g.policy != engine.policy {
+		t.Error("nil options replaced the engine's ruleset or policy")
 	}
 }

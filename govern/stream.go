@@ -77,6 +77,20 @@ type StreamGovernor struct {
 	engine *Engine
 	scope  *tokenize.Scope
 
+	// ruleset and policy are what this stream is scanned and decided
+	// with. They default to the engine's own and are replaced per stream
+	// through StreamOption, for the same reason Request carries them on
+	// the buffered path: one engine serves every tenant, and a tenant's
+	// rules and decisions are theirs alone.
+	ruleset *detect.Ruleset
+	policy  *Policy
+
+	// target is the destination the stream is bound for — the
+	// receipt.Action.Target of the governed action. A policy rule scoped
+	// to an upstream can only match when this is set; without it, such a
+	// rule is simply absent, never assumed to apply (see PolicyRule.Upstream).
+	target string
+
 	mu sync.Mutex
 
 	// buffer holds bytes received but not yet released.
@@ -102,18 +116,70 @@ type StreamGovernor struct {
 	truncated bool
 }
 
+// StreamOption adjusts how a stream is governed. The zero configuration
+// is the engine's own ruleset and policy, decided for no destination.
+type StreamOption func(*StreamGovernor)
+
+// WithRuleset scans the stream with a ruleset other than the engine's own.
+// Nil keeps the engine's, so a caller holding a per-tenant ruleset that may
+// be absent need not branch.
+func WithRuleset(r *detect.Ruleset) StreamOption {
+	return func(s *StreamGovernor) {
+		if r != nil {
+			s.ruleset = r
+		}
+	}
+}
+
+// WithPolicy decides the stream's findings with a policy other than the
+// engine's own. Nil keeps the engine's. Pair it with WithRuleset when the
+// two come from the same configuration: a tenant's rules without the
+// decisions that act on them produce findings that change nothing.
+func WithPolicy(p *Policy) StreamOption {
+	return func(s *StreamGovernor) {
+		if p != nil {
+			s.policy = p
+		}
+	}
+}
+
+// WithTarget names the destination the stream is bound for, which is what
+// lets a rule scoped to one upstream apply. Before this existed the
+// streaming path decided every finding with no target, so "allow this to
+// the CRM" held on a buffered reply and was ignored on a streamed one —
+// and every chat interface streams.
+func WithTarget(target string) StreamOption {
+	return func(s *StreamGovernor) {
+		s.target = target
+	}
+}
+
 // NewStreamGovernor starts governing a stream on its way out.
 //
 // Sensitive values found in it are substituted, because the reader is
 // somebody else. This is the direction for a tool result arriving from
 // elsewhere and heading for a model's context.
-func (e *Engine) NewStreamGovernor(scope *tokenize.Scope) *StreamGovernor {
-	return &StreamGovernor{
+func (e *Engine) NewStreamGovernor(scope *tokenize.Scope, opts ...StreamOption) *StreamGovernor {
+	s := &StreamGovernor{
 		engine:   e,
 		scope:    scope,
+		ruleset:  e.ruleset,
+		policy:   e.policy,
 		findings: make(map[detect.Class]int),
 		frozenAt: -1,
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
+
+// decide is every policy decision the stream makes, so that all of them
+// are made for the same destination. Three call sites once each called
+// Decide directly, which is how a scoped rule came to apply on one path
+// and not another.
+func (s *StreamGovernor) decide(class detect.Class, conf detect.Confidence) receipt.Decision {
+	return s.policy.DecideFor(s.target, class, conf)
 }
 
 // NewRestoringStreamGovernor starts governing a stream on its way back.
@@ -127,8 +193,8 @@ func (e *Engine) NewStreamGovernor(scope *tokenize.Scope) *StreamGovernor {
 // returned before that code and shipped tokens to the application instead,
 // so an identical call answered differently depending on stream=True — with
 // the broken answer going to every chat interface, which all stream.
-func (e *Engine) NewRestoringStreamGovernor(scope *tokenize.Scope) *StreamGovernor {
-	g := e.NewStreamGovernor(scope)
+func (e *Engine) NewRestoringStreamGovernor(scope *tokenize.Scope, opts ...StreamOption) *StreamGovernor {
+	g := e.NewStreamGovernor(scope, opts...)
 	g.restoring = true
 	return g
 }
@@ -149,8 +215,7 @@ func (s *StreamGovernor) Write(chunk []byte) ([]byte, error) {
 	// A completed refusing match ends the stream. Checked over the whole
 	// buffer rather than the releasable part, because the point is to stop
 	// before those bytes are ever released.
-	if s.engine.streamHasRefusedClass(s.buffer) {
-		s.stopped, s.truncated = true, true
+	if s.cutForRefused() {
 		return nil, ErrStreamUnsafe
 	}
 
@@ -158,7 +223,7 @@ func (s *StreamGovernor) Write(chunk []byte) ([]byte, error) {
 	// rule may not have matched yet — that is exactly why the bytes cannot
 	// be released.
 	if s.frozenAt < 0 {
-		if at := s.engine.firstRefusedMarker(s.buffer); at >= 0 {
+		if at := s.firstRefusedMarker(s.buffer); at >= 0 {
 			s.frozenAt = at
 		}
 	}
@@ -208,8 +273,7 @@ func (s *StreamGovernor) Close() ([]byte, error) {
 	if s.stopped {
 		return nil, ErrStreamUnsafe
 	}
-	if s.frozenAt >= 0 && s.engine.streamHasRefusedClass(s.buffer) {
-		s.stopped, s.truncated = true, true
+	if s.frozenAt >= 0 && s.cutForRefused() {
 		return nil, ErrStreamUnsafe
 	}
 	s.stopped = true
@@ -244,7 +308,7 @@ func (s *StreamGovernor) release(end int) []byte {
 		// matters.
 	}
 
-	spans := s.engine.ruleset.Scan(out)
+	spans := s.ruleset.Scan(out)
 	for _, sp := range spans {
 		s.findings[sp.Class]++
 	}
@@ -269,7 +333,7 @@ func (s *StreamGovernor) release(end int) []byte {
 		if len(fresh) > 0 {
 			var toTokenize []detect.Span
 			for _, sp := range fresh {
-				if s.engine.policy.Decide(sp.Class, sp.Confidence) == receipt.DecisionTokenize {
+				if s.decide(sp.Class, sp.Confidence) == receipt.DecisionTokenize {
 					toTokenize = append(toTokenize, sp)
 				}
 			}
@@ -284,7 +348,7 @@ func (s *StreamGovernor) release(end int) []byte {
 	if !s.restoring && s.scope != nil && len(spans) > 0 {
 		var toTokenize []detect.Span
 		for _, sp := range spans {
-			if s.engine.policy.Decide(sp.Class, sp.Confidence) == receipt.DecisionTokenize {
+			if s.decide(sp.Class, sp.Confidence) == receipt.DecisionTokenize {
 				toTokenize = append(toTokenize, sp)
 			}
 		}
@@ -336,22 +400,42 @@ func (s *StreamGovernor) Findings() []receipt.Finding {
 		out = append(out, receipt.Finding{
 			Class:    string(class),
 			Count:    count,
-			Decision: s.engine.policy.Decide(class, detect.ConfidenceExact),
+			Decision: s.decide(class, detect.ConfidenceExact),
 		})
 	}
 	return out
 }
 
-// streamHasRefusedClass reports whether the content contains a completed
-// match the policy refuses to release.
-func (e *Engine) streamHasRefusedClass(content []byte) bool {
-	for _, sp := range e.ruleset.Scan(content) {
-		switch e.policy.Decide(sp.Class, sp.Confidence) {
+// refusedSpans returns the completed matches the policy refuses to
+// release.
+func (s *StreamGovernor) refusedSpans(content []byte) []detect.Span {
+	var out []detect.Span
+	for _, sp := range s.ruleset.Scan(content) {
+		switch s.decide(sp.Class, sp.Confidence) {
 		case receipt.DecisionBlock, receipt.DecisionRequireApproval:
-			return true
+			out = append(out, sp)
 		}
 	}
-	return false
+	return out
+}
+
+// cutForRefused stops the stream if the buffer holds a completed match for
+// a refusing class, and records that class as a finding.
+//
+// Findings are otherwise counted at release, and the bytes that cause a cut
+// are never released — so before this the receipt for a cut stream carried
+// no trace of the credential that cut it. The refused spans sit past the
+// frozen point, so none of them has been counted before.
+func (s *StreamGovernor) cutForRefused() bool {
+	refused := s.refusedSpans(s.buffer)
+	if len(refused) == 0 {
+		return false
+	}
+	for _, sp := range refused {
+		s.findings[sp.Class]++
+	}
+	s.stopped, s.truncated = true, true
+	return true
 }
 
 // firstRefusedMarker finds the earliest position where a refusing class
@@ -360,12 +444,12 @@ func (e *Engine) streamHasRefusedClass(content []byte) bool {
 // Uses the literal prefilters the rules already carry. A marker is not a
 // match — it is the point beyond which releasing would risk releasing part
 // of something the policy refuses, which is precisely when to stop.
-func (e *Engine) firstRefusedMarker(content []byte) int {
+func (s *StreamGovernor) firstRefusedMarker(content []byte) int {
 	text := string(content)
 	earliest := -1
 
-	for _, rule := range e.ruleset.Rules() {
-		switch e.policy.Decide(rule.Class, rule.Confidence) {
+	for _, rule := range s.ruleset.Rules() {
+		switch s.decide(rule.Class, rule.Confidence) {
 		case receipt.DecisionBlock, receipt.DecisionRequireApproval:
 		default:
 			continue

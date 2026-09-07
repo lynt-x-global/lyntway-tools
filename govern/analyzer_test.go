@@ -260,3 +260,46 @@ func TestAReceiptWithModelFindingsVerifies(t *testing.T) {
 			res.Receipt.Governance.Detector.Components)
 	}
 }
+
+// Health is sampled before detection. An analyzer that reported healthy and
+// then failed on the call itself would otherwise leave the receipt claiming
+// a scan that never ran — the one lie the mode field exists to prevent.
+func TestAFailingAnalyzerDegradesTheReceipt(t *testing.T) {
+	a := &fakeAnalyzer{name: "presidio", health: receipt.HealthHealthy, err: context.DeadlineExceeded}
+	e, _ := analyzerEngine(t, a)
+
+	res, err := e.Govern(req("rcpt_failed", "mail priya@acme.co.in", testScope(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.calls != 1 {
+		t.Fatalf("analyzer called %d times, want 1", a.calls)
+	}
+	if got := res.Receipt.Governance.Mode; got != receipt.ModeDegraded {
+		t.Errorf("mode = %q after the analyzer failed mid-request, want %q", got, receipt.ModeDegraded)
+	}
+	det := res.Receipt.Governance.Detector
+	if det.Health != receipt.HealthDegraded {
+		t.Errorf("detector health = %q, want %q", det.Health, receipt.HealthDegraded)
+	}
+	var found bool
+	for _, c := range det.Components {
+		if c.Name != "presidio" {
+			continue
+		}
+		found = true
+		if c.Health != receipt.HealthUnavailable {
+			t.Errorf("presidio component health = %q, want %q", c.Health, receipt.HealthUnavailable)
+		}
+		if c.Detail == "" {
+			t.Error("presidio component carries no reason for its failure")
+		}
+	}
+	if !found {
+		t.Error("presidio is not listed as a component")
+	}
+	// The rules still ran, so the receipt must not swing to bypassed.
+	if len(res.Receipt.Governance.Findings) == 0 {
+		t.Error("the deterministic tier did not run")
+	}
+}

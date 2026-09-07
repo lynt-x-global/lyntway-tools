@@ -38,6 +38,7 @@ from .receipt import (
     signing_input,
     verify,
 )
+from .signing import RequestSigner, sign_request
 
 __version__ = "0.1.0"
 
@@ -53,5 +54,7 @@ __all__ = [
     "Lyntway",
     "LyntwayError",
     "GovernResponse",
+    "RequestSigner",
+    "sign_request",
     "__version__",
 ]

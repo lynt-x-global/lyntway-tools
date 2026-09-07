@@ -68,6 +68,16 @@ class VerificationResult:
     #: SHA-256 of the signing input, lowercase hex.
     digest: str | None = None
 
+    #: What the receipt's own digests cover. Anything but ``payload`` means a
+    #: record about the traffic, and :attr:`provenance` then describes how
+    #: the issuer knew of the connection, not that it read the content.
+    subject: str | None = None
+
+    #: The stream was cut by policy; the digests cover the delivered prefix
+    #: only. Such a receipt carries ``block`` beside an output digest, which
+    #: on any other receipt would be a contradiction.
+    truncated: bool = False
+
     #: Conditions that do not invalidate the receipt but must be surfaced.
     warnings: list[str] = field(default_factory=list)
 
@@ -227,6 +237,8 @@ def verify(
         algorithm=algorithm,
         provenance=effective_provenance(receipt),
         vantage=(receipt.get("evidence") or {}).get("vantage"),
+        subject=effective_subject(receipt),
+        truncated=(receipt.get("content") or {}).get("truncated") is True,
         issued_at=issued_at,
         digest=hashlib.sha256(message).hexdigest(),
         warnings=_collect_warnings(receipt),
@@ -367,6 +379,18 @@ def effective_provenance(receipt: Mapping[str, Any]) -> str:
     return evidence.get("provenance", "asserted")
 
 
+#: Subjects this build understands. ``payload`` is the data itself and the
+#: only form that can say what it contained; ``telemetry`` is a record
+#: another system produced about the action; ``metadata`` is what the issuer
+#: saw of a connection it carried but never read. Any other string is
+#: tolerated so a receipt from a newer issuer still verifies, and is treated
+#: as "not the data".
+KNOWN_SUBJECTS = ("payload", "telemetry", "metadata")
+
+#: Shared word for word with the CLI, the TypeScript SDK and the verify page.
+TRUNCATED_WARNING = "stream cut by policy — digests cover the delivered prefix only"
+
+
 def effective_subject(receipt: Mapping[str, Any]) -> str:
     """What a receipt's digests actually cover.
 
@@ -374,6 +398,33 @@ def effective_subject(receipt: Mapping[str, Any]) -> str:
     field existed.
     """
     return (receipt.get("content") or {}).get("subject") or "payload"
+
+
+def subject_warning(subject: str) -> str | None:
+    """State what a digest covers when it is not the data.
+
+    One phrase, shared with every other Lyntway verifier, so a reader
+    comparing tools sees the same qualification in each. An unknown subject
+    must read weak, never as a stronger claim than the values this build
+    understands.
+    """
+    head = "the digests cover a record about the traffic, not the traffic itself: "
+    if subject == "payload":
+        return None
+    if subject == "metadata":
+        return head + (
+            "the issuer carried the bytes without reading them, so nothing here "
+            "attests to what they contained"
+        )
+    if subject == "telemetry":
+        return head + (
+            "another system reported the action, so nothing here attests to what "
+            "it carried"
+        )
+    return head + (
+        f"subject {subject!r} is not one this verifier knows, so nothing here "
+        "attests to what the traffic contained"
+    )
 
 
 def _collect_warnings(receipt: Mapping[str, Any]) -> list[str]:
@@ -414,11 +465,11 @@ def _collect_warnings(receipt: Mapping[str, Any]) -> list[str]:
                 "so it cannot be relied on as first-hand"
             )
 
-    if effective_subject(receipt) == "telemetry":
-        warnings.append(
-            "the digests cover a telemetry record describing this action, not the "
-            "data involved in it: nothing here attests to what the action carried"
-        )
+    subject = subject_warning(effective_subject(receipt))
+    if subject:
+        warnings.append(subject)
+    if (receipt.get("content") or {}).get("truncated") is True:
+        warnings.append(TRUNCATED_WARNING)
 
     if not receipt.get("anchors"):
         warnings.append(

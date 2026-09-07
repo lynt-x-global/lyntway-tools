@@ -3,6 +3,7 @@ package govern
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 
 	"github.com/lynt-x-global/lyntway-tools/detect"
@@ -46,6 +47,8 @@ type Engine struct {
 	signer     receipt.Signer
 	components []Component
 	analyzers  []Analyzer
+	issuer     string
+	chainStore ChainStore
 
 	mu     sync.Mutex
 	chains map[string]*receipt.ChainBuilder
@@ -76,7 +79,46 @@ type Config struct {
 	// Components are the detection subsystems this deployment is
 	// configured to run. Defaults to the deterministic tier alone.
 	Components []Component
+
+	// Issuer names the party issuing receipts. Defaults to the hosted
+	// service's name. A local tool signing with a key lyntway.com never
+	// published must set this to say so — a receipt naming an issuer whose
+	// key directory does not hold the signing key sends a verifier to the
+	// wrong place and reads as forged.
+	Issuer string
+
+	// ChainStore persists each chain's position across restarts. Optional,
+	// but without it every restart forks every chain at seq 0, and a
+	// verifier walking the chain sees a discontinuity indistinguishable
+	// from deletion — the accusation the chain exists to refute.
+	ChainStore ChainStore
 }
+
+// ChainStore remembers where each chain is between processes.
+type ChainStore interface {
+	// LoadChain returns the next sequence number and current head for a
+	// chain, or found=false if the chain has never been seen.
+	LoadChain(chainID string) (nextSeq uint64, head string, found bool, err error)
+	// SaveChain records the position after a receipt is issued.
+	SaveChain(chainID string, nextSeq uint64, head string) error
+}
+
+// ChainPersistError reports that a receipt was issued but its chain
+// position could not be saved.
+//
+// The receipt is valid and has been returned; what is at risk is the next
+// restart, which will not know this receipt exists. Callers should surface
+// the warning rather than discard a signed receipt over it.
+type ChainPersistError struct {
+	ChainID string
+	Err     error
+}
+
+func (e *ChainPersistError) Error() string {
+	return fmt.Sprintf("govern: receipt issued but chain %q position not saved: %v", e.ChainID, e.Err)
+}
+
+func (e *ChainPersistError) Unwrap() error { return e.Err }
 
 // New creates an Engine.
 func New(cfg Config) (*Engine, error) {
@@ -107,12 +149,19 @@ func New(cfg Config) (*Engine, error) {
 		}
 	}
 
+	issuer := cfg.Issuer
+	if issuer == "" {
+		issuer = issuerName
+	}
+
 	return &Engine{
 		ruleset:    cfg.Ruleset,
 		policy:     cfg.Policy,
 		analyzers:  cfg.Analyzers,
 		signer:     cfg.Signer,
 		components: withAnalyzerHealth(cfg.Components, cfg.Analyzers),
+		issuer:     issuer,
+		chainStore: cfg.ChainStore,
 		chains:     make(map[string]*receipt.ChainBuilder),
 		chainKeys:  make(map[string]string),
 	}, nil
@@ -195,6 +244,58 @@ type Request struct {
 	// performed.
 	Subject receipt.ContentSubject
 
+	// SelfDescribed marks Content as a record this service composed from a
+	// caller's fields, rather than bytes a caller sent. It is digested,
+	// because the digest is what proves the report was not altered, but it
+	// is not scanned: a destination of 127.0.0.1 in our own bookkeeping
+	// would otherwise be reported as an address found in the traffic, and
+	// the receipt would carry findings about text nobody sent anywhere.
+	// The tool's own findings travel in Evidence.Reported.
+	SelfDescribed bool
+
+	// Irrevocable means the content has already left: a streamed response
+	// whose bytes the caller holds. A block or hold decided now cannot be
+	// enforced, so it is recorded as log_only rather than claimed.
+	Irrevocable bool
+
+	// Truncated means Content is the prefix of a stream that was cut;
+	// the remainder was withheld. Recorded on the receipt so a cut stream
+	// never reads as a complete one.
+	Truncated bool
+
+	// Components are detection capabilities the caller knows about this
+	// request and the engine cannot probe: a database gateway that could
+	// read the text parameters of a Bind but not the binary ones, a shim
+	// that saw half a payload. Anything listed impaired makes the receipt
+	// degraded. The engine's own components are always included; these are
+	// added beside them, so the receipt lists every capability that bore on
+	// this decision and how each fared.
+	Components []receipt.Component
+
+	// Refusal, when set, blocks the action for a reason that is not a
+	// finding — the caller refused it on its own account and forwarded
+	// nothing. Recorded on the receipt so the block is explained.
+	Refusal string
+
+	// Approval resolves a hold. The caller governed this content once,
+	// was told require_approval, parked it, and a person has now decided;
+	// this is the same content governed again with that decision in hand.
+	//
+	// Approved: the decision stays require_approval — that is what policy
+	// said, and the receipt must not read as though policy allowed it —
+	// but the content is released, with every other class in the payload
+	// still substituted as policy asks. Denied or expired: the caller sets
+	// Refusal too, and the action is blocked with the refusal and this
+	// record both on the receipt. Nil for every ordinary call.
+	Approval *receipt.Approval
+
+	// PriorFindings were established over bytes this request does not
+	// carry — an in-flight governor that watched a whole stream, of which
+	// Content is only the delivered part. Merged into the receipt so the
+	// class that caused a cut is on the record even though it was never
+	// delivered.
+	PriorFindings []receipt.Finding
+
 	// Inspect runs detection and enforcement without transforming content.
 	//
 	// For the direction where content is returning to the party that owns
@@ -232,6 +333,11 @@ type Result struct {
 	// Findings summarises detections by class. Counts only; the detected
 	// values never leave the engine.
 	Findings []receipt.Finding
+
+	// Warning is set when the receipt is valid but something around it
+	// did not complete — today, only a chain position that could not be
+	// persisted. Empty on a clean issue.
+	Warning string
 }
 
 // Govern runs detection, applies policy, transforms content, and issues a
@@ -259,6 +365,9 @@ func (e *Engine) Govern(req Request) (*Result, error) {
 	if carriesUnreadableContent(req.Content) {
 		components, health = withUnreadableContent(components, health)
 	}
+	if len(req.Components) > 0 {
+		components, health = withCallerComponents(components, health, req.Components)
+	}
 	mode := modeFor(health)
 
 	ruleset := e.ruleset
@@ -266,15 +375,28 @@ func (e *Engine) Govern(req Request) (*Result, error) {
 		ruleset = req.Ruleset
 	}
 
+	// A metadata subject means the bytes are a note about traffic this
+	// process never read. Scanning the note would find things in the
+	// note — a host name that looks like an address — and the receipt
+	// would then carry findings about traffic nothing examined.
 	var spans []detect.Span
-	if mode != receipt.ModeBypassed {
+	if mode != receipt.ModeBypassed && req.Subject != receipt.SubjectMetadata && !req.SelfDescribed {
 		spans = ruleset.Scan(req.Content)
 
 		// The probabilistic tier runs alongside, and its findings are kept
 		// distinguishable rather than merged into the same claim. Where
 		// the two overlap the rules win: a checksum-validated finding is
 		// not improved by a model agreeing with it.
-		spans = mergeSpans(spans, e.runAnalyzers(req.Content))
+		modelSpans, failed := e.runAnalyzers(req.Content)
+		spans = mergeSpans(spans, modelSpans)
+
+		// The health sampled above described the conditions going in. An
+		// analyzer that failed during this very request changes them, and
+		// the receipt must describe what ran, not what was expected to.
+		if len(failed) > 0 {
+			components, health = withFailedAnalyzers(components, failed)
+			mode = modeFor(health)
+		}
 	}
 
 	policy := e.policy
@@ -282,7 +404,24 @@ func (e *Engine) Govern(req Request) (*Result, error) {
 		policy = req.Policy
 	}
 
-	findings, decision := findingDecisions(policy, spans)
+	// Decided for the destination the action names. On the gateway that is
+	// the upstream actually dialled; on the primitive it is the caller's
+	// word, and a rule scoped to it is only as good as that word.
+	// Prior findings were established over the whole stream by a governor
+	// that read every byte as it passed, restored values and fresh ones
+	// alike. The delivered text this request carries is what that governor
+	// let through: the same values, and tokens where it substituted. A
+	// deterministic scan of it therefore finds nothing that was not
+	// already counted, and a token it finds is not a card number. Only the
+	// model tier can add something here, because the in-flight governor
+	// has no model tier; and even it must not count a substitute.
+	if len(req.PriorFindings) > 0 {
+		spans = spansNewSincePrior(spans, req.Content)
+	}
+	findings, decision := findingDecisions(policy, req.Action.Target, spans)
+	if len(req.PriorFindings) > 0 {
+		findings, decision = mergeFindings(findings, decision, req.PriorFindings)
+	}
 
 	// A bypassed run examined nothing, so it cannot honestly report
 	// findings or enforcement.
@@ -301,11 +440,47 @@ func (e *Engine) Govern(req Request) (*Result, error) {
 		}
 	}
 
+	// Enforcement needs something left to enforce on. Once bytes have
+	// been delivered, a refusal can only be recorded; claiming a block
+	// would describe work nothing performed. A truncated stream is the
+	// one case where a block genuinely happened — the remainder was
+	// withheld — so it keeps the word.
+	if req.Irrevocable && !req.Truncated &&
+		(decision == receipt.DecisionBlock || decision == receipt.DecisionRequireApproval) {
+		decision = receipt.DecisionLogOnly
+	}
+
+	// A refusal the caller made for its own reasons is still a block:
+	// nothing was forwarded. It overrides inspect and irrevocable alike,
+	// because both of those describe content that went somewhere, and
+	// this content did not.
+	if req.Refusal != "" {
+		decision = receipt.DecisionBlock
+	}
+
+	// An approval that no longer has a hold to resolve — the policy
+	// changed between the park and the decision — is not carried onto
+	// the receipt. The content left under whatever policy now says, and
+	// a record claiming a person released it would give that release a
+	// weight it did not have. The denied and expired outcomes always
+	// stand, because the caller blocked on them regardless.
+	if req.Approval != nil && req.Approval.Outcome == receipt.ApprovalApproved &&
+		decision != receipt.DecisionRequireApproval {
+		req.Approval = nil
+	}
+
 	inputDigest := receipt.DigestContent(req.Content)
 
 	out, outputDigest, err := e.transform(req, spans, decision, policy)
 	if err != nil {
 		return nil, err
+	}
+
+	// A block releases nothing, so the transform reports no output. A cut
+	// stream is different: the prefix had already left, and the receipt
+	// must digest what was delivered rather than pretend nothing was.
+	if req.Truncated && outputDigest == "" {
+		outputDigest = inputDigest
 	}
 
 	// A one-way scope substitutes but retains nothing, so the values are
@@ -340,7 +515,7 @@ func (e *Engine) Govern(req Request) (*Result, error) {
 			// verifier selects a key by KeyID and checks the signature.
 			// Anyone can write any name here, which is exactly why nothing
 			// depends on it.
-			Name:           issuerName,
+			Name:           e.issuer,
 			KeyAttestation: req.KeyAttestation,
 		},
 		Action:   req.Action,
@@ -352,6 +527,7 @@ func (e *Engine) Govern(req Request) (*Result, error) {
 			OutputDigest: outputDigest,
 			Bytes:        int64(len(req.Content)),
 			Subject:      req.Subject,
+			Truncated:    req.Truncated,
 		},
 		Governance: receipt.Governance{
 			Mode:     mode,
@@ -364,16 +540,29 @@ func (e *Engine) Govern(req Request) (*Result, error) {
 				Health:         health,
 				Components:     components,
 			},
+			// The policy that decided, not the engine's default. A tenant
+			// override produces its own version, and a reader re-running
+			// the version named here must reach the same decision.
 			Policy: receipt.Policy{
-				ID:           e.policy.ID,
-				Version:      e.policy.Version,
+				ID:           policy.ID,
+				Version:      policy.Version,
 				BundleDigest: ruleset.Digest(),
 			},
+			Refusal:  req.Refusal,
+			Approval: req.Approval,
 		},
 	}
 
+	var warning string
 	if err := e.issue(req.ChainID, signer, r); err != nil {
-		return nil, err
+		// A persist failure happens after the receipt is signed. Throwing
+		// the receipt away would punch a hole in the chain to report that
+		// the chain might get a hole later.
+		var persist *ChainPersistError
+		if !errors.As(err, &persist) {
+			return nil, err
+		}
+		warning = err.Error()
 	}
 
 	return &Result{
@@ -381,11 +570,24 @@ func (e *Engine) Govern(req Request) (*Result, error) {
 		Receipt:  r,
 		Decision: decision,
 		Findings: findings,
+		Warning:  warning,
 	}, nil
 }
 
 // transform applies the decision to the content.
 func (e *Engine) transform(req Request, spans []detect.Span, decision receipt.Decision, policy *Policy) (out []byte, outputDigest string, err error) {
+	// A hold a person has released is transformed like any released
+	// content: the class that was held passes as they approved it, and
+	// everything else in the payload gets whatever policy asks. In witness
+	// mode nothing is substituted, as on every other path.
+	approved := decision == receipt.DecisionRequireApproval &&
+		req.Approval != nil && req.Approval.Outcome == receipt.ApprovalApproved
+	if approved && req.Inspect {
+		decision = receipt.DecisionLogOnly
+	} else if approved {
+		decision = receipt.DecisionTokenize
+	}
+
 	switch decision {
 	case receipt.DecisionBlock, receipt.DecisionRequireApproval:
 		// Nothing was released, so there is no output to digest. The
@@ -434,7 +636,10 @@ func alter(req Request, spans []detect.Span, p *Policy) ([]byte, error) {
 	keys := jsonObjectKeys(content)
 
 	for _, s := range spans {
-		decision := p.Decide(s.Class, s.Confidence)
+		// The same question findingDecisions asked, with the same target.
+		// Asking it without one would let the receipt record a
+		// substitution for this destination that the bytes never had.
+		decision := p.DecideFor(req.Action.Target, s.Class, s.Confidence)
 		if decision != receipt.DecisionRedact && decision != receipt.DecisionTokenize {
 			// Logged, allowed, or otherwise left alone. A finding the
 			// policy merely records must not be rewritten because another
@@ -562,6 +767,95 @@ func (e *Engine) sampleHealth() ([]receipt.Component, receipt.Health) {
 	}
 }
 
+// mergeFindings folds findings established elsewhere into this request's.
+//
+// The streaming path is the caller: its in-flight governor saw the whole
+// response, including anything it withheld, while the content governed
+// here is only the prefix that was delivered. Counts add, the stronger
+// decision per class wins, and a class either tier attributed to a model
+// stays attributed to it — the weaker claim, as everywhere else.
+// spansNewSincePrior keeps the spans a scan of delivered text can add to
+// findings already established in flight: model-tier spans, and none that
+// are token-shaped. See the call site for why deterministic spans are
+// dropped wholesale rather than de-duplicated by class.
+func spansNewSincePrior(spans []detect.Span, content []byte) []detect.Span {
+	var kept []detect.Span
+	for _, sp := range spans {
+		if sp.Detector == "" {
+			continue
+		}
+		if sp.Start >= 0 && sp.End <= len(content) && sp.Start < sp.End &&
+			tokenize.IsToken(string(content[sp.Start:sp.End])) {
+			continue
+		}
+		kept = append(kept, sp)
+	}
+	return kept
+}
+
+func mergeFindings(mine []receipt.Finding, decision receipt.Decision, prior []receipt.Finding) ([]receipt.Finding, receipt.Decision) {
+	byClass := make(map[string]*receipt.Finding, len(mine)+len(prior))
+	for i := range mine {
+		f := mine[i]
+		byClass[f.Class] = &f
+	}
+	for _, p := range prior {
+		if f, ok := byClass[p.Class]; ok {
+			f.Count += p.Count
+			f.Decision = strongest(f.Decision, p.Decision)
+			if f.Detector == "" {
+				f.Detector = p.Detector
+			}
+		} else {
+			f := p
+			byClass[p.Class] = &f
+		}
+		decision = strongest(decision, p.Decision)
+	}
+	out := make([]receipt.Finding, 0, len(byClass))
+	for _, f := range byClass {
+		out = append(out, *f)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Class < out[j].Class })
+	return out, decision
+}
+
+// withCallerComponents adds capabilities the caller reports for this request.
+//
+// An impaired caller component degrades the receipt but never bypasses it:
+// the caller is describing something it could not fully read, and the
+// engine's own tiers still ran over what it could.
+func withCallerComponents(components []receipt.Component, health receipt.Health, extra []receipt.Component) ([]receipt.Component, receipt.Health) {
+	out := append([]receipt.Component{}, components...)
+	for _, c := range extra {
+		if c.Name == "" {
+			continue
+		}
+		out = append(out, c)
+		if c.Health != receipt.HealthHealthy && health == receipt.HealthHealthy {
+			health = receipt.HealthDegraded
+		}
+	}
+	return out, health
+}
+
+// withFailedAnalyzers downgrades the components for analyzers that were
+// called during this request and did not answer.
+//
+// The result is never worse than degraded. The deterministic tier had
+// already run by the time an analyzer failed, so "nothing examined the
+// content" would be its own overclaim in the other direction.
+func withFailedAnalyzers(components []receipt.Component, failed map[string]string) ([]receipt.Component, receipt.Health) {
+	out := append([]receipt.Component{}, components...)
+	for i := range out {
+		if reason, ok := failed[out[i].Name]; ok {
+			out[i].Health = receipt.HealthUnavailable
+			out[i].Detail = reason
+		}
+	}
+	return out, receipt.HealthDegraded
+}
+
 // modeFor maps aggregate detector health to a governance mode.
 func modeFor(h receipt.Health) receipt.Mode {
 	switch h {
@@ -582,13 +876,13 @@ func (e *Engine) issue(chainID string, signer receipt.Signer, r *receipt.Receipt
 	b, ok := e.chains[chainID]
 	if !ok {
 		var err error
-		b, err = receipt.NewChainBuilder(chainID, signer)
+		b, err = e.openChain(chainID, signer)
 		if err != nil {
 			return err
 		}
 		e.chains[chainID] = b
 		e.chainKeys[chainID] = signer.KeyID()
-		return b.Issue(r)
+		return e.issueOn(b, r)
 	}
 
 	// A chain belongs to one customer, so it is signed by one key for its
@@ -600,7 +894,41 @@ func (e *Engine) issue(chainID string, signer receipt.Signer, r *receipt.Receipt
 		return fmt.Errorf("govern: chain %q is signed by key %q; refusing to issue under %q",
 			chainID, existing, signer.KeyID())
 	}
-	return b.Issue(r)
+	return e.issueOn(b, r)
+}
+
+// openChain builds a chain the process has not seen yet, resuming from the
+// store when one is configured.
+//
+// A store error refuses to issue rather than starting fresh. Starting
+// fresh would be a fork, and a fork is exactly what a verifier cannot
+// tell apart from tampering; refusing is loud and recoverable.
+func (e *Engine) openChain(chainID string, signer receipt.Signer) (*receipt.ChainBuilder, error) {
+	if e.chainStore == nil {
+		return receipt.NewChainBuilder(chainID, signer)
+	}
+	nextSeq, head, found, err := e.chainStore.LoadChain(chainID)
+	if err != nil {
+		return nil, fmt.Errorf("govern: loading chain %q position: %w", chainID, err)
+	}
+	if !found {
+		return receipt.NewChainBuilder(chainID, signer)
+	}
+	return receipt.ResumeChainBuilder(chainID, signer, nextSeq, head)
+}
+
+// issueOn signs r into the chain and records the new position.
+func (e *Engine) issueOn(b *receipt.ChainBuilder, r *receipt.Receipt) error {
+	if err := b.Issue(r); err != nil {
+		return err
+	}
+	if e.chainStore == nil {
+		return nil
+	}
+	if err := e.chainStore.SaveChain(b.ChainID(), b.NextSeq(), b.Head()); err != nil {
+		return &ChainPersistError{ChainID: b.ChainID(), Err: err}
+	}
+	return nil
 }
 
 // signerFor picks the key for a request.

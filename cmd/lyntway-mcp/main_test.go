@@ -9,6 +9,9 @@ import (
 
 func testGovernor(t *testing.T) *governor {
 	t.Helper()
+	// The signing key lives under the home directory; a test must not
+	// leave one on the developer's machine.
+	t.Setenv("HOME", t.TempDir())
 	g, err := newGovernor(t.TempDir()+"/receipts.jsonl", "test-server")
 	if err != nil {
 		t.Fatalf("governor: %v", err)
@@ -127,6 +130,7 @@ func TestUnrecognisedLinesPassThrough(t *testing.T) {
 // where the developer can find it.
 func TestReceiptsAreWrittenLocally(t *testing.T) {
 	path := t.TempDir() + "/receipts.jsonl"
+	t.Setenv("HOME", t.TempDir())
 	g, err := newGovernor(path, "test-server")
 	if err != nil {
 		t.Fatalf("governor: %v", err)
@@ -180,6 +184,78 @@ func TestServerNamesAreReducedToSafeSegments(t *testing.T) {
 	} {
 		if got := sanitise(tc.in); got != tc.want {
 			t.Errorf("sanitise(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// receiptsIn reads every receipt the governor wrote, oldest first.
+func receiptsIn(t *testing.T, path string) []map[string]any {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading receipts: %v", err)
+	}
+	var out []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		if line == "" {
+			continue
+		}
+		var r map[string]any
+		if err := json.Unmarshal([]byte(line), &r); err != nil {
+			t.Fatalf("a receipt is not valid JSON: %v\n%s", err, line)
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+func methodOf(r map[string]any) string {
+	action, _ := r["action"].(map[string]any)
+	m, _ := action["method"].(string)
+	return m
+}
+
+// Every server-to-agent message with a result used to be receipted as a
+// tool result, so the initialize handshake was recorded as governed tool
+// traffic. A receipt names the operation that actually happened.
+func TestResponsesAreLabelledByTheRequestTheyAnswer(t *testing.T) {
+	path := t.TempDir() + "/receipts.jsonl"
+	t.Setenv("HOME", t.TempDir())
+	g, err := newGovernor(path, "test-server")
+	if err != nil {
+		t.Fatalf("governor: %v", err)
+	}
+	t.Cleanup(g.close)
+
+	exchange := []struct {
+		dir     direction
+		message string
+	}{
+		{directionToServer, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}`},
+		{directionToAgent, `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26","serverInfo":{"name":"fake"}}}`},
+		{directionToServer, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"lookup","arguments":{}}}`},
+		{directionToAgent, `{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"ok"}]}}`},
+		{directionToAgent, `{"jsonrpc":"2.0","id":99,"result":{"content":[]}}`},
+	}
+	for _, step := range exchange {
+		if _, err := g.govern([]byte(step.message), step.dir); err != nil {
+			t.Fatalf("govern %s: %v", step.message, err)
+		}
+	}
+
+	var methods []string
+	for _, r := range receiptsIn(t, path) {
+		methods = append(methods, methodOf(r))
+	}
+	// The initialize request itself is protocol and is not receipted; its
+	// response is, and must say what it is.
+	want := []string{"initialize", "tools/call", "tools/call", "unmatched-response"}
+	if strings.Join(methods, ",") != strings.Join(want, ",") {
+		t.Errorf("receipt methods = %v, want %v", methods, want)
+	}
+	for _, m := range methods {
+		if m == "tools/result" {
+			t.Errorf("a response is still labelled %q", m)
 		}
 	}
 }

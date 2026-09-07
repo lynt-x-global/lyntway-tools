@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from lyntway import canonicalize, signing_input, verify
+from lyntway.receipt import TRUNCATED_WARNING
 from lyntway.canonical import CanonicalizationError
 
 
@@ -231,3 +232,102 @@ def test_es256_tampered_signature_is_rejected() -> None:
     tampered["signature"]["value"] = base64.b64encode(bytes(raw)).decode()
 
     assert not verify(tampered, keys, now=now).valid
+
+
+SUBJECT_PHRASE = "a record about the traffic, not the traffic itself"
+
+
+def _signed_receipt(shape) -> tuple[dict, dict[str, str]]:
+    """A receipt whose digests cover a record about the traffic.
+
+    Signed here rather than taken from the fixture so the shape is visible: a
+    tunnel receipt is first-hand about the connection, carries no findings
+    and no transform, and never read the bytes.
+    """
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    private = Ed25519PrivateKey.generate()
+    raw = private.public_key().public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw
+    )
+    key_id = "key-test-subject"
+
+    receipt = json.loads(json.dumps(RECEIPTS[0]))
+    receipt.pop("signature", None)
+    receipt.pop("anchors", None)
+    receipt["issuer"]["key_id"] = key_id
+    receipt["governance"]["decision"] = "allow"
+    receipt["governance"]["findings"] = []
+    receipt["evidence"] = {"provenance": "observed", "vantage": "proxy"}
+    shape(receipt)
+
+    signature = private.sign(signing_input(receipt))
+    receipt["signature"] = {
+        "key_id": key_id,
+        "algorithm": "ed25519",
+        "canonicalization": "jcs",
+        "value": base64.b64encode(signature).decode("ascii"),
+    }
+    return receipt, {key_id: base64.b64encode(raw).decode("ascii")}
+
+
+def test_metadata_receipt_is_reported_as_a_record_about_the_traffic() -> None:
+    receipt, keys = _signed_receipt(lambda r: r["content"].update(subject="metadata"))
+    result = verify(receipt, keys)
+    assert result.valid, f"metadata receipt did not verify: {result.error}"
+    qualified = [w for w in result.warnings if SUBJECT_PHRASE in w]
+    assert qualified, f"no warning qualifies the digest: {result.warnings!r}"
+    assert "without reading them" in qualified[0]
+    assert result.subject == "metadata"
+    # Observed stays: the issuer did handle the connection. The warning is
+    # what stops "observed" beside a digest from reading as a hash of content.
+    assert result.provenance == "observed"
+
+
+def test_unknown_subject_reads_as_not_the_data() -> None:
+    receipt, keys = _signed_receipt(lambda r: r["content"].update(subject="headers"))
+    result = verify(receipt, keys)
+    assert result.valid, f"receipt with an unknown subject did not verify: {result.error}"
+    qualified = [w for w in result.warnings if SUBJECT_PHRASE in w]
+    assert qualified, (
+        f"an unknown subject was shown as if it were the data: {result.warnings!r}"
+    )
+    assert "'headers'" in qualified[0]
+    assert result.subject == "headers"
+
+
+def test_payload_receipt_is_not_qualified() -> None:
+    for receipt in RECEIPTS:
+        result = verify(receipt, KEYS)
+        assert result.valid
+        assert not any(SUBJECT_PHRASE in w for w in result.warnings), (
+            f"a payload receipt was qualified as if it were not the data: {result.warnings!r}"
+        )
+        assert result.subject == "payload"
+
+
+def test_truncated_stream_is_reported_as_cut() -> None:
+    """The one receipt that carries "block" beside an output digest.
+
+    The prefix was released before the refused class appeared, so its digest
+    is exactly what the receipt must show, and the reader must be told why.
+    """
+
+    def cut(r: dict) -> None:
+        r["governance"]["decision"] = "block"
+        r["content"]["truncated"] = True
+
+    receipt, keys = _signed_receipt(cut)
+    assert receipt["content"].get("output_digest"), "the fixture carries no output digest to keep"
+    result = verify(receipt, keys)
+    assert result.valid, f"truncated receipt did not verify: {result.error}"
+    assert TRUNCATED_WARNING in result.warnings, (
+        f"the cut stream was not reported: {result.warnings!r}"
+    )
+    assert result.truncated is True
+
+    for complete in RECEIPTS:
+        outcome = verify(complete, KEYS)
+        assert TRUNCATED_WARNING not in outcome.warnings, "a complete receipt was reported as cut"
+        assert outcome.truncated is False

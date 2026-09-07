@@ -246,7 +246,134 @@ func TestEnvelopeAndReceiptMustNameTheSameKey(t *testing.T) {
 // algorithm confusion begins.
 func TestProtectedHeadersMustNameAnAlgorithm(t *testing.T) {
 	protected := Encode(Map{{Key: Uint(labelKeyID), Value: Bytes("k1")}})
-	if _, _, err := readProtected(protected); err == nil {
+	if _, err := readProtected(protected); err == nil {
 		t.Fatal("headers naming no algorithm were accepted")
+	}
+}
+
+// RFC 9943 reads the issuer and subject from the protected header before it
+// opens the payload. Both must be there, and both must be what the payload
+// says.
+func TestAReceiptCarriesCWTClaimsThatMatchItsPayload(t *testing.T) {
+	signer, _ := receipt.GenerateEd25519Signer("k1")
+	keys := receipt.StaticKeyResolver{signer.KeyID(): signer.Public()}
+	r := testReceipt(t, signer)
+
+	encoded, err := EncodeReceipt(r, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := Verify1(encoded, keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Claims == nil {
+		t.Fatal("the envelope carries no CWT claims")
+	}
+	if res.Claims.Issuer != r.Issuer.KeyID || res.Claims.Subject != r.ID {
+		t.Errorf("claims are iss=%q sub=%q, want iss=%q sub=%q",
+			res.Claims.Issuer, res.Claims.Subject, r.Issuer.KeyID, r.ID)
+	}
+	// The claims are in the protected header, so they are under the
+	// signature: label 15 must appear inside the first byte string.
+	protected := Encode(Map{
+		{Key: Uint(labelAlg), Value: Int(algEdDSA)},
+		{Key: Uint(labelContentType), Value: Uint(contentTypeJSON)},
+		{Key: Uint(labelKeyID), Value: Bytes(signer.KeyID())},
+		{Key: Uint(labelCWTClaims), Value: Map{
+			{Key: Uint(claimIssuer), Value: Text(r.Issuer.KeyID)},
+			{Key: Uint(claimSubject), Value: Text(r.ID)},
+		}},
+	})
+	if !bytes.Contains(encoded, protected) {
+		t.Error("the protected header is not alg, content type, kid and CWT claims in that encoding")
+	}
+}
+
+// An envelope whose claims disagree with its payload is two statements
+// under one signature. Both are signed by the issuer's key, so only the
+// comparison catches it.
+func TestClaimsThatDisagreeWithThePayloadAreRefused(t *testing.T) {
+	signer, _ := receipt.GenerateEd25519Signer("k1")
+	keys := receipt.StaticKeyResolver{signer.KeyID(): signer.Public()}
+	r := testReceipt(t, signer)
+	payload, _ := receipt.Canonicalize(r)
+
+	for _, tc := range []struct {
+		name   string
+		claims Claims
+	}{
+		{"wrong subject", Claims{Issuer: r.Issuer.KeyID, Subject: "rcpt_somebody_else"}},
+		{"wrong issuer", Claims{Issuer: "another-issuer", Subject: r.ID}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			encoded, err := Sign1With(signer, payload, Sign1Options{
+				ContentType: Uint(contentTypeJSON), Claims: &tc.claims,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := DecodeReceipt(encoded, keys); err == nil {
+				t.Fatal("a receipt whose claims disagree with its payload was accepted")
+			}
+		})
+	}
+
+	// A claims set with only one of the two is not conformant and is not
+	// silently accepted as if it were absent.
+	half := Encode(Map{
+		{Key: Uint(labelAlg), Value: Int(algEdDSA)},
+		{Key: Uint(labelKeyID), Value: Bytes("k1")},
+		{Key: Uint(labelCWTClaims), Value: Map{{Key: Uint(claimIssuer), Value: Text("k1")}}},
+	})
+	if _, err := readProtected(half); err == nil {
+		t.Error("a claims set naming no subject was accepted")
+	}
+}
+
+// Receipts issued before the envelope carried claims are still receipts.
+// Sign1 produces exactly that envelope, and DecodeReceipt must take it.
+func TestAReceiptWithoutClaimsStillVerifies(t *testing.T) {
+	signer, _ := receipt.GenerateEd25519Signer("k1")
+	keys := receipt.StaticKeyResolver{signer.KeyID(): signer.Public()}
+	r := testReceipt(t, signer)
+	payload, _ := receipt.Canonicalize(r)
+
+	old, err := Sign1(signer, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(old, Encode(Uint(labelCWTClaims))[:1]) && bytes.Contains(old, []byte{0x0f, 0xa2}) {
+		t.Fatal("the legacy envelope carries claims; this test no longer tests what it says")
+	}
+	decoded, err := DecodeReceipt(old, keys)
+	if err != nil {
+		t.Fatalf("a receipt without claims was refused: %v", err)
+	}
+	if decoded.ID != r.ID {
+		t.Error("the wrong receipt came back")
+	}
+	res, _ := Verify1(old, keys)
+	if res.Claims != nil {
+		t.Error("claims were reported where none were carried")
+	}
+}
+
+// A detached payload has to come from somewhere the verifier trusts, and
+// Verify1 has nowhere to get it. It must say so rather than verify an
+// empty payload.
+func TestVerify1RefusesADetachedPayload(t *testing.T) {
+	signer, _ := receipt.GenerateEd25519Signer("k1")
+	keys := receipt.StaticKeyResolver{signer.KeyID(): signer.Public()}
+	detached, err := Sign1With(signer, []byte("x"), Sign1Options{Detached: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Verify1(detached, keys); err == nil {
+		t.Fatal("a detached payload was verified as if it were present")
+	}
+	// The structure carries null, encoded as 0xf6, where the payload was.
+	if !bytes.Contains(detached, []byte{0xf6, 0x58, 0x40}) {
+		t.Error("the detached structure does not carry null before the signature")
 	}
 }

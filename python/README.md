@@ -84,6 +84,51 @@ watched it leave — `asserted` rather than `observed`. Weaker evidence than
 routing through the gateway, and stronger than the alternative for Bedrock
 and Vertex, which is no record at all.
 
+## Sign requests
+
+A bearer key proves the caller holds a secret we issued. A signature
+proves the request came from the holder of a private key we never saw,
+and the receipt records the actor as `verified` rather than `asserted`.
+That is the difference between "something with this key did it" and
+"this machine did it".
+
+```sh
+lyntway keys sign            # writes ~/.lyntway/keys/<key_id>.pem, registers the public half
+export LYNTWAY_SIGNING_KEY=~/.lyntway/keys/key_....pem
+export LYNTWAY_KEY_ID=key_...
+```
+
+With both set, every request the client sends to the gateway carries an
+RFC 9421 signature in the Web Bot Auth profile: `@method`, `@authority`,
+`@path` and, when there is a body, `content-digest` over the exact bytes
+sent. The bearer key is still sent; the signature upgrades identity, it
+does not replace authentication. Signatures expire five minutes after they
+are made.
+
+Explicitly, or for your own HTTP client:
+
+```python
+from lyntway import Lyntway, RequestSigner, sign_request
+
+client = Lyntway(base_url, api_key, signer=RequestSigner("key.pem", "key_..."))
+client = Lyntway(base_url, api_key, signer=False)   # never sign, whatever the environment says
+
+headers = sign_request("POST", url, body_bytes, private_key="key.pem", key_id="key_...")
+# add Signature-Input, Signature and Content-Digest to the request; send body_bytes unchanged
+```
+
+What it does not do. A private key file can still be copied: keep it at
+`0600`, and treat a copied key as a leaked one. Keychain and Secure Enclave
+storage is planned, not built. Setting one variable without the other
+raises rather than silently sending unsigned — a receipt that reads
+`asserted` for weeks because of a typo is the failure this is meant to
+prevent. And a signature only means something once the gateway has your
+public key: until it is registered against the key id, the headers are
+carried and nothing checks them, and the receipt still reads `asserted`.
+
+The cross-language test vectors are in `tests/testdata/signing_vectors.json`
+and are verified against the gateway's Go verifier.
+
 ## Dependencies
 
 One: `cryptography`, for Ed25519. Python has no Ed25519 in its standard

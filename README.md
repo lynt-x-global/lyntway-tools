@@ -56,6 +56,18 @@ carry weight with a third party need a key that was not minted on the
 laptop under examination, which is what the hosted service and the
 self-hosted deployment provide.
 
+## Keeping keys out of pull requests
+
+```yaml
+- uses: actions/checkout@v4
+- uses: lynt-x-global/lyntway-tools/action@main
+```
+
+Runs `lyntway scan` on the lines a pull request adds and fails the job
+when one of them is a provider key, with the fix in the job summary. The
+scan runs on the runner and sends nothing anywhere; the key's value is
+never printed. Details in [action/README.md](action/README.md).
+
 ## Python: the SDK and the LiteLLM callback
 
 ```bash

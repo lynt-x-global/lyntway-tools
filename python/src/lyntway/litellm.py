@@ -246,7 +246,16 @@ class LyntwayLogger(_Base):
         url = self._base_url or os.environ.get("LYNTWAY_URL", "")
         key = self._api_key or os.environ.get("LYNTWAY_KEY", "")
         if url and key:
-            self._client = Lyntway(url, key, timeout=self._timeout)
+            try:
+                self._client = Lyntway(url, key, timeout=self._timeout)
+            except Exception as exc:  # noqa: BLE001
+                # Half a signing configuration, or an unreadable key file,
+                # raises from the constructor by design — but not here,
+                # where the exception would land in LiteLLM's request path.
+                _log.warning(
+                    "lyntway: client could not be configured, so nothing "
+                    "will be recorded. Traffic is unaffected. %s", exc,
+                )
         else:
             _log.warning(
                 "lyntway: LYNTWAY_URL or LYNTWAY_KEY is not set, so nothing "

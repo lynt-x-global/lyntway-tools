@@ -24,7 +24,7 @@ import (
 // produce, and what the Go verifier accepts. This signer must match them
 // byte for byte, because the service verifies with that same package and
 // a signature that differs in one byte reads as tampering.
-const signingVectorsPath = "../../packages/lyntway-py/tests/testdata/signing_vectors.json"
+const signingVectorsPath = "testdata/signing_vectors.json"
 
 type signingVectors struct {
 	KeyID         string `json:"key_id"`

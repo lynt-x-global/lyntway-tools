@@ -45,9 +45,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // stdout and stdin are swapped by tests, which capture everything a command
@@ -405,19 +407,52 @@ func status() error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("\nSigned in to %s\n\n", c.Origin)
+	fmt.Fprintf(stdout, "\n%s\n\n", signedInLine(c, statusClient))
 
 	for _, t := range scan() {
-		fmt.Println(statusLineFor(t, c, os.Getenv))
+		fmt.Fprintln(stdout, statusLineFor(t, c, os.Getenv))
 	}
-	fmt.Println(signingStatusLine(c, os.Getenv))
+	fmt.Fprintln(stdout, signingStatusLine(c, os.Getenv))
 	if pidPath, err := proxyPIDPath(); err == nil {
-		fmt.Println(proxyStatusLine(pidPath, probeProxy))
+		fmt.Fprintln(stdout, proxyStatusLine(pidPath, probeProxy))
 	}
 
-	fmt.Println("\nAnything not listed here is not being recorded. That is what the")
-	fmt.Println("coverage page in your console is for.")
+	fmt.Fprintln(stdout, "\nAnything not listed here is not being recorded. That is what the")
+	fmt.Fprintln(stdout, "coverage page in your console is for.")
 	return nil
+}
+
+// statusClient bounds the one call `status` makes. Shorter than the API
+// client's: a machine that is offline should learn so in seconds, not
+// sit on a status command for half a minute.
+var statusClient = &http.Client{Timeout: 8 * time.Second}
+
+// signedInLine is the first line of `status`, and it asks the service
+// rather than the config file.
+//
+// "Signed in" used to mean "config.json exists", which the live service
+// contradicted: a key with a registered signing key was refused on every
+// call while status said it was signed in. So the key is presented once,
+// signed as every other call is, to an endpoint every deployment has,
+// and the line says what the service said. A 401 is reported as the
+// service refusing the key — with its own sentence, which names the fix
+// — and never as signed in.
+func signedInLine(c config, client *http.Client) string {
+	signer, err := loadRequestSigner(c)
+	if err != nil {
+		return fmt.Sprintf("Signed in to %s, but this machine cannot sign its requests: %v", c.Origin, err)
+	}
+	status, raw, err := doAPI(client, c, signer, http.MethodGet, "/v1/keys/providers", nil)
+	switch {
+	case err != nil:
+		return fmt.Sprintf("Signed in to %s, which could not be reached just now (%v)", c.Origin, err)
+	case status == http.StatusUnauthorized:
+		return fmt.Sprintf("Signed in to %s, but the service refuses this key: %s", c.Origin, apiMessage(status, raw))
+	case status == http.StatusOK:
+		return "Signed in to " + c.Origin
+	default:
+		return fmt.Sprintf("Signed in to %s, which answered the check with %s", c.Origin, apiMessage(status, raw))
+	}
 }
 
 // statusLineFor says where one target stands, in one line.

@@ -91,32 +91,26 @@ func keysUsage() {
 // call that takes longer than this is a network problem to report.
 var apiClient = &http.Client{Timeout: 30 * time.Second}
 
-// api makes one authenticated call and returns the status and body.
+// api makes one authenticated call and returns the status and body,
+// signed with this machine's key when `keys sign` has given it one.
 func api(c config, method, path string, body any) (int, []byte, error) {
-	var payload io.Reader
-	if body != nil {
-		raw, err := json.Marshal(body)
-		if err != nil {
-			return 0, nil, err
-		}
-		payload = bytes.NewReader(raw)
-	}
-	req, err := http.NewRequest(method, c.Origin+path, payload)
+	signer, err := loadRequestSigner(c)
 	if err != nil {
 		return 0, nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.Key)
-	req.Header.Set("Accept", "application/json")
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+	return doAPI(apiClient, c, signer, method, path, body)
+}
+
+// refused is the one line for a 401. The server's own sentence is kept
+// when it has one: a signed key refused for a bad signature is a
+// different problem from a revoked key, and "run login again" fixes
+// only the second.
+func refused(c config, status int, raw []byte) error {
+	msg := apiMessage(status, raw)
+	if strings.HasPrefix(msg, "HTTP ") {
+		return fmt.Errorf("%s does not accept this key; run `lyntway login` again", c.Origin)
 	}
-	resp, err := apiClient.Do(req)
-	if err != nil {
-		return 0, nil, fmt.Errorf("reaching %s: %w", c.Origin, err)
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	return resp.StatusCode, raw, nil
+	return fmt.Errorf("%s does not accept this key: %s", c.Origin, msg)
 }
 
 // input reads prompts. One reader for the life of the process, so a
@@ -251,8 +245,8 @@ func runMigrate(dir string, c config, opts migrateOptions) error {
 				continue
 			}
 			note := ""
-			if last, ok := stored[it.Upstream]; ok {
-				note = fmt.Sprintf("  (the server already holds a key for %s ending %s)", it.Upstream, last)
+			if held, ok := stored[it.Upstream]; ok {
+				note = fmt.Sprintf("  (the server already holds a key for %s ending %s)", it.Upstream, held.Last4)
 			}
 			fmt.Fprintf(stdout, "    → %-24s %-12s …%s%s\n", it.Var, it.Upstream, it.last4(), note)
 			plan = append(plan, it)
@@ -275,8 +269,8 @@ func runMigrate(dir string, c config, opts migrateOptions) error {
 	// silently overwrite the key the first one stored.
 	kept := plan[:0]
 	for _, it := range plan {
-		if last, ok := stored[it.Upstream]; ok && !opts.Replace {
-			if !ask(fmt.Sprintf("Replace the stored %s key ending %s with the one ending %s? [y/N] ", it.Upstream, last, it.last4())) {
+		if held, ok := stored[it.Upstream]; ok && !opts.Replace {
+			if !ask(fmt.Sprintf("Replace the stored %s key ending %s with the one ending %s? [y/N] ", it.Upstream, held.Last4, it.last4())) {
 				fmt.Fprintf(stdout, "  · %s left as it is\n", it.Var)
 				continue
 			}
@@ -293,22 +287,28 @@ func runMigrate(dir string, c config, opts migrateOptions) error {
 
 	// Stored first, rewritten second. A file rewritten to point at a key
 	// the server refused would break the application it belongs to.
-	stored = map[string]string{}
+	held := stored
+	stored = map[string]heldKey{}
 	var migrated []candidate
 	for _, it := range plan {
-		if last, done := stored[it.Upstream]; done {
+		if done, ok := stored[it.Upstream]; ok {
 			// Two files with a key for the same upstream: the first is
 			// stored, and the second is rewritten to use it. Said out
 			// loud, because if the two values differed the second one
 			// is now in its backup and nowhere else.
-			fmt.Fprintf(stdout, "  ✓ %-24s uses the %s key already stored this run (…%s)\n", it.Var, it.Upstream, last)
+			fmt.Fprintf(stdout, "  ✓ %-24s uses the %s key already stored this run (…%s)\n", it.Var, it.Upstream, done.Last4)
 			migrated = append(migrated, it)
 			continue
 		}
 		note := fmt.Sprintf("migrated from %s on %s", filepath.Base(it.File), hostLabel())
-		status, raw, err := api(c, http.MethodPost, "/v1/keys/providers", map[string]string{
-			"upstream": it.Upstream, "key": it.Value, "note": note,
-		})
+		body := map[string]string{"upstream": it.Upstream, "key": it.Value, "note": note}
+		if held[it.Upstream].Bound {
+			// Replacing a key bound to this key id must land where that
+			// key is: stored account-wide, the bound one would stay and
+			// keep winning, and "replaced" would have replaced nothing.
+			body["key_id"] = c.KeyID
+		}
+		status, raw, err := api(c, http.MethodPost, "/v1/keys/providers", body)
 		if err != nil {
 			return err
 		}
@@ -316,7 +316,7 @@ func runMigrate(dir string, c config, opts migrateOptions) error {
 			fmt.Fprintf(stdout, "  ✗ %-24s not stored: %s\n", it.Var, apiMessage(status, raw))
 			continue
 		}
-		stored[it.Upstream] = it.last4()
+		stored[it.Upstream] = heldKey{Last4: it.last4()}
 		migrated = append(migrated, it)
 		fmt.Fprintf(stdout, "  ✓ %-24s stored for %s (…%s)\n", it.Var, it.Upstream, it.last4())
 	}
@@ -470,7 +470,7 @@ func serverUpstreams(c config) ([]string, error) {
 	case http.StatusNotFound:
 		return nil, nil
 	case http.StatusUnauthorized:
-		return nil, fmt.Errorf("%s does not accept this key; run `lyntway login` again", c.Origin)
+		return nil, refused(c, status, raw)
 	default:
 		return nil, fmt.Errorf("listing upstreams: %s", apiMessage(status, raw))
 	}
@@ -489,9 +489,26 @@ func serverUpstreams(c config) ([]string, error) {
 	return names, nil
 }
 
+// heldKey is a provider key the server already holds for this machine's
+// key: its last4, and whether it is bound to this key id rather than
+// account-wide.
+type heldKey struct {
+	Last4 string
+	Bound bool
+}
+
 // storedProviderKeys reports which upstreams already have a key on the
 // server, by last4, so a replacement is a decision rather than a surprise.
-func storedProviderKeys(c config) (map[string]string, error) {
+//
+// Only what this machine's key would use counts. The listing carries
+// every provider key the account holds, and a key bound to another
+// application's key id is not one this key can reach: the first build
+// read the list flat and warned "the server already holds a key for
+// openai" about a key that belonged to a different application — found
+// on the live service, where that was the only openai key. An entry
+// bound to this key id wins over the account-wide one, because that is
+// what the gateway resolves for it.
+func storedProviderKeys(c config) (map[string]heldKey, error) {
 	status, raw, err := api(c, http.MethodGet, "/v1/keys/providers", nil)
 	if err != nil {
 		return nil, err
@@ -499,7 +516,7 @@ func storedProviderKeys(c config) (map[string]string, error) {
 	switch status {
 	case http.StatusOK:
 	case http.StatusUnauthorized:
-		return nil, fmt.Errorf("%s does not accept this key; run `lyntway login` again", c.Origin)
+		return nil, refused(c, status, raw)
 	default:
 		return nil, fmt.Errorf("%s cannot list stored keys: %s", c.Origin, apiMessage(status, raw))
 	}
@@ -508,6 +525,7 @@ func storedProviderKeys(c config) (map[string]string, error) {
 		Keys      []struct {
 			Upstream string `json:"upstream"`
 			Last4    string `json:"last4"`
+			KeyID    string `json:"key_id"`
 		} `json:"keys"`
 	}
 	if err := json.Unmarshal(raw, &list); err != nil {
@@ -516,9 +534,16 @@ func storedProviderKeys(c config) (map[string]string, error) {
 	if !list.Available {
 		return nil, fmt.Errorf("%s does not store provider keys, so there is nowhere to move them to", c.Origin)
 	}
-	out := map[string]string{}
+	out := map[string]heldKey{}
 	for _, k := range list.Keys {
-		out[k.Upstream] = k.Last4
+		switch {
+		case k.KeyID == "":
+			if !out[k.Upstream].Bound {
+				out[k.Upstream] = heldKey{Last4: k.Last4}
+			}
+		case k.KeyID == c.KeyID:
+			out[k.Upstream] = heldKey{Last4: k.Last4, Bound: true}
+		}
 	}
 	return out, nil
 }
@@ -577,6 +602,13 @@ func runSign(c config, id string, force, keychain bool) error {
 		return fmt.Errorf("a private key for %s already exists at %s; pass --force to replace it (the server will then trust only the new one)", id, path)
 	}
 
+	// The registration is signed with the key the server trusts now,
+	// which is the previous one — read before the file is replaced. On
+	// a --force re-run, signing with the new key would be refused by a
+	// server still holding the old public half; without any previous
+	// key the request goes unsigned, and the server says what it needs.
+	previous, _ := loadRequestSigner(c)
+
 	priv, pub, err := generateSigningKey(path)
 	if err != nil {
 		return err
@@ -607,7 +639,7 @@ func runSign(c config, id string, force, keychain bool) error {
 	body := map[string]string{"public_key": pubB64, "alg": "ed25519"}
 	registerPath := "/v1/keys/" + id + "/signing"
 	fmt.Fprintf(stdout, "\nRegistering it: POST %s%s\n", c.Origin, registerPath)
-	status, raw, err := api(c, http.MethodPost, registerPath, body)
+	status, raw, err := doAPI(apiClient, c, previous, http.MethodPost, registerPath, body)
 	registered := false
 	switch {
 	case err != nil:

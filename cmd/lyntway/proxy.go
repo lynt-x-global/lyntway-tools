@@ -7,11 +7,9 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
@@ -170,7 +168,7 @@ func runProxy(ctx context.Context, opts proxyOptions, out io.Writer) error {
 	}
 	switch {
 	case p.reporter != nil:
-		fmt.Fprintf(out, "  reporting classes and counts to %s, recorded there as attested; content stays here\n", p.reporter.origin)
+		fmt.Fprintf(out, "  reporting classes and counts to %s, recorded there as attested; content stays here\n", p.reporter.c.Origin)
 	case opts.Report:
 		fmt.Fprintf(out, "  reporting nothing: this machine is not signed in (`lyntway login`), so the receipts stay here\n")
 	default:
@@ -298,7 +296,13 @@ func newLocalProxy(opts proxyOptions) (*localProxy, error) {
 
 	var reporter *proxyReporter
 	if opts.Report && signedIn {
-		reporter = newProxyReporter(c)
+		// The reports go to the account under this machine's key, and a
+		// key that registered a signing key is refused unsigned.
+		requestSigner, err := loadRequestSigner(c)
+		if err != nil {
+			return nil, err
+		}
+		reporter = newProxyReporter(c, requestSigner)
 	}
 
 	return &localProxy{
@@ -396,21 +400,9 @@ func defaultReceiptsDir() string {
 // about whether the registration succeeded, which this cannot know.
 func loadProxySigner(c config, signedIn bool) (receipt.Signer, string, error) {
 	if signedIn && c.SigningKey != "" && c.KeyID != "" {
-		raw, err := os.ReadFile(c.SigningKey)
+		priv, err := readSigningKey(c.SigningKey)
 		if err != nil {
-			return nil, "", fmt.Errorf("the signing key at %s cannot be read: %v; run `lyntway keys sign --force` or remove it from %s", c.SigningKey, err, "~/.lyntway/config.json")
-		}
-		block, _ := pem.Decode(raw)
-		if block == nil {
-			return nil, "", fmt.Errorf("%s is not a PEM private key", c.SigningKey)
-		}
-		parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-		if err != nil {
-			return nil, "", fmt.Errorf("%s: %w", c.SigningKey, err)
-		}
-		priv, ok := parsed.(ed25519.PrivateKey)
-		if !ok {
-			return nil, "", fmt.Errorf("%s is not an Ed25519 key", c.SigningKey)
+			return nil, "", err
 		}
 		signer, err := receipt.NewEd25519Signer(c.KeyID, priv)
 		if err != nil {
@@ -1267,8 +1259,8 @@ func relayGovernedStream(w http.ResponseWriter, upstream io.Reader, g *govern.St
 // way, so nothing is lost that was not already kept.
 
 type proxyReporter struct {
-	origin string
-	key    string
+	c      config
+	signer *requestSigner
 	client *http.Client
 	queue  chan proxyAttestation
 	wg     sync.WaitGroup
@@ -1290,10 +1282,10 @@ type proxyAttestation struct {
 	Reference string
 }
 
-func newProxyReporter(c config) *proxyReporter {
+func newProxyReporter(c config, signer *requestSigner) *proxyReporter {
 	r := &proxyReporter{
-		origin: c.Origin,
-		key:    c.Key,
+		c:      c,
+		signer: signer,
 		client: &http.Client{Timeout: 5 * time.Second},
 		// Bounded and lossy: a burst while the network is slow must not
 		// grow memory, and a dropped summary costs a row in a dashboard
@@ -1348,19 +1340,17 @@ func (r *proxyReporter) send(a proxyAttestation) error {
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequest(http.MethodPost, r.origin+"/v1/attest", bytes.NewReader(body))
+	req, err := newAPIRequest(r.c, r.signer, http.MethodPost, "/v1/attest", body, "application/json")
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+r.key)
-	req.Header.Set("Content-Type", "application/json")
 	resp, err := r.client.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("%s answered %d", r.origin, resp.StatusCode)
+		return fmt.Errorf("%s answered %d", r.c.Origin, resp.StatusCode)
 	}
 	return nil
 }

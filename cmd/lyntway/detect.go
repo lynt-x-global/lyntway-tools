@@ -3,10 +3,12 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // Finding what is on this machine, and being honest about what is not.
@@ -90,6 +92,32 @@ func claudeDesktopConfig() string {
 	default:
 		return filepath.Join(h, ".config", "Claude", "claude_desktop_config.json")
 	}
+}
+
+// cursorMCPConfig is where Cursor keeps its MCP servers.
+// Same mcpServers structure as Claude Desktop, single location on all platforms.
+func cursorMCPConfig() string {
+	h := home()
+	if h == "" {
+		return ""
+	}
+	return filepath.Join(h, ".cursor", "mcp.json")
+}
+
+// ollamaReachable checks whether an Ollama server is responding at addr.
+func ollamaReachable(addr string) bool {
+	client := &http.Client{Timeout: 700 * time.Millisecond}
+	resp, err := client.Get(addr + "/api/version")
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == 200
+}
+
+// ollamaRunning reports whether Ollama is listening on the default port.
+func ollamaRunning() bool {
+	return ollamaReachable("http://127.0.0.1:11434")
 }
 
 // shellProfile picks the file where environment variables belong.
@@ -180,6 +208,15 @@ func scan() []target {
 			"nothing here changes that. Two lines to paste, printed below.",
 	})
 
+	// Cursor MCP servers — same wrapping as Claude Desktop/Code.
+	cursorMCP := cursorMCPConfig()
+	found = append(found, target{
+		Name:  "Cursor MCP",
+		Path:  cursorMCP,
+		Kind:  kindMCP,
+		Found: cursorMCP != "" && exists(cursorMCP),
+	})
+
 	// Continue, in VS Code or JetBrains.
 	cont := ""
 	if h != "" {
@@ -190,6 +227,14 @@ func scan() []target {
 		Path:  cont,
 		Kind:  kindJSON,
 		Found: exists(cont),
+	})
+
+	// Ollama, the most common local model server.
+	found = append(found, target{
+		Name:  "Ollama",
+		Kind:  kindManual,
+		Found: ollamaRunning(),
+		Why:   "running on 127.0.0.1:11434; front it with `lyntway proxy`",
 	})
 
 	// Said out loud rather than omitted. Somebody whose team uses this

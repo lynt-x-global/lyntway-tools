@@ -263,14 +263,14 @@ func TestMigrateStoresRewritesAndUndoRestoresByteForByte(t *testing.T) {
 		"LAWMATICS_API_KEY=lyk_mine",
 		"LAWMATICS_BASE_URL=" + srv.URL + "/gw/lawmatics",
 		"DATABASE_URL=postgres://u:p@localhost/app",
-		"OPENAI_BASE_URL=https://api.openai.com/v1",
+		"OPENAI_BASE_URL=" + srv.URL + "/gw/openai/v1",
 		markerStart, markerEnd,
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("rewritten file lacks %q:\n%s", want, text)
 		}
 	}
-	// The person's own OPENAI_BASE_URL was kept, and not defined twice.
+	// The provider's own OPENAI_BASE_URL was rewritten in place, not duplicated.
 	if strings.Count(text, "OPENAI_BASE_URL=") != 1 {
 		t.Errorf("OPENAI_BASE_URL defined %d times:\n%s", strings.Count(text, "OPENAI_BASE_URL="), text)
 	}

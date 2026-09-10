@@ -261,15 +261,40 @@ func gatewayURL(origin, upstream string) string {
 	return origin + "/gw/" + upstream
 }
 
+// providerBaseURLs maps upstream names to the base URLs the provider's own
+// documentation tells people to set. A base URL pointing here is not a
+// deliberate choice — it is the default, and the migration should replace
+// it. A URL pointing anywhere else was set on purpose and is left alone.
+var providerBaseURLs = map[string][]string{
+	"openai":    {"https://api.openai.com/v1", "https://api.openai.com"},
+	"anthropic": {"https://api.anthropic.com", "https://api.anthropic.com/v1"},
+	"gemini":    {"https://generativelanguage.googleapis.com", "https://generativelanguage.googleapis.com/v1"},
+	"xai":       {"https://api.x.ai", "https://api.x.ai/v1"},
+	"mistral":   {"https://api.mistral.ai", "https://api.mistral.ai/v1"},
+}
+
+// isProviderURL reports whether url is the provider's own address for this
+// upstream. Compared case-insensitively with trailing slashes stripped.
+func isProviderURL(upstream, url string) bool {
+	url = strings.TrimRight(strings.ToLower(strings.TrimSpace(url)), "/")
+	for _, p := range providerBaseURLs[upstream] {
+		if url == strings.TrimRight(strings.ToLower(p), "/") {
+			return true
+		}
+	}
+	return false
+}
+
 // rewriteEnv replaces the provider-key lines in one file and adds the
 // base URLs the SDKs need, inside the fenced block.
 //
 // The key line is changed in place rather than moved into the block,
 // because loaders differ on whether the first or last definition of a
 // variable wins, and a file with two definitions would route through us
-// under one loader and not the other. The base URL lines go in the block
-// only when the file does not already define them; a definition somebody
-// wrote deliberately is theirs.
+// under one loader and not the other. Base URL lines that point at the
+// provider's own address are rewritten in place to the gateway; a URL
+// pointing anywhere else was set on purpose and is left alone. Missing
+// base URLs are added in the fenced block.
 //
 // Anthropic is the exception to `VAR=<lyntway key>`. Its SDK sends
 // ANTHROPIC_API_KEY as x-api-key, which the gateway forwards to the
@@ -310,9 +335,20 @@ func rewriteEnv(path string, items []candidate, c config) (string, error) {
 		lines[it.Line] = envLine{Raw: fmt.Sprintf("%s%s=%s", prefix, it.Var, value), Key: it.Var, Value: value, Export: it.Export}
 
 		base := strings.TrimSuffix(it.Var, "_API_KEY") + "_BASE_URL"
+		gw := gatewayURL(c.Origin, it.Upstream)
 		if !defined[base] {
-			add = append(add, fmt.Sprintf("%s=%s", base, gatewayURL(c.Origin, it.Upstream)))
+			add = append(add, fmt.Sprintf("%s=%s", base, gw))
 			defined[base] = true
+		} else {
+			// A base URL pointing at the provider's own address is the
+			// default, not a deliberate choice. Leaving it means the
+			// migration says "done" while traffic still goes direct.
+			for i, l := range lines {
+				if l.Key == base && isProviderURL(it.Upstream, l.Value) {
+					lines[i] = envLine{Raw: fmt.Sprintf("%s=%s", base, gw), Key: base, Value: gw}
+					break
+				}
+			}
 		}
 		if it.Upstream == "anthropic" && !defined["ANTHROPIC_AUTH_TOKEN"] {
 			add = append(add, "ANTHROPIC_AUTH_TOKEN="+c.Key)

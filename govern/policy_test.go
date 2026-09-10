@@ -23,10 +23,10 @@ func TestARuleScopedToAnUpstreamOnlyFiresThere(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if got := p.DecideFor("lawmatics", detect.ClassEmail, detect.ConfidenceHigh); got != receipt.DecisionAllow {
+	if got := p.DecideFor("lawmatics", "", detect.ClassEmail, detect.ConfidenceHigh); got != receipt.DecisionAllow {
 		t.Errorf("to lawmatics: %q, want allow from the scoped rule", got)
 	}
-	if got := p.DecideFor("openai", detect.ClassEmail, detect.ConfidenceHigh); got != receipt.DecisionTokenize {
+	if got := p.DecideFor("openai", "", detect.ClassEmail, detect.ConfidenceHigh); got != receipt.DecisionTokenize {
 		t.Errorf("to openai: %q, want tokenize from the general rule", got)
 	}
 	// No target means the condition could not be checked, and an unmet
@@ -35,7 +35,7 @@ func TestARuleScopedToAnUpstreamOnlyFiresThere(t *testing.T) {
 		t.Errorf("with no target: %q, want tokenize; a scoped allowance must not apply everywhere", got)
 	}
 	// Exact, not prefix or case-folded: the gateway lower-cases names.
-	if got := p.DecideFor("lawmatics-eu", detect.ClassEmail, detect.ConfidenceHigh); got != receipt.DecisionTokenize {
+	if got := p.DecideFor("lawmatics-eu", "", detect.ClassEmail, detect.ConfidenceHigh); got != receipt.DecisionTokenize {
 		t.Errorf("to lawmatics-eu: %q, the scoped rule matched a different upstream", got)
 	}
 }
@@ -48,7 +48,7 @@ func TestASpecificRuleAfterAGeneralOneIsReportedUnreachable(t *testing.T) {
 	specific := PolicyRule{Class: detect.ClassEmail, Upstream: "lawmatics", Decision: receipt.DecisionAllow}
 
 	shadowed := &Policy{ID: "p", Version: "1", Rules: []PolicyRule{general, specific}, Default: receipt.DecisionAllow}
-	if got := shadowed.DecideFor("lawmatics", detect.ClassEmail, detect.ConfidenceHigh); got != receipt.DecisionTokenize {
+	if got := shadowed.DecideFor("lawmatics", "", detect.ClassEmail, detect.ConfidenceHigh); got != receipt.DecisionTokenize {
 		t.Errorf("decision = %q; the engine reordered a scoped rule to the front", got)
 	}
 	warnings := shadowed.Warnings()

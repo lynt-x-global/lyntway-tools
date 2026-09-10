@@ -337,6 +337,24 @@ func wrapMCP(path string) (changed []string, saved string, err error) {
 		return nil, "", nil
 	}
 
+	// Add the lyntway tool server so the agent can call lyntway_migrate,
+	// lyntway_watch, etc. Skipped if a "lyntway" entry already exists.
+	// Only added when we are already writing the file (wrapping at least
+	// one server), so a config with nothing to wrap is left untouched.
+	if _, has := servers["lyntway"]; !has {
+		self := selfPath()
+		if self != "" {
+			entry := map[string]any{
+				"command": self,
+				"args":    []string{"mcp-server"},
+			}
+			if encoded, err := json.Marshal(entry); err == nil {
+				wrapped["lyntway"] = encoded
+				changed = append(changed, "lyntway (tool server)")
+			}
+		}
+	}
+
 	if saved, err = backup(path); err != nil {
 		return nil, "", err
 	}

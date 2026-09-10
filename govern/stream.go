@@ -91,6 +91,10 @@ type StreamGovernor struct {
 	// rule is simply absent, never assumed to apply (see PolicyRule.Upstream).
 	target string
 
+	// keyID is the API key that made the request. A policy rule scoped to
+	// specific keys only matches when this is set and listed.
+	keyID string
+
 	mu sync.Mutex
 
 	// buffer holds bytes received but not yet released.
@@ -154,6 +158,15 @@ func WithTarget(target string) StreamOption {
 	}
 }
 
+// WithKeyID names the API key the request was made with, which is what
+// lets a rule scoped to specific keys apply. Without it, such a rule is
+// simply absent, never assumed to apply.
+func WithKeyID(keyID string) StreamOption {
+	return func(s *StreamGovernor) {
+		s.keyID = keyID
+	}
+}
+
 // NewStreamGovernor starts governing a stream on its way out.
 //
 // Sensitive values found in it are substituted, because the reader is
@@ -175,11 +188,11 @@ func (e *Engine) NewStreamGovernor(scope *tokenize.Scope, opts ...StreamOption) 
 }
 
 // decide is every policy decision the stream makes, so that all of them
-// are made for the same destination. Three call sites once each called
-// Decide directly, which is how a scoped rule came to apply on one path
-// and not another.
+// are made for the same destination and key. Three call sites once each
+// called Decide directly, which is how a scoped rule came to apply on one
+// path and not another.
 func (s *StreamGovernor) decide(class detect.Class, conf detect.Confidence) receipt.Decision {
-	return s.policy.DecideFor(s.target, class, conf)
+	return s.policy.DecideFor(s.target, s.keyID, class, conf)
 }
 
 // NewRestoringStreamGovernor starts governing a stream on its way back.

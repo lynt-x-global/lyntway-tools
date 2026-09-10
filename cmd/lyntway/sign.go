@@ -14,10 +14,40 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 	"unicode"
 )
+
+// cliCommand is set by each command before making API calls, so the
+// User-Agent header names the action that caused the request.
+var cliCommand string
+
+// detectSource looks at the environment to decide which editor or tool
+// started this process. The result is part of the User-Agent so the
+// activity log can say "from Cursor" rather than just "from a terminal".
+func detectSource() string {
+	if os.Getenv("CURSOR_TRACE_ID") != "" || os.Getenv("CURSOR_SESSION_ID") != "" {
+		return "cursor"
+	}
+	if os.Getenv("TERM_PROGRAM") == "vscode" {
+		return "vscode"
+	}
+	if os.Getenv("CLAUDE_CODE") != "" {
+		return "claude-code"
+	}
+	return "terminal"
+}
+
+func cliUserAgent() string {
+	cmd := cliCommand
+	if cmd == "" {
+		cmd = "unknown"
+	}
+	return fmt.Sprintf("lyntway-cli/%s (%s; %s; %s)",
+		version, cmd, runtime.GOOS, detectSource())
+}
 
 // Signing the CLI's own requests.
 //
@@ -232,6 +262,7 @@ func newAPIRequest(c config, signer *requestSigner, method, path string, body []
 		req.Header.Set("Authorization", "Bearer "+c.Key)
 	}
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", cliUserAgent())
 	if len(body) > 0 && contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}

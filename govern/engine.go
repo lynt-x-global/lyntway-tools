@@ -315,6 +315,29 @@ type Request struct {
 	// tokenise; without it, a tokenise decision has nowhere to record the
 	// mapping and the transformation would be silently irreversible.
 	Scope *tokenize.Scope
+
+	// KeyID scopes per-key rules. When set, only rules whose KeyIDs list
+	// includes this value — or rules with no KeyIDs at all — apply. Empty
+	// means no key restriction: every rule matches as before.
+	KeyID string
+
+	// Hold requires a person for a reason that is not a finding, exactly
+	// as Refusal blocks for a reason that is not a finding.
+	//
+	// The case it exists for: a write to a payment route. Nothing in the
+	// content decides it — the same body sent to a reporting API needs
+	// nobody — so no rule over findings can express it, and the policy
+	// machinery has nothing to match on when the payload is clean. Without
+	// this the caller would have to park the request itself and issue a
+	// receipt saying "allow" for content that went nowhere.
+	//
+	// Deliberately a bool and not a reason string: a reason here would
+	// read as though it were recorded, and it is not. The receipt says
+	// require_approval and no more; why lives in the approval record and
+	// the audit entry, which are the things a person actually reads. A
+	// held action that nobody releases carries no output digest, so this
+	// can never make a receipt claim more than happened.
+	Hold bool
 }
 
 // Result is the outcome of governing one action.
@@ -418,7 +441,7 @@ func (e *Engine) Govern(req Request) (*Result, error) {
 	if len(req.PriorFindings) > 0 {
 		spans = spansNewSincePrior(spans, req.Content)
 	}
-	findings, decision := findingDecisions(policy, req.Action.Target, spans)
+	findings, decision := findingDecisions(policy, req.Action.Target, req.KeyID, spans)
 	if len(req.PriorFindings) > 0 {
 		findings, decision = mergeFindings(findings, decision, req.PriorFindings)
 	}
@@ -427,6 +450,20 @@ func (e *Engine) Govern(req Request) (*Result, error) {
 	// findings or enforcement.
 	if mode == receipt.ModeBypassed {
 		findings, decision = nil, receipt.DecisionAllow
+	}
+
+	// A hold the caller placed for a reason of its own. Applied after the
+	// bypassed reset, because the reason is not something detection found:
+	// a run that examined nothing still knows the request was a write to a
+	// payment route, and holding it is the honest answer rather than
+	// letting it through because inspection was unavailable.
+	//
+	// Placed before the inspect and irrevocable adjustments below so it is
+	// held to the same truths they enforce: witness mode keeps a hold,
+	// because a hold alters nothing; content already delivered downgrades
+	// it to log_only, because there is no longer anything to hold.
+	if req.Hold {
+		decision = strongest(decision, receipt.DecisionRequireApproval)
 	}
 
 	// Inspection keeps every finding and every refusal, and drops only the
@@ -636,10 +673,10 @@ func alter(req Request, spans []detect.Span, p *Policy) ([]byte, error) {
 	keys := jsonObjectKeys(content)
 
 	for _, s := range spans {
-		// The same question findingDecisions asked, with the same target.
-		// Asking it without one would let the receipt record a
+		// The same question findingDecisions asked, with the same target
+		// and key. Asking it without one would let the receipt record a
 		// substitution for this destination that the bytes never had.
-		decision := p.DecideFor(req.Action.Target, s.Class, s.Confidence)
+		decision := p.DecideFor(req.Action.Target, req.KeyID, s.Class, s.Confidence)
 		if decision != receipt.DecisionRedact && decision != receipt.DecisionTokenize {
 			// Logged, allowed, or otherwise left alone. A finding the
 			// policy merely records must not be rewritten because another

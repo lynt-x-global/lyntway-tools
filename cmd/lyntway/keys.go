@@ -134,6 +134,13 @@ type migrateOptions struct {
 	Yes     bool // do not ask before writing
 	Replace bool // do not ask before replacing a key the server already holds
 
+	// Keep is the other answer to the same question, given in advance:
+	// leave a key the server already holds as it is, and do not ask. It
+	// exists for callers that cannot answer a prompt — an agent speaking
+	// MCP owns stdin, so a question there hangs — and the safe answer is
+	// the one that changes nothing another project depends on.
+	Keep bool
+
 	// Started is when the command began, so the receipt line at the end
 	// can say how long the whole thing took. Zero means now.
 	Started time.Time
@@ -144,7 +151,11 @@ func keysMigrate(args []string) error {
 	opts := migrateOptions{Started: time.Now()}
 	fs.BoolVar(&opts.Yes, "yes", false, "do not ask before writing")
 	fs.BoolVar(&opts.Replace, "replace", false, "replace a key the server already holds for the same upstream without asking")
+	fs.BoolVar(&opts.Keep, "keep", false, "leave a key the server already holds for the same upstream as it is, without asking")
 	_ = fs.Parse(flagsFirst(fs, args))
+	if opts.Replace && opts.Keep {
+		return fmt.Errorf("--replace and --keep answer the same question two ways; pass one")
+	}
 
 	dir := "."
 	if fs.NArg() > 0 {
@@ -270,7 +281,7 @@ func runMigrate(dir string, c config, opts migrateOptions) error {
 	kept := plan[:0]
 	for _, it := range plan {
 		if held, ok := stored[it.Upstream]; ok && !opts.Replace {
-			if !ask(fmt.Sprintf("Replace the stored %s key ending %s with the one ending %s? [y/N] ", it.Upstream, held.Last4, it.last4())) {
+			if opts.Keep || !ask(fmt.Sprintf("Replace the stored %s key ending %s with the one ending %s? [y/N] ", it.Upstream, held.Last4, it.last4())) {
 				fmt.Fprintf(stdout, "  · %s left as it is\n", it.Var)
 				continue
 			}

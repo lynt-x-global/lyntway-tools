@@ -48,6 +48,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -71,17 +72,28 @@ func main() {
 
 	args := flag.Args()
 	if len(args) == 0 {
-		usage()
-		os.Exit(2)
+		cliCommand = "setup"
+		if err := setup(nil); err != nil {
+			fmt.Fprintf(os.Stderr, "lyntway: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	var err error
+	cliCommand = args[0]
 	switch args[0] {
+	case "setup":
+		err = setup(args[1:])
 	case "login":
 		err = login(args[1:])
 	case "init":
 		err = initialise(args[1:])
 	case "keys":
+		cliCommand = "keys"
+		if len(args) > 1 {
+			cliCommand = "keys-" + args[1]
+		}
 		err = keys(args[1:])
 	case "hook":
 		err = hook(args[1:])
@@ -89,6 +101,9 @@ func main() {
 		err = scanCommand(args[1:])
 	case "proxy":
 		err = proxyCmd(args[1:])
+	case "mcp-server":
+		cliCommand = "mcp-server"
+		err = mcpServer(args[1:])
 	case "status":
 		err = status()
 	case "undo":
@@ -113,6 +128,7 @@ func usage() {
 	fmt.Fprint(os.Stderr, `lyntway — point this machine's AI tools at Lyntway
 
 Usage:
+  lyntway setup          sign in, scan, migrate keys, route tools — all in one
   lyntway login          connect this machine to an account
   lyntway init           find what is installed and route it through us
   lyntway keys migrate   move provider keys out of a project's .env files
@@ -120,9 +136,12 @@ Usage:
   lyntway hook install   have Claude Code or Cursor refuse a prompt that carries a key
   lyntway scan           find provider keys in files, or in a diff before it is pushed
   lyntway proxy          govern Ollama or LM Studio on this machine
+  lyntway mcp-server     MCP tool server for AI agents (runs over stdio)
   lyntway status         what is configured, and what is not covered
   lyntway undo           put everything back
   lyntway version        which build this is
+
+Running lyntway with no arguments is the same as lyntway setup.
 
 Nothing is changed until you have seen the list and agreed, and every file
 that is changed is backed up beside itself first.
@@ -206,6 +225,23 @@ func login(args []string) error {
 	}
 
 	if c.Key == "" {
+		// A machine that already has a working key should not silently
+		// create another. Check first, and let the person decide.
+		if prev, err := loadConfig(); err == nil && prev.Key != "" {
+			prefix := prev.Key
+			if len(prefix) > 12 {
+				prefix = prefix[:12]
+			}
+			fmt.Fprintf(stdout, "\nThis machine already has a key (%s…) pointed at %s.\n", prefix, prev.Origin)
+			fmt.Fprint(stdout, "Use the existing key? [Y/n] ")
+			line, _ := bufio.NewReader(stdin).ReadString('\n')
+			answer := strings.TrimSpace(strings.ToLower(line))
+			if answer == "" || answer == "y" || answer == "yes" {
+				fmt.Fprintf(stdout, "Keeping the existing key.\n")
+				return nil
+			}
+		}
+
 		// No key given: link this machine from the browser. The server
 		// issues the key once somebody signed in there approves, so
 		// nothing is pasted and the key's id is known from the start.
@@ -407,7 +443,12 @@ func status() error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "\n%s\n\n", signedInLine(c, statusClient))
+	line, raw := signedInLineWithBody(c, statusClient)
+	fmt.Fprintf(stdout, "\n%s\n", line)
+	if len(raw) > 0 {
+		printProviderKeyExpiry(raw, c.Origin)
+	}
+	fmt.Fprintln(stdout)
 
 	for _, t := range scan() {
 		fmt.Fprintln(stdout, statusLineFor(t, c, os.Getenv))
@@ -438,20 +479,28 @@ var statusClient = &http.Client{Timeout: 8 * time.Second}
 // service refusing the key — with its own sentence, which names the fix
 // — and never as signed in.
 func signedInLine(c config, client *http.Client) string {
+	line, _ := signedInLineWithBody(c, client)
+	return line
+}
+
+// signedInLineWithBody is signedInLine but also returns the raw response
+// body on success, so the caller can inspect provider keys without a
+// second request.
+func signedInLineWithBody(c config, client *http.Client) (string, []byte) {
 	signer, err := loadRequestSigner(c)
 	if err != nil {
-		return fmt.Sprintf("Signed in to %s, but this machine cannot sign its requests: %v", c.Origin, err)
+		return fmt.Sprintf("Signed in to %s, but this machine cannot sign its requests: %v", c.Origin, err), nil
 	}
 	status, raw, err := doAPI(client, c, signer, http.MethodGet, "/v1/keys/providers", nil)
 	switch {
 	case err != nil:
-		return fmt.Sprintf("Signed in to %s, which could not be reached just now (%v)", c.Origin, err)
+		return fmt.Sprintf("Signed in to %s, which could not be reached just now (%v)", c.Origin, err), nil
 	case status == http.StatusUnauthorized:
-		return fmt.Sprintf("Signed in to %s, but the service refuses this key: %s", c.Origin, apiMessage(status, raw))
+		return fmt.Sprintf("Signed in to %s, but the service refuses this key: %s", c.Origin, apiMessage(status, raw)), nil
 	case status == http.StatusOK:
-		return "Signed in to " + c.Origin
+		return "Signed in to " + c.Origin, raw
 	default:
-		return fmt.Sprintf("Signed in to %s, which answered the check with %s", c.Origin, apiMessage(status, raw))
+		return fmt.Sprintf("Signed in to %s, which answered the check with %s", c.Origin, apiMessage(status, raw)), nil
 	}
 }
 
@@ -476,6 +525,7 @@ func statusLineFor(t target, c config, getenv func(string) string) string {
 			return fmt.Sprintf("  ? %-46s unreadable", t.Name)
 		}
 		var wrapped, total int
+		var names []string
 		for name, entry := range servers {
 			if name == "lyntway" {
 				continue // our own remote connection, not a tool to wrap
@@ -484,9 +534,15 @@ func statusLineFor(t target, c config, getenv func(string) string) string {
 			if alreadyWrapped(entry) {
 				wrapped++
 			}
+			names = append(names, name)
 		}
-		return fmt.Sprintf("  %s %-46s %d of %d tools routed",
+		sort.Strings(names)
+		line := fmt.Sprintf("  %s %-46s %d of %d tools routed",
 			tick(wrapped == total && wrapped > 0), t.Name, wrapped, total)
+		if len(names) > 0 {
+			line += "\n      servers: " + strings.Join(names, ", ")
+		}
+		return line
 
 	case t.Kind == kindJSON && t.Found:
 		// Installed, and waiting on a step only a person can take. Without

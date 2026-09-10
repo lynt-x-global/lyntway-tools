@@ -75,13 +75,31 @@ type PolicyRule struct {
 	// destination-specific allowance apply to every destination.
 	Upstream string
 
+	// KeyIDs confines this rule to requests made with specific API keys.
+	// Empty applies to every key. When set, only requests carrying one
+	// of these key IDs are governed by this rule — everything else falls
+	// through to the next rule or the default.
+	KeyIDs []string
+
 	// Decision is the action to take.
 	Decision receipt.Decision
 }
 
-func (r PolicyRule) matches(target string, class detect.Class, conf detect.Confidence) bool {
+func (r PolicyRule) matches(target, keyID string, class detect.Class, conf detect.Confidence) bool {
 	if r.Upstream != "" && r.Upstream != target {
 		return false
+	}
+	if len(r.KeyIDs) > 0 {
+		found := false
+		for _, id := range r.KeyIDs {
+			if id == keyID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
 	}
 	if conf < r.MinConfidence {
 		return false
@@ -95,14 +113,15 @@ func (r PolicyRule) matches(target string, class detect.Class, conf detect.Confi
 // Decide returns the action for a single finding when the destination is
 // not known. Rules scoped to an upstream cannot match; see PolicyRule.Upstream.
 func (p *Policy) Decide(class detect.Class, conf detect.Confidence) receipt.Decision {
-	return p.DecideFor("", class, conf)
+	return p.DecideFor("", "", class, conf)
 }
 
 // DecideFor returns the action for a single finding bound for target, the
-// receipt.Action.Target of the governed action.
-func (p *Policy) DecideFor(target string, class detect.Class, conf detect.Confidence) receipt.Decision {
+// receipt.Action.Target of the governed action. keyID scopes per-key rules;
+// empty means no key restriction.
+func (p *Policy) DecideFor(target, keyID string, class detect.Class, conf detect.Confidence) receipt.Decision {
 	for _, rule := range p.Rules {
-		if rule.matches(target, class, conf) {
+		if rule.matches(target, keyID, class, conf) {
 			return rule.Decision
 		}
 	}
@@ -176,6 +195,24 @@ func (p *Policy) Warnings() []string {
 func (r PolicyRule) covers(other PolicyRule) bool {
 	if r.Upstream != "" && r.Upstream != other.Upstream {
 		return false
+	}
+	// A rule scoped to specific keys cannot cover a rule scoped to
+	// different keys. A rule with no key restriction covers everything
+	// regardless of the later rule's keys.
+	if len(r.KeyIDs) > 0 {
+		if len(other.KeyIDs) == 0 {
+			return false
+		}
+		// Every key the later rule names must be in the earlier rule's set.
+		set := make(map[string]bool, len(r.KeyIDs))
+		for _, id := range r.KeyIDs {
+			set[id] = true
+		}
+		for _, id := range other.KeyIDs {
+			if !set[id] {
+				return false
+			}
+		}
 	}
 	// A stricter threshold leaves the weaker findings for the later rule.
 	if r.MinConfidence > other.MinConfidence {
@@ -301,7 +338,7 @@ func DefaultPolicy() *Policy {
 //
 // Returned sorted by class so receipts for identical content are
 // byte-identical: map iteration order must never reach a signed payload.
-func findingDecisions(p *Policy, target string, spans []detect.Span) ([]receipt.Finding, receipt.Decision) {
+func findingDecisions(p *Policy, target, keyID string, spans []detect.Span) ([]receipt.Finding, receipt.Decision) {
 	type agg struct {
 		count    int
 		decision receipt.Decision
@@ -319,7 +356,7 @@ func findingDecisions(p *Policy, target string, spans []detect.Span) ([]receipt.
 
 	overall := receipt.DecisionAllow
 	for _, s := range spans {
-		d := p.DecideFor(target, s.Class, s.Confidence)
+		d := p.DecideFor(target, keyID, s.Class, s.Confidence)
 		a, ok := byClass[s.Class]
 		if !ok {
 			a = &agg{decision: d}

@@ -244,6 +244,26 @@ type Request struct {
 	// performed.
 	Subject receipt.ContentSubject
 
+	// SuppliedDigest registers a digest the caller computed, for content
+	// that never came here at all.
+	//
+	// The case is a document handed over for attestation — a penetration
+	// test report, an assessment result — where sending the file would put
+	// a customer's unpublished findings in a third party's hands to obtain
+	// a hash they can compute themselves. When set, this value becomes the
+	// input digest instead of a hash of Content, and the receipt records
+	// that it was supplied rather than computed, so nothing reads as
+	// first-hand that was not.
+	//
+	// Only valid with receipt.SubjectDocument; the schema refuses it
+	// anywhere else.
+	SuppliedDigest string
+
+	// DocumentBytes is the artefact's size as the caller states it, used
+	// only when SuppliedDigest is set. Content is a descriptive record in
+	// that case, and its length would describe the wrong thing.
+	DocumentBytes int64
+
 	// SelfDescribed marks Content as a record this service composed from a
 	// caller's fields, rather than bytes a caller sent. It is digested,
 	// because the digest is what proves the report was not altered, but it
@@ -506,11 +526,27 @@ func (e *Engine) Govern(req Request) (*Result, error) {
 		req.Approval = nil
 	}
 
+	// A supplied digest belongs to a file this service never received, so
+	// hashing what it did receive would fingerprint the wrong thing.
 	inputDigest := receipt.DigestContent(req.Content)
+	if req.SuppliedDigest != "" {
+		inputDigest = req.SuppliedDigest
+	}
 
 	out, outputDigest, err := e.transform(req, spans, decision, policy)
 	if err != nil {
 		return nil, err
+	}
+
+	// Nothing can transform content that never arrived, so a registered
+	// document leaves exactly as it came. Without this the output digest
+	// would be a hash of the descriptive record while the input digest is
+	// the file's, and the schema rightly refuses a receipt whose two
+	// digests disagree under a decision that changed nothing. An empty
+	// output digest is left alone: that means nothing was released, and
+	// inventing one would describe a delivery that did not happen.
+	if req.SuppliedDigest != "" && outputDigest != "" {
+		outputDigest = inputDigest
 	}
 
 	// A block releases nothing, so the transform reports no output. A cut
@@ -562,9 +598,10 @@ func (e *Engine) Govern(req Request) (*Result, error) {
 			Algorithm:    receipt.DigestSHA256,
 			InputDigest:  inputDigest,
 			OutputDigest: outputDigest,
-			Bytes:        int64(len(req.Content)),
+			Bytes:        contentBytes(req),
 			Subject:      req.Subject,
 			Truncated:    req.Truncated,
+			Supplied:     req.SuppliedDigest != "",
 		},
 		Governance: receipt.Governance{
 			Mode:     mode,
@@ -1055,3 +1092,14 @@ func withAnalyzerHealth(components []Component, analyzers []Analyzer) []Componen
 // settable would only invite a deployment to write somebody else's name on
 // its own statements.
 const issuerName = "Lyntway (lyntway.com)"
+
+// contentBytes is the size the receipt should report: the governed payload
+// normally, and the artefact's own size when a digest was supplied for a file
+// that never arrived — where len(Content) would measure the descriptive
+// record instead of the thing the digest covers.
+func contentBytes(req Request) int64 {
+	if req.SuppliedDigest != "" {
+		return req.DocumentBytes
+	}
+	return int64(len(req.Content))
+}

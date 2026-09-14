@@ -1,0 +1,206 @@
+# Run the readiness check on a schedule, and say nothing when nothing moved.
+#
+# A nightly job that prints the same fifty findings every morning is a
+# nightly job everybody filters into a folder they never open. So this
+# writes a summary only when something is different from the last run, and
+# fails the job only when something is worse. A quiet run is the normal
+# outcome and should look like one.
+#
+# The comparison needs the previous run to still exist. A runner starts with
+# an empty home every time, so the snapshot is kept at a path the workflow
+# restores — see the example below. Without that, every night is a first
+# night and this never says anything at all.
+#
+# Composite rather than Docker or JavaScript so that what runs is readable
+# in this one file plus install.sh, with no image to trust and no bundle to
+# unpick.
+name: Lyntway readiness
+description: >-
+  Checks the endpoints your AI actually reached and the packages your project
+  installs, and reports only what changed since the last run.
+author: Lynt-X Global
+
+branding:
+  icon: activity
+  color: gray-dark
+
+inputs:
+  version:
+    description: >-
+      Release of the lyntway tools to install, such as 0.3.1. "latest"
+      resolves to the newest release at github.com/lynt-x-global/lyntway-tools.
+    required: false
+    default: latest
+  sha256:
+    description: >-
+      Expected SHA-256 of this platform's release tarball. When set, the
+      download is checked against it instead of the release's SHA256SUMS.
+    required: false
+    default: ''
+  api-key:
+    description: >-
+      A Lyntway key, for reading the endpoints your AI reached and for
+      signing the report. Without it the run still checks dependencies,
+      which needs no account.
+    required: false
+    default: ''
+  api-url:
+    description: The Lyntway address, if you self-host.
+    required: false
+    default: 'https://lyntway.com'
+  scope:
+    description: >-
+      Comma-separated hosts you are authorised to check. Nothing is sent to
+      a host that is not named here, and without it no endpoint is checked
+      at all.
+    required: false
+    default: ''
+  http:
+    description: Reach the hosts in scope over http, for an internal API not on TLS.
+    required: false
+    default: 'false'
+  offline:
+    description: Skip the vulnerability database, so nothing leaves the runner.
+    required: false
+    default: 'false'
+  no-deps:
+    description: Do not read this project's dependencies.
+    required: false
+    default: 'false'
+  sign:
+    description: >-
+      Register the report's digest so it can be handed to somebody who
+      trusts neither party. Needs api-key.
+    required: false
+    default: 'false'
+  fail-on-new:
+    description: Fail the job when something got worse since the last run.
+    required: false
+    default: 'true'
+  state:
+    description: >-
+      Where to keep the record of the last run. Restore and save this path
+      between runs, or every run is a first run.
+    required: false
+    default: '.lyntway-readiness-state.json'
+  report:
+    description: Where to write the report.
+    required: false
+    default: 'lyntway-readiness.json'
+  working-directory:
+    description: Directory of the checkout to check.
+    required: false
+    default: '.'
+
+outputs:
+  changed:
+    description: '"true" when anything differed from the last run.'
+    value: ${{ steps.check.outputs.changed }}
+  worse:
+    description: How many of those changes were for the worse.
+    value: ${{ steps.check.outputs.worse }}
+  report:
+    description: Path to the report that was written.
+    value: ${{ steps.check.outputs.report }}
+  version:
+    description: The lyntway version that ran.
+    value: ${{ steps.install.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - id: install
+      shell: bash
+      env:
+        LYNTWAY_VERSION: ${{ inputs.version }}
+        LYNTWAY_SHA256: ${{ inputs.sha256 }}
+      run: bash "$GITHUB_ACTION_PATH/../install.sh"
+
+    # The key reaches the config file through the environment and is written
+    # with 0600, never echoed. A key printed into a log is a key in every
+    # fork of the repository's logs.
+    - id: configure
+      shell: bash
+      env:
+        LYNTWAY_KEY: ${{ inputs.api-key }}
+        LYNTWAY_URL: ${{ inputs.api-url }}
+      run: |
+        if [ -z "$LYNTWAY_KEY" ]; then
+          echo "no api-key given: dependencies will be checked, endpoints will not"
+          exit 0
+        fi
+        mkdir -p "$HOME/.lyntway"
+        umask 077
+        printf '{"origin":%s,"key":%s}\n' \
+          "$(printf '%s' "$LYNTWAY_URL" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')" \
+          "$(printf '%s' "$LYNTWAY_KEY" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')" \
+          > "$HOME/.lyntway/config.json"
+        chmod 600 "$HOME/.lyntway/config.json"
+
+    # `lyntway readiness` exits 1 when something got worse and --fail-on-new
+    # was passed, and also when a flag or the network refused it. The two
+    # are told apart by the report: a run that produced one and found
+    # nothing worse did its job, and a run that produced none did not.
+    # Reporting them the same way would let a broken check read as a clean
+    # estate, which is the failure this whole product exists to refuse.
+    - id: check
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        INPUT_SCOPE: ${{ inputs.scope }}
+        INPUT_HTTP: ${{ inputs.http }}
+        INPUT_OFFLINE: ${{ inputs.offline }}
+        INPUT_NO_DEPS: ${{ inputs.no-deps }}
+        INPUT_SIGN: ${{ inputs.sign }}
+        INPUT_STATE: ${{ inputs.state }}
+        INPUT_REPORT: ${{ inputs.report }}
+        INPUT_FAIL_ON_NEW: ${{ inputs.fail-on-new }}
+      run: |
+        # if rather than `[ … ] && …`: this shell runs with -e, and a test
+        # that is simply false would end the step.
+        args=(readiness --state "$INPUT_STATE" --out "$INPUT_REPORT")
+        if [ -n "$INPUT_SCOPE" ]; then args+=(--scope "$INPUT_SCOPE"); fi
+        if [ "$INPUT_HTTP" = "true" ]; then args+=(--http); fi
+        if [ "$INPUT_OFFLINE" = "true" ]; then args+=(--offline); fi
+        if [ "$INPUT_NO_DEPS" = "true" ]; then args+=(--no-deps); fi
+        if [ "$INPUT_SIGN" = "true" ]; then args+=(--sign); fi
+        if [ "$INPUT_FAIL_ON_NEW" = "true" ]; then args+=(--fail-on-new); fi
+
+        set +e
+        lyntway "${args[@]}" | tee /tmp/lyntway-readiness.log
+        status=${PIPESTATUS[0]}
+        set -e
+
+        if [ ! -f "$INPUT_REPORT" ]; then
+          echo "::error::the readiness check did not produce a report, so nothing was checked. A run that did not happen must not read as a clean result."
+          sed -n '$p' /tmp/lyntway-readiness.log || true
+          exit 1
+        fi
+
+        python3 - "$INPUT_REPORT" <<'PY' >> "$GITHUB_OUTPUT"
+        import json, os, sys
+        rep = json.load(open(sys.argv[1]))
+        changes = rep.get("changes") or []
+        worse = [c for c in changes if c.get("worse")]
+        print(f"changed={'true' if changes else 'false'}")
+        print(f"worse={len(worse)}")
+        print(f"report={sys.argv[1]}")
+
+        # Silence is the normal outcome. A summary every morning is a
+        # summary nobody reads, and the one that mattered goes with it.
+        if not changes:
+            sys.exit(0)
+
+        summary = os.environ.get("GITHUB_STEP_SUMMARY")
+        if summary:
+            with open(summary, "a") as fh:
+                fh.write("### Lyntway readiness\n\n")
+                for c in changes:
+                    fh.write(("- **" + c["text"] + "**\n") if c.get("worse") else ("- " + c["text"] + "\n"))
+                fh.write("\nThis is a check of authentication and published advisories. "
+                         "It is not a penetration test and does not replace one.\n")
+        for c in worse:
+            print("::warning::" + c["text"], file=sys.stderr)
+        PY
+
+        exit $status

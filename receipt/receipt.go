@@ -391,6 +391,24 @@ type Content struct {
 	// existed was: the streaming path issued no receipt at all for a cut
 	// stream until this was added.
 	Truncated bool `json:"truncated,omitempty"`
+
+	// Supplied means the digests were computed by the caller and registered
+	// here, because the content itself never reached this service.
+	//
+	// A penetration test report is the case this exists for. Sending the
+	// file here to have it hashed would put a customer's unpublished
+	// findings in a third party's hands to buy a guarantee that does not
+	// need them — so the caller hashes their own file and registers the
+	// digest, exactly as an RFC 3161 timestamp authority never sees the
+	// document it timestamps.
+	//
+	// What that costs has to be said plainly, because the field would
+	// otherwise read as though this service had done the hashing. A
+	// supplied digest attests that this party registered this value at
+	// this time. It does not attest that any file matching it exists.
+	// Only whoever holds the file completes that proof, by hashing it and
+	// finding the same value — which is what lyntway-verify does.
+	Supplied bool `json:"supplied,omitempty"`
 }
 
 // ContentSubject names what a receipt's digests are taken over.
@@ -421,6 +439,27 @@ const (
 	// reports what the issuer handled — first-hand about the connection,
 	// silent about the content.
 	SubjectMetadata ContentSubject = "metadata"
+
+	// SubjectDocument means the digests cover the exact bytes of an
+	// artefact the caller handed us to attest: a penetration test report,
+	// an OSCAL assessment result, an audit export.
+	//
+	// Such a receipt proves that the file someone is holding is the file
+	// that was attested, unchanged, at the time recorded. It proves
+	// nothing whatever about whether the file is true. That distinction is
+	// the entire product here: a security assessment can be signed for
+	// integrity by a party not competent to judge its findings, and saying
+	// so plainly is what lets an accredited assessor use this without
+	// either of us overstating our part.
+	//
+	// Distinct from telemetry, which describes an action someone else
+	// performed and is a step removed from any artefact. Here there is an
+	// artefact, we hold its bytes, and the digest is over those bytes —
+	// so a reader can hash the file in front of them and get an answer.
+	//
+	// Distinct from payload, because nothing governed this. It did not
+	// pass through on its way anywhere; it arrived already complete.
+	SubjectDocument ContentSubject = "document"
 )
 
 // EffectiveSubject reports what a receipt's digests cover, treating an
@@ -809,8 +848,38 @@ func (r *Receipt) Validate() error {
 			errs.add("evidence.provenance",
 				"cannot be observed when the digests cover telemetry rather than the payload")
 		}
+	case SubjectDocument:
+		// The artefact arrived complete. Nothing here governed it on its
+		// way anywhere, so a decision that alters content would describe
+		// work nothing performed.
+		switch r.Governance.Decision {
+		case DecisionTokenize, DecisionRedact:
+			errs.add("governance.decision",
+				"cannot be "+string(r.Governance.Decision)+" when the digests cover a document handed over for attestation; nothing transformed it")
+		}
+		// Observation means watching bytes cross a boundary we control.
+		// A file sent to us was produced somewhere we were not.
+		if r.Evidence != nil && r.Evidence.Provenance == ProvenanceObserved {
+			errs.add("evidence.provenance",
+				"cannot be observed when the digests cover a document handed over for attestation; the work it describes happened elsewhere")
+		}
+		// The tempting lie this subject enables: attest a penetration test
+		// report, let the receipt carry its findings, and it reads as
+		// though we found them. We hashed a file.
+		if len(r.Governance.Findings) > 0 {
+			errs.add("governance.findings",
+				"must be empty when the digests cover a document handed over for attestation; hashing a file is not examining its contents")
+		}
 	default:
 		errs.add("content.subject", "unrecognised value")
+	}
+
+	// Every path but document hashes what it handled. Allowing a supplied
+	// digest elsewhere would let a receipt that looks first-hand carry a
+	// number this service never computed.
+	if r.Content.Supplied && r.EffectiveSubject() != SubjectDocument {
+		errs.add("content.supplied",
+			"may only be set when the digests cover a document handed over for attestation; every other subject is hashed here")
 	}
 
 	// Chain. Seq 0 is genesis and must not claim a predecessor; every other
@@ -829,7 +898,9 @@ func (r *Receipt) Validate() error {
 
 	// Action.
 	if !r.Action.Surface.valid() {
-		errs.add("action.surface", "must be one of: model, mcp, database, primitive")
+		// Every surface the type accepts, listed. A message that omits a
+		// valid value sends somebody looking for a bug in their own code.
+		errs.add("action.surface", "must be one of: model, mcp, database, http, primitive")
 	}
 	if !r.Action.Direction.valid() {
 		errs.add("action.direction", "must be one of: request, response")
@@ -1088,6 +1159,12 @@ func (r *Receipt) IsFullStrength() bool {
 }
 
 // isHexDigest reports whether s is a lowercase hex-encoded SHA-256 digest.
+// IsSHA256Hex reports whether s is a lowercase hex SHA-256 digest. Exported
+// because a caller registering a document's digest must be told it is
+// malformed before a receipt is issued over it, and a receipt naming a digest
+// nobody can recompute is worse than no receipt.
+func IsSHA256Hex(s string) bool { return isHexDigest(s) }
+
 func isHexDigest(s string) bool {
 	if len(s) != 64 {
 		return false

@@ -55,6 +55,11 @@ Options:
   -require-full      exit non-zero unless governance ran at full strength
   -max-age DURATION  reject receipts older than this (e.g. 720h)
   -json              emit machine-readable JSON instead of text
+  -file PATH         hash this file and compare it with the digest the
+                     receipt names. For a receipt over a document — an
+                     assessment report, an audit export — this is the check
+                     that matters: without it you have verified a signature
+                     over a number, not the file in front of you
 
 Both serialisations are accepted. A COSE_Sign1 envelope is recognised by its
 tag, so nobody handed a receipt needs to know which form it is first.
@@ -70,6 +75,33 @@ Transparency:
 Exit codes:
   0  verified   1  not verified   2  usage or input error
 `
+
+// attestedFile records the outcome of hashing a file against the digest a
+// receipt names.
+type attestedFile struct {
+	Path     string `json:"path"`
+	Digest   string `json:"digest"`
+	Expected string `json:"expected"`
+	Matches  bool   `json:"matches"`
+}
+
+// hashFile digests a file for comparison with what a receipt attests.
+//
+// Read in chunks rather than whole: an evidence pack can be a hundred
+// megabytes of packet captures, and a verifier that needs the file to fit in
+// memory fails exactly on the evidence that most needed keeping.
+func hashFile(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
 
 // keyMaterial is a public key together with the scheme it belongs to.
 type keyMaterial struct {
@@ -160,6 +192,7 @@ func run() int {
 	requireFull := fs.Bool("require-full", false, "require full-strength governance")
 	maxAge := fs.Duration("max-age", 0, "reject receipts older than this")
 	asJSON := fs.Bool("json", false, "emit JSON output")
+	filePath := fs.String("file", "", "path to the attested file, hashed and compared with the digest the receipt names")
 	inclusionPath := fs.String("inclusion", "", "path to a COSE Receipt proving inclusion in the transparency log")
 	logKeysPath := fs.String("log-keys", "", "path to a JSON key file for the transparency log")
 	help := fs.Bool("help", false, "show usage")
@@ -242,7 +275,7 @@ func run() int {
 			return code
 		}
 	}
-	return verifyOne(data, resolver, opts, *asJSON, incl)
+	return verifyOne(data, resolver, opts, *asJSON, incl, *filePath)
 }
 
 // inclusionOutput is what a verified COSE Receipt established.
@@ -389,6 +422,12 @@ type output struct {
 	// and a consumer reading the digest without this field would take it
 	// for a hash of the data.
 	Subject string `json:"subject,omitempty"`
+	// Attested is the file this receipt was checked against, when one was
+	// given. A document receipt names a digest; only hashing the file
+	// settles whether the file in hand is the file that was attested, and
+	// a consumer reading "verified" without this has confirmed a signature
+	// over a number, not a document.
+	Attested *attestedFile `json:"attested_file,omitempty"`
 	// Truncated means the digests cover the prefix of a stream that policy
 	// cut; the remainder never reached the caller.
 	Truncated   bool     `json:"truncated,omitempty"`
@@ -461,7 +500,7 @@ func unwrapEnvelope(data []byte) ([]byte, bool) {
 	return inner, true
 }
 
-func verifyOne(data []byte, keys receipt.KeyResolver, opts receipt.VerifyOptions, jsonOut bool, incl *inclusionOutput) int {
+func verifyOne(data []byte, keys receipt.KeyResolver, opts receipt.VerifyOptions, jsonOut bool, incl *inclusionOutput, filePath string) int {
 	if looksLikeCOSE(data) {
 		r, err := cose.DecodeReceipt(data, keys)
 		if err != nil {
@@ -514,17 +553,36 @@ func verifyOne(data []byte, keys receipt.KeyResolver, opts receipt.VerifyOptions
 		}()
 	}
 
+	// Hashed before the signature is reported, because a good signature over
+	// a file nobody has checked is exactly the situation somebody would
+	// otherwise call "verified". A mismatch fails outright: the receipt may
+	// be flawless and the document in hand is still not the one it covers.
+	var af *attestedFile
+	if filePath != "" {
+		sum, herr := hashFile(filePath)
+		if herr != nil {
+			return fail(jsonOut, fmt.Errorf("hashing %s: %w", filePath, herr), 2)
+		}
+		expected := r.Content.InputDigest
+		af = &attestedFile{Path: filePath, Digest: sum, Expected: expected, Matches: sum == expected}
+		if !af.Matches {
+			return fail(jsonOut, fmt.Errorf(
+				"%s is not the file this receipt attests: it hashes to %s, and the receipt names %s",
+				filePath, sum, expected), 1)
+		}
+	}
+
 	res, err := receipt.VerifyJSON(data, keys, opts)
 	if err != nil {
 		// A result alongside an error means the receipt verified
 		// cryptographically but was refused by policy, typically
 		// -require-full. Say so precisely rather than implying forgery.
 		if res != nil {
-			return reportWith(jsonOut, res, &r, err, incl)
+			return reportWith(jsonOut, res, &r, err, incl, af)
 		}
 		return fail(jsonOut, err, 1)
 	}
-	return reportWith(jsonOut, res, &r, nil, incl)
+	return reportWith(jsonOut, res, &r, nil, incl, af)
 }
 
 func verifyChain(data []byte, keys receipt.KeyResolver, opts receipt.VerifyOptions, jsonOut bool) int {
@@ -574,12 +632,12 @@ func verifyChain(data []byte, keys receipt.KeyResolver, opts receipt.VerifyOptio
 }
 
 func report(jsonOut bool, res *receipt.Result, r *receipt.Receipt, policyErr error) int {
-	return reportWith(jsonOut, res, r, policyErr, nil)
+	return reportWith(jsonOut, res, r, policyErr, nil, nil)
 }
 
 // reportWith is report with the result of an inclusion check, when one
 // was asked for.
-func reportWith(jsonOut bool, res *receipt.Result, r *receipt.Receipt, policyErr error, incl *inclusionOutput) int {
+func reportWith(jsonOut bool, res *receipt.Result, r *receipt.Receipt, policyErr error, incl *inclusionOutput, af *attestedFile) int {
 	out := output{
 		Inclusion:    incl,
 		Valid:        res.Valid,
@@ -602,6 +660,16 @@ func reportWith(jsonOut bool, res *receipt.Result, r *receipt.Receipt, policyErr
 	// metadata digest for a hash of the data.
 	if note := subjectWarning(r.EffectiveSubject()); note != "" {
 		out.Warnings = append(append([]string(nil), out.Warnings...), note)
+	}
+
+	out.Attested = af
+	if af == nil && r.EffectiveSubject() == receipt.SubjectDocument {
+		// Absent reads weak. A document receipt verified without a file has
+		// established that somebody signed a digest, and nothing at all
+		// about the document somebody is holding.
+		out.Warnings = append(append([]string(nil), out.Warnings...),
+			"no file was given, so nothing here has been compared with a document: pass -file PATH to check that the "+
+				"file you hold is the one this receipt attests")
 	}
 	if r.Content.Truncated {
 		// A cut stream carries "block" beside an output digest, which on
@@ -733,12 +801,24 @@ func reportWith(jsonOut bool, res *receipt.Result, r *receipt.Receipt, policyErr
 		// honest, only that it has committed to this entry.
 		fmt.Printf("  logged         proven by the log's receipt at tree size %d\n                 root %s\n", incl.TreeSize, incl.Root)
 	}
-	if r.EffectiveSubject() != receipt.SubjectPayload {
+	switch {
+	case r.EffectiveSubject() == receipt.SubjectDocument:
+		// A document receipt's digest covers the artefact, not a record
+		// about traffic, and the generic line would understate it.
+		fmt.Printf("  digest         %s\n                 (covers the attested file, not this receipt)\n", r.Content.InputDigest)
+	case r.EffectiveSubject() != receipt.SubjectPayload:
 		// Without this a reader sees a digest and reasonably assumes the
 		// data was hashed, when what was hashed is a record describing it.
 		fmt.Printf("  digest         %s\n                 (covers a record about the traffic, not the traffic itself)\n", res.Digest)
-	} else {
+	default:
 		fmt.Printf("  digest         %s\n", res.Digest)
+	}
+
+	// The line an auditor is actually looking for. Printed beside the
+	// digest rather than among the warnings, because a match is the result
+	// of the check and warnings are what was not checked.
+	if af != nil {
+		fmt.Printf("  file           %s\n                 hashes to the digest above, so this is the attested file\n", af.Path)
 	}
 
 	if len(out.Warnings) > 0 {
@@ -779,6 +859,15 @@ func subjectWarning(subject receipt.ContentSubject) string {
 		return head + "the issuer carried the bytes without reading them, so nothing here attests to what they contained"
 	case receipt.SubjectTelemetry:
 		return head + "another system reported the action, so nothing here attests to what it carried"
+	case receipt.SubjectDocument:
+		// Deliberately not built from `head`. For every other weak subject
+		// the digest covers a record about something; here it covers the
+		// artefact itself, byte for byte, and a reader can recompute it
+		// from the file in their hand. That part is strong and saying
+		// otherwise would understate it. What stays weak is the contents:
+		// hashing a report is not reviewing it.
+		return "the digests cover the attested file itself, so this shows it has not been altered — " +
+			"it says nothing about whether what the file claims is correct, which belongs to whoever signed the assessment"
 	default:
 		return head + fmt.Sprintf("subject %q is not one this verifier knows, so nothing here attests to what the traffic contained", string(subject))
 	}

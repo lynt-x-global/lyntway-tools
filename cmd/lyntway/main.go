@@ -104,6 +104,9 @@ func main() {
 	case "mcp-server":
 		cliCommand = "mcp-server"
 		err = mcpServer(args[1:])
+	case "readiness":
+		cliCommand = "readiness"
+		err = readiness(args[1:])
 	case "status":
 		err = status()
 	case "undo":
@@ -137,6 +140,7 @@ Usage:
   lyntway scan           find provider keys in files, or in a diff before it is pushed
   lyntway proxy          govern Ollama or LM Studio on this machine
   lyntway mcp-server     MCP tool server for AI agents (runs over stdio)
+  lyntway readiness      ask the endpoints your AI reached what they answer with no key
   lyntway status         what is configured, and what is not covered
   lyntway undo           put everything back
   lyntway version        which build this is

@@ -287,13 +287,42 @@ func runMigrate(dir string, c config, opts migrateOptions) error {
 	// A key the server already holds is replaced only with consent, and
 	// asked per upstream: the second project to be migrated must not
 	// silently overwrite the key the first one stored.
+	//
+	// When the user declines a replacement, a new Lyntway API key is
+	// offered for this project. Two projects with different provider keys
+	// for the same upstream need separate Lyntway keys: the gateway
+	// selects the provider key by the Lyntway key that made the request
+	// (bound first, account-wide second), so the second project's .env
+	// must carry its own key.
+	var projKey *projectKey
 	kept := plan[:0]
 	for _, it := range plan {
 		if held, ok := stored[it.Upstream]; ok && !opts.Replace {
-			if opts.Keep || !ask(fmt.Sprintf("Replace the stored %s key ending %s with the one ending %s? [y/N] ", it.Upstream, held.Last4, it.last4())) {
+			if opts.Keep {
 				fmt.Fprintf(stdout, "  · %s left as it is\n", it.Var)
 				continue
 			}
+			if ask(fmt.Sprintf("Replace the stored %s key ending %s with the one ending %s? [y/N] ", it.Upstream, held.Last4, it.last4())) {
+				kept = append(kept, it)
+				continue
+			}
+			// Declined to replace. Offer a separate key for this project.
+			if ask(fmt.Sprintf("Create a separate Lyntway key for this project so both %s keys can coexist? [y/N] ", it.Upstream)) {
+				if projKey == nil {
+					pk, err := createProjectKey(c, filepath.Base(dir))
+					if err != nil {
+						fmt.Fprintf(stdout, "  ✗ could not create a project key: %v\n", err)
+						fmt.Fprintf(stdout, "  · %s left as it is\n", it.Var)
+						continue
+					}
+					projKey = &pk
+					fmt.Fprintf(stdout, "  ✓ Lyntway key %s created for this project\n", projKey.KeyID)
+				}
+				kept = append(kept, it)
+				continue
+			}
+			fmt.Fprintf(stdout, "  · %s left as it is\n", it.Var)
+			continue
 		}
 		kept = append(kept, it)
 	}
@@ -322,7 +351,11 @@ func runMigrate(dir string, c config, opts migrateOptions) error {
 		}
 		note := fmt.Sprintf("migrated from %s on %s", filepath.Base(it.File), hostLabel())
 		body := map[string]string{"upstream": it.Upstream, "key": it.Value, "note": note}
-		if held[it.Upstream].Bound {
+		if projKey != nil {
+			// Bind to the project's own Lyntway key, so the gateway
+			// resolves this provider key when that key is used.
+			body["key_id"] = projKey.KeyID
+		} else if held[it.Upstream].Bound {
 			// Replacing a key bound to this key id must land where that
 			// key is: stored account-wide, the bound one would stay and
 			// keep winning, and "replaced" would have replaced nothing.
@@ -349,6 +382,14 @@ func runMigrate(dir string, c config, opts migrateOptions) error {
 	if err != nil {
 		return err
 	}
+	// When a project key was created, the .env is rewritten with that key
+	// instead of the account-wide one. The gateway falls back from bound
+	// to account-wide, so provider keys stored without a key_id still
+	// resolve for this project's requests.
+	rewriteC := c
+	if projKey != nil {
+		rewriteC.Key = projKey.Key
+	}
 	for _, file := range sortedFiles(migrated) {
 		var items []candidate
 		for _, it := range migrated {
@@ -356,7 +397,7 @@ func runMigrate(dir string, c config, opts migrateOptions) error {
 				items = append(items, it)
 			}
 		}
-		saved, err := rewriteEnv(file, items, c)
+		saved, err := rewriteEnv(file, items, rewriteC)
 		if err != nil {
 			fmt.Fprintf(stdout, "  ✗ %s — %v\n", file, err)
 			continue
@@ -380,7 +421,45 @@ func runMigrate(dir string, c config, opts migrateOptions) error {
 	fmt.Fprintln(stdout, "Delete the backups when the application has been seen working. Undo with `lyntway undo`.")
 
 	migrationReceipt(c, migrated, opts.Started)
+
+	// Suggest the git hook when the project is a git repo and the hook
+	// is not already installed, so a key pasted back is caught at commit.
+	if gitDir := findGitDir(dir); gitDir != "" && !gitHookInstalled(gitDir) {
+		fmt.Fprintln(stdout, "\nTip: run `lyntway hook install --git` to block commits that carry a provider key.")
+	}
 	return nil
+}
+
+// projectKey is a Lyntway API key created for a single project.
+//
+// Two projects with different provider keys for the same upstream need
+// separate Lyntway keys: the gateway selects the provider key by the
+// Lyntway key that made the request (bound → account-wide → none), so
+// the second project's .env must carry its own key and the provider key
+// must be bound to it.
+type projectKey struct {
+	Key   string // the plaintext Lyntway API key written to the .env
+	KeyID string // the key's identifier, used as key_id when storing
+}
+
+// createProjectKey issues a new Lyntway API key for this project.
+func createProjectKey(c config, label string) (projectKey, error) {
+	body := map[string]string{"label": label}
+	status, raw, err := api(c, http.MethodPost, "/v1/keys", body)
+	if err != nil {
+		return projectKey{}, err
+	}
+	if status != http.StatusCreated && status != http.StatusOK {
+		return projectKey{}, fmt.Errorf("creating a project key: %s", apiMessage(status, raw))
+	}
+	var res struct {
+		APIKey string `json:"api_key"`
+		KeyID  string `json:"key_id"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil || res.APIKey == "" || res.KeyID == "" {
+		return projectKey{}, fmt.Errorf("the server's answer to POST /v1/keys is not what this build expects")
+	}
+	return projectKey{Key: res.APIKey, KeyID: res.KeyID}, nil
 }
 
 // migrationReceipt ends the command with a receipt of the command.

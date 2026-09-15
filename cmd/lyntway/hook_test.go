@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -266,5 +267,147 @@ func TestHookInstallAsksFirst(t *testing.T) {
 	})
 	if !exists(claudeHooksFile()) || !strings.Contains(out, "✓") {
 		t.Errorf("not installed after yes: %q", out)
+	}
+}
+
+func TestGitHookInstallAndUninstall(t *testing.T) {
+	dir := t.TempDir()
+	gitDir := filepath.Join(dir, ".git")
+	if err := os.MkdirAll(filepath.Join(gitDir, "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Install into an empty hooks directory.
+	if err := writeGitHook(gitDir); err != nil {
+		t.Fatal(err)
+	}
+	hookPath := filepath.Join(gitDir, "hooks", "pre-commit")
+	body, err := os.ReadFile(hookPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	if !strings.Contains(text, "#!/bin/sh") {
+		t.Error("the shebang is missing")
+	}
+	if !strings.Contains(text, gitHookStart) || !strings.Contains(text, gitHookEnd) {
+		t.Error("the lyntway block markers are missing")
+	}
+	if !strings.Contains(text, "lyntway scan") {
+		t.Error("the scan command is missing from the hook")
+	}
+	if runtime.GOOS != "windows" {
+		if info, _ := os.Stat(hookPath); info.Mode().Perm()&0o100 == 0 {
+			t.Error("the hook is not executable")
+		}
+	}
+
+	// Idempotent: a second install changes nothing.
+	if err := writeGitHook(gitDir); err != nil {
+		t.Fatal(err)
+	}
+	body2, _ := os.ReadFile(hookPath)
+	if string(body2) != text {
+		t.Error("a second install changed the file")
+	}
+
+	// Uninstall removes the block and the file (only shebang remains).
+	removed, err := removeGitHook(gitDir)
+	if err != nil || !removed {
+		t.Fatalf("uninstall: removed=%v err=%v", removed, err)
+	}
+	if exists(hookPath) {
+		t.Error("the file should be removed when only the shebang remains")
+	}
+
+	// Uninstall on a missing file is a no-op.
+	removed, err = removeGitHook(gitDir)
+	if err != nil || removed {
+		t.Errorf("second uninstall: removed=%v err=%v", removed, err)
+	}
+}
+
+func TestGitHookPreservesExistingHooks(t *testing.T) {
+	dir := t.TempDir()
+	gitDir := filepath.Join(dir, ".git")
+	if err := os.MkdirAll(filepath.Join(gitDir, "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hookPath := filepath.Join(gitDir, "hooks", "pre-commit")
+
+	// An existing hook with content should be preserved.
+	existing := "#!/bin/sh\necho 'existing hook'\n"
+	if err := os.WriteFile(hookPath, []byte(existing), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := writeGitHook(gitDir); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := os.ReadFile(hookPath)
+	text := string(body)
+	if !strings.Contains(text, "echo 'existing hook'") {
+		t.Error("the existing hook content was lost")
+	}
+	if !strings.Contains(text, gitHookStart) {
+		t.Error("the lyntway block was not appended")
+	}
+
+	// Uninstall removes only our block, leaving the original.
+	removed, err := removeGitHook(gitDir)
+	if err != nil || !removed {
+		t.Fatalf("uninstall: removed=%v err=%v", removed, err)
+	}
+	body, _ = os.ReadFile(hookPath)
+	text = string(body)
+	if !strings.Contains(text, "echo 'existing hook'") {
+		t.Error("uninstall removed the existing hook content")
+	}
+	if strings.Contains(text, gitHookStart) {
+		t.Error("the lyntway block was not removed")
+	}
+}
+
+func TestFindGitDir(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "a", "b", "c")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// No .git anywhere: not found.
+	if got := findGitDir(sub); got != "" {
+		t.Errorf("found %q in a tree with no .git", got)
+	}
+	// Create .git at the root.
+	gitDir := filepath.Join(dir, ".git")
+	if err := os.Mkdir(gitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got := findGitDir(sub)
+	if got == "" {
+		t.Fatal("findGitDir returned empty for a subdirectory of a git repo")
+	}
+	// Normalise for comparison on Windows.
+	want, _ := filepath.Abs(gitDir)
+	got2, _ := filepath.Abs(got)
+	if got2 != want {
+		t.Errorf("findGitDir = %q, want %q", got2, want)
+	}
+}
+
+func TestGitHookInstalledReportsCorrectly(t *testing.T) {
+	dir := t.TempDir()
+	gitDir := filepath.Join(dir, ".git")
+	if err := os.MkdirAll(filepath.Join(gitDir, "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if gitHookInstalled(gitDir) {
+		t.Error("should report not installed before writeGitHook")
+	}
+	if err := writeGitHook(gitDir); err != nil {
+		t.Fatal(err)
+	}
+	if !gitHookInstalled(gitDir) {
+		t.Error("should report installed after writeGitHook")
 	}
 }

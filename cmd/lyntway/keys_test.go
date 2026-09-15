@@ -1087,3 +1087,118 @@ func TestMigrateCountsOnlyKeysThisKeyWouldUseAsAlreadyHeld(t *testing.T) {
 		t.Errorf("an account-wide key was not treated as held:\n%s\nstored %v", out, fake.stored)
 	}
 }
+
+// When a second project migrates a different key for the same upstream,
+// declining "Replace?" should offer to create a project-specific Lyntway
+// key. The provider key is then bound to the new key, and the .env is
+// rewritten with it — so the gateway selects the right provider key for
+// each project's requests.
+func TestMigrateCreatesProjectKeyOnCollision(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	var createdKeys []map[string]string
+	fake := &fakeServer{
+		existing: []map[string]string{{"upstream": "openai", "last4": "AAAA"}},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Intercept POST /v1/keys to simulate project key creation.
+		if r.Method == http.MethodPost && r.URL.Path == "/v1/keys" {
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			fake.mu.Lock()
+			createdKeys = append(createdKeys, body)
+			fake.mu.Unlock()
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"api_key": "lyk_project_new",
+				"key_id":  "key_proj_01",
+			})
+			return
+		}
+		fake.handler().ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	c := config{Origin: srv.URL, Key: "lyk_mine"}
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("OPENAI_API_KEY=sk-proj-openai0000BBBB\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// "y" to proceed, "n" to Replace, "y" to Create project key.
+	out := capture(t, "y\nn\ny\n", func() {
+		if err := runMigrate(dir, c, migrateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	// A project key was created.
+	if len(createdKeys) != 1 {
+		t.Fatalf("created %d keys, want 1: %v", len(createdKeys), createdKeys)
+	}
+	if createdKeys[0]["label"] != filepath.Base(dir) {
+		t.Errorf("project key label = %q, want %q", createdKeys[0]["label"], filepath.Base(dir))
+	}
+	if !strings.Contains(out, "Lyntway key key_proj_01 created for this project") {
+		t.Errorf("the project key creation was not announced:\n%s", out)
+	}
+
+	// The provider key was stored bound to the project key.
+	if len(fake.stored) != 1 {
+		t.Fatalf("stored %d keys, want 1", len(fake.stored))
+	}
+	if fake.stored[0]["key_id"] != "key_proj_01" {
+		t.Errorf("stored key_id = %q, want key_proj_01", fake.stored[0]["key_id"])
+	}
+	if fake.stored[0]["upstream"] != "openai" {
+		t.Errorf("stored upstream = %q, want openai", fake.stored[0]["upstream"])
+	}
+
+	// The .env was rewritten with the project key, not the original.
+	after, _ := os.ReadFile(filepath.Join(dir, ".env"))
+	text := string(after)
+	if !strings.Contains(text, "OPENAI_API_KEY=lyk_project_new") {
+		t.Errorf("the .env should use the project key:\n%s", text)
+	}
+	if strings.Contains(text, "lyk_mine") {
+		t.Errorf("the .env should not carry the original key:\n%s", text)
+	}
+	if strings.Contains(text, "sk-proj-openai0000BBBB") {
+		t.Errorf("the provider key is still in the file:\n%s", text)
+	}
+	assertNoValue(t, out)
+}
+
+// Declining both "Replace?" and "Create project key?" keeps the original,
+// preserving the existing behaviour.
+func TestMigrateDeclinesBothReplaceAndProjectKey(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	fake := &fakeServer{existing: []map[string]string{{"upstream": "openai", "last4": "AAAA"}}}
+	srv := httptest.NewServer(fake.handler())
+	defer srv.Close()
+	c := config{Origin: srv.URL, Key: "lyk_mine"}
+
+	body := "OPENAI_API_KEY=sk-proj-openai0000BBBB\n"
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// "y" to proceed, "n" to Replace, "n" to project key.
+	out := capture(t, "y\nn\nn\n", func() {
+		if err := runMigrate(dir, c, migrateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "left as it is") || !strings.Contains(out, "Nothing was changed") {
+		t.Errorf("declining both should leave everything unchanged:\n%s", out)
+	}
+	if len(fake.stored) != 0 {
+		t.Errorf("a key was stored: %v", fake.stored)
+	}
+	after, _ := os.ReadFile(filepath.Join(dir, ".env"))
+	if string(after) != body {
+		t.Error("the file was changed after declining")
+	}
+}

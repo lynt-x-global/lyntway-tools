@@ -50,12 +50,13 @@ func hook(args []string) error {
 }
 
 func hookUsage() {
-	fmt.Fprint(os.Stderr, "lyntway hook — stop a provider key leaving in a prompt\n"+
+	fmt.Fprint(os.Stderr, "lyntway hook — stop a provider key leaving in a prompt or a commit\n"+
 		"\n"+
 		"Usage:\n"+
-		"  lyntway hook install [--cursor] [--yes]\n"+
-		"      Register the check with Claude Code (~/.claude/settings.json) or, with\n"+
-		"      --cursor, with Cursor (~/.cursor/hooks.json). The file is backed up\n"+
+		"  lyntway hook install [--cursor] [--git] [--yes]\n"+
+		"      Register the check with Claude Code (~/.claude/settings.json), with\n"+
+		"      --cursor with Cursor (~/.cursor/hooks.json), or with --git as a\n"+
+		"      git pre-commit hook in the current repository. The file is backed up\n"+
 		"      beside itself first. Remove with `hook uninstall` or `lyntway undo`.\n"+
 		"\n"+
 		"  lyntway hook prompt [--cursor]\n"+
@@ -63,7 +64,7 @@ func hookUsage() {
 		"      and other credentials, and refuses the prompt if one is there. Nothing\n"+
 		"      is sent anywhere by this command; the prompt is read and dropped.\n"+
 		"\n"+
-		"  lyntway hook uninstall [--cursor]\n"+
+		"  lyntway hook uninstall [--cursor] [--git]\n"+
 		"      Take the entry out again.\n")
 }
 
@@ -234,8 +235,13 @@ func isOurHook(command string) bool {
 func hookInstall(args []string) error {
 	fs := flag.NewFlagSet("hook install", flag.ExitOnError)
 	cursor := fs.Bool("cursor", false, "install for Cursor instead of Claude Code")
+	git := fs.Bool("git", false, "install a git pre-commit hook in the current repository")
 	yes := fs.Bool("yes", false, "do not ask before writing")
 	_ = fs.Parse(args)
+
+	if *git {
+		return hookInstallGit(*yes)
+	}
 
 	path, editor := claudeHooksFile(), "Claude Code"
 	if *cursor {
@@ -275,7 +281,12 @@ func hookInstall(args []string) error {
 func hookUninstall(args []string) error {
 	fs := flag.NewFlagSet("hook uninstall", flag.ExitOnError)
 	cursor := fs.Bool("cursor", false, "remove from Cursor instead of Claude Code")
+	git := fs.Bool("git", false, "remove the git pre-commit hook from the current repository")
 	_ = fs.Parse(args)
+
+	if *git {
+		return hookUninstallGit()
+	}
 
 	path := claudeHooksFile()
 	if *cursor {
@@ -457,7 +468,8 @@ func hookGroupIsOurs(group json.RawMessage, cursor bool) bool {
 	return false
 }
 
-// removeHooksEverywhere is what `undo` calls: both editors, no backup.
+// removeHooksEverywhere is what `undo` calls: both editors and the
+// current directory's git hook, no backup.
 func removeHooksEverywhere() (n int) {
 	for _, f := range []struct {
 		path   string
@@ -476,7 +488,188 @@ func removeHooksEverywhere() (n int) {
 			n++
 		}
 	}
+	if gitDir := findGitDir("."); gitDir != "" {
+		if removed, err := removeGitHook(gitDir); err != nil {
+			fmt.Fprintf(stdout, "  ✗ git pre-commit — %v\n", err)
+		} else if removed {
+			fmt.Fprintf(stdout, "  ✓ git pre-commit — hook removed\n")
+			n++
+		}
+	}
 	return n
+}
+
+// Git pre-commit hook: a shell script that runs `lyntway scan` on staged
+// .env files before every commit. It is a shell script, not a Go binary,
+// because pre-commit hooks must start quickly and shell is what git
+// invokes by default. The script delegates to `lyntway scan`, which is
+// already the right tool for finding provider keys in files.
+
+const (
+	gitHookStart = "# >>> lyntway-scan >>>"
+	gitHookEnd   = "# <<< lyntway-scan <<<"
+)
+
+// gitHookBlock is the fenced block written into .git/hooks/pre-commit.
+// The scanner binary is called by name, not absolute path: the hook runs
+// in the same shell as `git commit`, so PATH is the developer's PATH.
+var gitHookBlock = strings.Join([]string{
+	gitHookStart,
+	"# lyntway: refuse a commit that carries a provider key in a .env file.",
+	"# Remove this block or run `lyntway hook uninstall --git` to stop.",
+	`staged=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.env' || true)`,
+	`if [ -n "$staged" ]; then`,
+	`  lyntway scan $staged`,
+	"fi",
+	gitHookEnd,
+}, "\n")
+
+// findGitDir walks up from dir until it finds a .git directory.
+func findGitDir(dir string) string {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return ""
+	}
+	for {
+		candidate := filepath.Join(abs, ".git")
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			return candidate
+		}
+		parent := filepath.Dir(abs)
+		if parent == abs {
+			return ""
+		}
+		abs = parent
+	}
+}
+
+// gitHookInstalled reports whether the pre-commit hook already contains
+// the lyntway block.
+func gitHookInstalled(gitDir string) bool {
+	path := filepath.Join(gitDir, "hooks", "pre-commit")
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(body), gitHookStart)
+}
+
+// hookInstallGit adds the lyntway block to .git/hooks/pre-commit.
+func hookInstallGit(yes bool) error {
+	gitDir := findGitDir(".")
+	if gitDir == "" {
+		return fmt.Errorf("not in a git repository")
+	}
+	if gitHookInstalled(gitDir) {
+		fmt.Fprintln(stdout, "  · git pre-commit hook already installed")
+		return nil
+	}
+
+	hookPath := filepath.Join(gitDir, "hooks", "pre-commit")
+	fmt.Fprintf(stdout, "\nA pre-commit hook will run `lyntway scan` on staged .env files before\n")
+	fmt.Fprintf(stdout, "every commit. A commit that carries a provider key will be refused.\n")
+	fmt.Fprintf(stdout, "The check is local and sends nothing anywhere.\n\n")
+	if !yes && !ask(fmt.Sprintf("Add the hook to %s? [y/N] ", hookPath)) {
+		fmt.Fprintln(stdout, "Nothing was changed.")
+		return nil
+	}
+
+	if err := writeGitHook(gitDir); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "  ✓ %s\n", hookPath)
+	fmt.Fprintln(stdout, "\nRemove it with `lyntway hook uninstall --git` or `lyntway undo`.")
+	return nil
+}
+
+// hookUninstallGit removes the lyntway block from .git/hooks/pre-commit.
+func hookUninstallGit() error {
+	gitDir := findGitDir(".")
+	if gitDir == "" {
+		return fmt.Errorf("not in a git repository")
+	}
+	removed, err := removeGitHook(gitDir)
+	if err != nil {
+		return err
+	}
+	hookPath := filepath.Join(gitDir, "hooks", "pre-commit")
+	if !removed {
+		fmt.Fprintf(stdout, "  · %s — nothing to remove\n", hookPath)
+		return nil
+	}
+	fmt.Fprintf(stdout, "  ✓ %s — hook removed\n", hookPath)
+	return nil
+}
+
+// writeGitHook appends the lyntway block to .git/hooks/pre-commit,
+// creating the file with a shebang when it does not exist.
+func writeGitHook(gitDir string) error {
+	dir := filepath.Join(gitDir, "hooks")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	path := filepath.Join(dir, "pre-commit")
+	body, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	text := string(body)
+	if strings.Contains(text, gitHookStart) {
+		return nil // already present
+	}
+
+	if len(body) == 0 {
+		text = "#!/bin/sh\n"
+	} else if !strings.HasSuffix(text, "\n") {
+		text += "\n"
+	}
+	text += "\n" + gitHookBlock + "\n"
+
+	if err := os.WriteFile(path, []byte(text), 0o755); err != nil {
+		return err
+	}
+	return nil
+}
+
+// removeGitHook takes the lyntway block out of .git/hooks/pre-commit.
+// If nothing meaningful remains, the file is removed.
+func removeGitHook(gitDir string) (bool, error) {
+	path := filepath.Join(gitDir, "hooks", "pre-commit")
+	body, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	text := string(body)
+	if !strings.Contains(text, gitHookStart) {
+		return false, nil
+	}
+
+	start := strings.Index(text, gitHookStart)
+	end := strings.Index(text, gitHookEnd)
+	if end < 0 {
+		return false, nil
+	}
+	end += len(gitHookEnd)
+	// Remove the block and any trailing newline.
+	if end < len(text) && text[end] == '\n' {
+		end++
+	}
+	// Remove a leading blank line before the block.
+	if start > 0 && text[start-1] == '\n' {
+		start--
+	}
+	rest := text[:start] + text[end:]
+
+	// If only the shebang remains, delete the file.
+	trimmed := strings.TrimSpace(rest)
+	if trimmed == "" || trimmed == "#!/bin/sh" || trimmed == "#!/usr/bin/env bash" {
+		return true, os.Remove(path)
+	}
+	return true, os.WriteFile(path, []byte(rest), 0o755)
 }
 
 func readJSONObject(path string) (map[string]json.RawMessage, error) {

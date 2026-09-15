@@ -1,7 +1,14 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -71,5 +78,71 @@ func TestAReceiptThatCannotBeRewrittenIsKeptAsItArrived(t *testing.T) {
 	broken := json.RawMessage(`{not json`)
 	if got := receiptJSON(broken); string(got) != "{not json\n" {
 		t.Errorf("an unparseable receipt was altered rather than kept: %q", got)
+	}
+}
+
+// The report goes up exactly as it sits on disk. json.Marshal compacts a
+// RawMessage, so an upload that went through the ordinary helper would
+// arrive with its whitespace stripped, hash to something else, and quietly
+// stop matching the receipt — with nothing on either side looking wrong.
+func TestTheUploadSendsTheFileByteForByte(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "lyntway-readiness.json")
+	// Indented, as writeReport writes it.
+	body := "{\n  \"format\": \"lyntway-readiness/1\",\n  \"project\": \"checkout\"\n}\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var got []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, _ = io.ReadAll(r.Body)
+		sum := sha256.Sum256(got)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"digest":"` + hex.EncodeToString(sum[:]) + `"}`))
+	}))
+	defer srv.Close()
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	out := capture(t, "", func() {
+		if err := uploadReport(config{Origin: srv.URL, Key: "lyk_x"}, path); err != nil {
+			t.Fatalf("upload: %v", err)
+		}
+	})
+
+	if string(got) != body {
+		t.Errorf("the service received different bytes:\nsent: %q\ngot : %q", body, got)
+	}
+	if !strings.Contains(out, "reported to") {
+		t.Errorf("the run did not say where it went:\n%s", out)
+	}
+}
+
+// If the service records a digest that is not the file's, the console would
+// show a row matching nothing anybody holds, and the mismatch is the only
+// sign of it.
+func TestADigestTheServiceDoesNotAgreeWithIsReported(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "r.json")
+	if err := os.WriteFile(path, []byte(`{"format":"lyntway-readiness/1","project":"a"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"digest":"0000000000000000000000000000000000000000000000000000000000000000"}`))
+	}))
+	defer srv.Close()
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	err := uploadReport(config{Origin: srv.URL, Key: "lyk_x"}, path)
+	if err == nil {
+		t.Fatal("a digest that disagreed with the file was accepted silently")
+	}
+	if !strings.Contains(err.Error(), "altered the report in transit") {
+		t.Errorf("the error does not say what happened: %v", err)
 	}
 }

@@ -209,3 +209,40 @@ func receiptJSON(raw json.RawMessage) []byte {
 	}
 	return append(pretty, '\n')
 }
+
+// uploadReport sends the report to the account, so a security team can see
+// every project's last run in one place instead of asking twelve teams for
+// a screenshot.
+//
+// The bytes go up exactly as they sit on disk. That is the whole point: the
+// digest the service records is then the same digest the receipt names, so
+// a reader can tie a row in the console to a document in their hand. An
+// upload that re-encoded the report would break that link and nothing would
+// look wrong.
+func uploadReport(c config, out string) error {
+	raw, err := os.ReadFile(out)
+	if err != nil {
+		return err
+	}
+	status, body, err := apiRaw(c, http.MethodPost, "/v1/readiness", raw)
+	if err != nil {
+		return err
+	}
+	if status != http.StatusCreated && status != http.StatusOK {
+		return fmt.Errorf("%s", apiMessage(status, body))
+	}
+
+	var answer struct {
+		Digest string `json:"digest"`
+	}
+	_ = json.Unmarshal(body, &answer)
+	sum := sha256.Sum256(raw)
+	if mine := hex.EncodeToString(sum[:]); answer.Digest != "" && answer.Digest != mine {
+		// Said rather than swallowed: the console would show a digest that
+		// matches nothing anybody holds, and the mismatch is the only sign.
+		return fmt.Errorf("the service recorded a different digest (%s) than the file has (%s); "+
+			"something altered the report in transit", answer.Digest, mine)
+	}
+	fmt.Fprintf(stdout, "  ✓ reported to %s\n", strings.TrimRight(c.Origin, "/"))
+	return nil
+}

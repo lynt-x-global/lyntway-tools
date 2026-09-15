@@ -33,6 +33,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"net/http"
@@ -41,6 +42,12 @@ import (
 	"strings"
 	"time"
 )
+
+// errScopeRequired is returned by every exit that finds no scope, so the
+// signed-in and not-signed-in paths cannot drift apart again. They did:
+// signed in, a missing --scope failed; not signed in, the same command
+// exited 0.
+var errScopeRequired = errors.New("--scope is required: name the hosts you are authorised to check")
 
 // safeMethods are the ones a request can repeat without changing anything,
 // by convention every HTTP implementation follows. Nothing else is sent.
@@ -114,6 +121,8 @@ func readiness(args []string) error {
 	fs.StringVar(&out, "out", "", "write the run to this file as JSON; --sign also registers it")
 	var statePath string
 	fs.StringVar(&statePath, "state", "", "where to remember this run, for a machine that starts fresh each time")
+	var upload bool
+	fs.BoolVar(&upload, "upload", false, "send the report to your account, so every project's last run is in one place")
 	_ = fs.Parse(flagsFirst(fs, args))
 
 	// Dependencies first, because reading a lockfile needs no account and
@@ -138,7 +147,7 @@ func readiness(args []string) error {
 		// A report is written whenever somebody asked for one. Signing is
 		// the extra step, and it is the only part that needs an account.
 		target := out
-		if target == "" && sign {
+		if target == "" && (sign || upload) {
 			target = "lyntway-readiness.json"
 		}
 		if target != "" {
@@ -158,6 +167,16 @@ func readiness(args []string) error {
 				fmt.Fprintln(stdout)
 				if err := signReport(*signedIn, target, digest, size); err != nil {
 					fmt.Fprintf(stdout, "  ~ the report was written but not registered: %v\n", err)
+				}
+			}
+			// Uploading is its own decision: the report names your
+			// endpoints and packages, and sending it somewhere is a
+			// disclosure even when the somewhere is your own account.
+			if upload && err == nil {
+				if signedIn == nil {
+					fmt.Fprintln(stdout, "  ~ not signed in, so nothing was reported. Run lyntway login first.")
+				} else if uerr := uploadReport(*signedIn, target); uerr != nil {
+					fmt.Fprintf(stdout, "  ~ the report was not sent: %v\n", uerr)
 				}
 			}
 		}
@@ -181,7 +200,19 @@ func readiness(args []string) error {
 	if err != nil {
 		fmt.Fprintln(stdout, "\nNot signed in, so the endpoints your AI reached were not read. "+
 			"Run lyntway login to include them.")
-		return finish()
+		// A required flag is still missing when there was nothing to point
+		// it at. The half that needs no scope has run and finish() saves
+		// it, but the exit code has to say the command was not given what
+		// it asks for — otherwise a nightly job whose token has expired
+		// checks nothing, exits 0, and the pipeline stays green while a
+		// security team believes readiness is running every night.
+		if ferr := finish(); ferr != nil {
+			return ferr
+		}
+		if len(hostSet(scope)) == 0 {
+			return errScopeRequired
+		}
+		return nil
 	}
 
 	status, raw, err := api(c, http.MethodGet, "/v1/surface", nil)
@@ -215,7 +246,8 @@ func readiness(args []string) error {
 			fmt.Fprintf(stdout, "  %s\n", h)
 		}
 		fmt.Fprintln(stdout, "\nName the hosts you are authorised to check with --scope to include the endpoints above.")
-		return finish()
+		finish()
+		return errScopeRequired
 	}
 
 	// https unless the operator says otherwise. Guessing per host would

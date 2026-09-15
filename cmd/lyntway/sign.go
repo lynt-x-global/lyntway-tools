@@ -274,6 +274,26 @@ func newAPIRequest(c config, signer *requestSigner, method, path string, body []
 	return req, nil
 }
 
+// doAPIRaw sends bytes exactly as given.
+//
+// json.Marshal compacts a RawMessage, so a report uploaded through doAPI
+// would arrive with its whitespace removed and hash to something other than
+// the file on disk — quietly breaking the one link that lets a reader tie
+// what the console shows to a receipt they hold.
+func doAPIRaw(client *http.Client, c config, signer *requestSigner, method, path string, raw []byte) (int, []byte, error) {
+	req, err := newAPIRequest(c, signer, method, path, raw, "application/json")
+	if err != nil {
+		return 0, nil, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("reaching %s: %w", c.Origin, err)
+	}
+	defer resp.Body.Close()
+	got, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	return resp.StatusCode, got, nil
+}
+
 // doAPI sends one JSON call and returns the status and body.
 func doAPI(client *http.Client, c config, signer *requestSigner, method, path string, body any) (int, []byte, error) {
 	var raw []byte

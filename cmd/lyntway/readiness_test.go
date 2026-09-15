@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -146,5 +148,79 @@ func TestTheProbeSaysWhatItIsInTheUserAgent(t *testing.T) {
 	probeEndpoint(probeResult{Endpoint: "GET /x", Host: "test", Detail: "GET " + srv.URL + "/x"})
 	if !strings.Contains(ua, "lyntway-readiness") || !strings.Contains(ua, "no credential") {
 		t.Errorf("user agent is %q; it should name the tool and say no credential was attached", ua)
+	}
+}
+
+// A required flag that is missing has to fail, even on a machine that is
+// not signed in.
+//
+// It did not. Not signed in, the command read the lockfile, printed that
+// the endpoints were not read, and returned nil — so `lyntway readiness`
+// with no --scope exited 0. The safety property held (nothing was probed,
+// because nothing was read), but the exit code said the run had succeeded.
+//
+// That is the shape this product exists to refuse. A nightly job whose
+// token has expired runs no check at all, exits 0, and the pipeline stays
+// green while a security team believes readiness is running. The dashboard
+// would read stronger than the truth.
+//
+// The signed-in path already did the right thing: it does the work it can,
+// saves it, and then returns the error. This makes both paths agree.
+func TestMissingScopeFailsEvenWhenNotSignedIn(t *testing.T) {
+	// A home with no config, so loadConfig takes the not-signed-in path.
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
+
+	dir := t.TempDir()
+	prev, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(prev)
+
+	var buf bytes.Buffer
+	prevOut := stdout
+	stdout = &buf
+	defer func() { stdout = prevOut }()
+
+	err = readiness(nil)
+	if err == nil {
+		t.Fatalf("readiness with no --scope returned nil, so the command exits 0:\n%s", buf.String())
+	}
+	if !strings.Contains(err.Error(), "--scope is required") {
+		t.Errorf("the error does not name the missing flag: %v", err)
+	}
+}
+
+// The half that needs no scope still runs, and a run that named its hosts
+// still succeeds without an account. Making the flag mandatory must not
+// turn "not signed in" into a failure on its own.
+func TestAScopedRunStillSucceedsWithoutAnAccount(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
+
+	dir := t.TempDir()
+	prev, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(prev)
+
+	var buf bytes.Buffer
+	prevOut := stdout
+	stdout = &buf
+	defer func() { stdout = prevOut }()
+
+	if err := readiness([]string{"--scope", "api.acme.test"}); err != nil {
+		t.Fatalf("a scoped run without an account failed: %v\n%s", err, buf.String())
+	}
+	if !strings.Contains(buf.String(), "Not signed in") {
+		t.Errorf("the run did not say the endpoint half was skipped:\n%s", buf.String())
 	}
 }

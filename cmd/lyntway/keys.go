@@ -91,6 +91,15 @@ func keysUsage() {
 // call that takes longer than this is a network problem to report.
 var apiClient = &http.Client{Timeout: 30 * time.Second}
 
+// apiRaw is api for a body that must arrive byte for byte.
+func apiRaw(c config, method, path string, raw []byte) (int, []byte, error) {
+	signer, err := loadRequestSigner(c)
+	if err != nil {
+		return 0, nil, err
+	}
+	return doAPIRaw(apiClient, c, signer, method, path, raw)
+}
+
 // api makes one authenticated call and returns the status and body,
 // signed with this machine's key when `keys sign` has given it one.
 func api(c config, method, path string, body any) (int, []byte, error) {

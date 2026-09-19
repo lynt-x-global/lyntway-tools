@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -410,4 +411,69 @@ func TestGitHookInstalledReportsCorrectly(t *testing.T) {
 	if !gitHookInstalled(gitDir) {
 		t.Error("should report installed after writeGitHook")
 	}
+}
+
+// A .env in a directory whose name has a space must still be scanned.
+//
+// The block interpolated the file list unquoted, so the shell split
+// "My Project/.env" into "My" and "Project/.env". The scanner was handed
+// two paths that do not exist, failed to stat the first, and exited
+// non-zero — which blocked the commit, so the hook looked like it worked.
+// It had not scanned anything. The key went unexamined and the developer
+// got "stat My: no such file or directory", which reads like a broken
+// hook and invites them to remove it.
+//
+// Windows makes this the common case rather than the awkward one:
+// C:\Users\Your Name\project is where a default install puts things, and
+// P10.2 of the acceptance protocol asks exactly this question.
+func TestTheGitHookScansPathsThatContainSpaces(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no sh on this machine")
+	}
+	dir := t.TempDir()
+
+	// A stub on PATH that records the arguments it was handed, so the test
+	// observes what the shell actually passed rather than trusting the
+	// block's text.
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	record := filepath.Join(dir, "args.txt")
+	stub := "#!/bin/sh\nshift\nfor a in \"$@\"; do printf '%s\\n' \"$a\" >> " + shellQuote(record) + "; done\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(binDir, "lyntway"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	script := filepath.Join(dir, "hook.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\n"+gitHookBlock+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Stand in for `git diff --cached`, which the block calls to list what
+	// is staged. One path with a space is the whole point.
+	gitStub := "#!/bin/sh\nprintf '%s\\n' 'My Project/.env'\n"
+	if err := os.WriteFile(filepath.Join(binDir, "git"), []byte(gitStub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command("sh", script)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	out, _ := cmd.CombinedOutput()
+
+	got, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatalf("the scanner was never called at all: %v\noutput: %s", err, out)
+	}
+	args := strings.Split(strings.TrimSpace(string(got)), "\n")
+	if len(args) != 1 || args[0] != "My Project/.env" {
+		t.Errorf("the scanner was handed %q, want exactly [\"My Project/.env\"].\n"+
+			"An unquoted expansion split the path, so the file was never scanned.", args)
+	}
+}
+
+// shellQuote wraps a path for safe interpolation into the test's stub.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

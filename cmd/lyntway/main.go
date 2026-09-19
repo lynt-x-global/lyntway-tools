@@ -101,6 +101,8 @@ func main() {
 		err = scanCommand(args[1:])
 	case "proxy":
 		err = proxyCmd(args[1:])
+	case "agent":
+		err = agentCommand(args[1:])
 	case "mcp-server":
 		cliCommand = "mcp-server"
 		err = mcpServer(args[1:])
@@ -139,8 +141,10 @@ Usage:
   lyntway hook install   have Claude Code or Cursor refuse a prompt that carries a key
   lyntway scan           find provider keys in files, or in a diff before it is pushed
   lyntway proxy          govern Ollama or LM Studio on this machine
+  lyntway agent          report which AI tools are on this machine (--explain says what)
   lyntway mcp-server     MCP tool server for AI agents (runs over stdio)
-  lyntway readiness      ask the endpoints your AI reached what they answer with no key
+  lyntway readiness      ask the endpoints your AI reached what they answer with no key,
+                         and (--mcp) whether an MCP server is safe for an agent to use
   lyntway status         what is configured, and what is not covered
   lyntway undo           put everything back
   lyntway version        which build this is

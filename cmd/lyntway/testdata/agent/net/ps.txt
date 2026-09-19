@@ -1,0 +1,6 @@
+    1 /sbin/launchd
+  501 /Applications/Cursor.app/Contents/Frameworks/Cursor Helper (Plugin).app/Contents/MacOS/Cursor Helper (Plugin)
+  777 claude
+ 1404 /Applications/Claude.app/Contents/MacOS/Claude
+ 5023 /Users/someone/.vscode/extensions/openai.chatgpt-26.908.40401-darwin-arm64/bin/macos-aarch64/codex
+ 6000 /Users/someone/.local/share/claude/versions/2.1.277

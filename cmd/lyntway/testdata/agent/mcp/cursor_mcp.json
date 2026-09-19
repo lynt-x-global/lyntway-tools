@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "stripe": {
+      "url": "https://mcp.stripe.com/v1/sse?session=abc",
+      "headers": { "Authorization": "Bearer {{ANTHROPIC}}" }
+    },
+    "postgres": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "mcp/postgres", "postgresql://app:{{MISTRAL}}@db.internal:5432/app"]
+    }
+  }
+}

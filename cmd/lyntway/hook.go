@@ -517,9 +517,24 @@ var gitHookBlock = strings.Join([]string{
 	gitHookStart,
 	"# lyntway: refuse a commit that carries a provider key in a .env file.",
 	"# Remove this block or run `lyntway hook uninstall --git` to stop.",
-	`staged=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.env' || true)`,
-	`if [ -n "$staged" ]; then`,
-	`  lyntway scan $staged`,
+	`lyntway_staged=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.env' || true)`,
+	`if [ -n "$lyntway_staged" ]; then`,
+	`  lyntway_found=0`,
+	// One file per call, quoted. An unquoted expansion split
+	// "My Project/.env" into two paths that do not exist, so the scanner
+	// failed to stat the first and exited non-zero — the commit was
+	// refused without anything having been read. On Windows a path with a
+	// space is the default, not the exception.
+	`  while IFS= read -r lyntway_file; do`,
+	`    [ -n "$lyntway_file" ] || continue`,
+	`    lyntway scan "$lyntway_file" || lyntway_found=1`,
+	`  done <<LYNTWAY_STAGED`,
+	`$lyntway_staged`,
+	`LYNTWAY_STAGED`,
+	// Exit here rather than letting the block's status fall out of the
+	// script. The hook is appended to whatever was already there, and
+	// anything added after it would otherwise decide the commit.
+	`  [ "$lyntway_found" -eq 0 ] || exit 1`,
 	"fi",
 	gitHookEnd,
 }, "\n")

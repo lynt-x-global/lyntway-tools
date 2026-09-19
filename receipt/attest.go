@@ -133,6 +133,19 @@ func (a *KeyAttestation) signingInput() ([]byte, error) {
 // The root signer is the deployment's own key — the one published at a
 // well-known location and already trusted by verifiers.
 func AttestKey(root Signer, keyID string, alg Algorithm, publicKey []byte, scope string) (*KeyAttestation, error) {
+	return AttestKeyBetween(root, keyID, alg, publicKey, scope, time.Time{}, time.Time{})
+}
+
+// AttestKeyBetween is AttestKey for a bounded period. A zero time leaves
+// that side open.
+//
+// A verifier judges the attestation at the moment each receipt was issued,
+// so expiry limits what a key can newly sign under this statement without
+// invalidating anything it signed while the statement held.
+func AttestKeyBetween(root Signer, keyID string, alg Algorithm, publicKey []byte, scope string, notBefore, notAfter time.Time) (*KeyAttestation, error) {
+	if !notBefore.IsZero() && !notAfter.IsZero() && !notAfter.After(notBefore) {
+		return nil, errors.New("receipt: an attestation must end after it begins")
+	}
 	switch {
 	case root == nil:
 		return nil, errors.New("receipt: a root signer is required to attest a key")
@@ -159,6 +172,12 @@ func AttestKey(root Signer, keyID string, alg Algorithm, publicKey []byte, scope
 		Scope:         scope,
 		RootKeyID:     root.KeyID(),
 		RootAlgorithm: root.Algorithm(),
+	}
+	if !notBefore.IsZero() {
+		a.NotBefore = notBefore.UTC().Format(time.RFC3339)
+	}
+	if !notAfter.IsZero() {
+		a.NotAfter = notAfter.UTC().Format(time.RFC3339)
 	}
 
 	input, err := a.signingInput()

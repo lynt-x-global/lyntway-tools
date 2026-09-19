@@ -1,0 +1,20 @@
+{
+  // User-level MCP servers. VS Code writes comments and trailing commas.
+  "inputs": [
+    { "type": "promptString", "id": "gh-token", "password": true },
+  ],
+  "servers": {
+    /* the token is prompted for, never stored here */
+    "github-remote": {
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "headers": { "Authorization": "Bearer ${input:gh-token}" },
+    },
+    "memory": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory"],
+      "env": { "MEMORY_FILE_PATH": "/tmp/memory.json", "API_KEY": "${env:MEMORY_KEY}" },
+    },
+  },
+}

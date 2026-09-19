@@ -11,7 +11,7 @@ import (
 // Bump it on ANY change to rule content. The digest will change regardless
 // and would expose an unbumped edit, but a stale version string makes a
 // receipt harder to interpret for anyone reading it later.
-const RulesetVersion = "core-2026.09.04"
+const RulesetVersion = "core-2026.09.19"
 
 // Classes detected by the default ruleset.
 const (
@@ -146,11 +146,14 @@ func defaultRules() []Rule {
 		// rather than matched on shape alone. A card-number regex without a
 		// Luhn check flags order numbers and timestamps constantly.
 		{
-			ID:         "credit-card",
-			Class:      ClassCreditCard,
-			Pattern:    regexp.MustCompile(`\b(?:\d[ -]*?){13,19}\b`),
+			ID:    "credit-card",
+			Class: ClassCreditCard,
+			// A number that follows an IBAN's country and check digits is
+			// the rest of an IBAN — one that failed its own checksum, which
+			// is exactly when it must not turn into a card finding instead.
+			Pattern:    regexp.MustCompile(`(?P<reject>\b[A-Z]{2}\d{2}[ -])?\b(?P<target>(?:\d[ -]*?){13,19})\b`),
 			Confidence: ConfidenceExact,
-			Validate:   validLuhn,
+			Validate:   validCard,
 			Priority:   80,
 		},
 		{
@@ -231,7 +234,14 @@ func defaultRules() []Rule {
 			// and a far more alarming one than the truth. An Aadhaar number
 			// is never written with a leading "+"; a country code always
 			// is, so that single character separates them cleanly.
-			Pattern:    regexp.MustCompile(`(?:^|[^\w+])(?P<target>[2-9]\d{3}\s?\d{4}\s?\d{4})\b`),
+			//
+			// A hyphen before it is excluded as well (the tail of an
+			// identifier such as a UUID), and a further group of digits after
+			// it rejects the match: the first twelve digits of a grouped
+			// sixteen-digit number passed Verhoeff one time in ten, and a
+			// card number that failed Luhn was then reported as an Aadhaar
+			// number. The detection benchmark found both.
+			Pattern:    regexp.MustCompile(`(?:^|[^\w+\-])(?P<target>[2-9]\d{3}\s?\d{4}\s?\d{4})(?P<reject>[ -]\d+)?\b`),
 			Confidence: ConfidenceExact,
 			Validate:   validVerhoeff,
 			Priority:   75,
@@ -266,7 +276,7 @@ func defaultRules() []Rule {
 			// half alone is ordinary English.
 			Class: ClassInstructionOverride,
 			Pattern: regexp.MustCompile(
-				`(?i)\b(ignore|disregard|forget|override|discard)\b[^.!?\n]{0,40}?\b(previous|prior|earlier|above|preceding|all)\b[^.!?\n]{0,20}?\b(instruction|instructions|prompt|prompts|rule|rules|direction|directions|context)\b`),
+				`(?i)\b(ignore|disregard|forget|override|discard)\b[^.!?\n]{0,40}?\b(previous|prior|earlier|above|preceding|all)\b[^.!?\n]{0,20}?\b(instruction|instructions|prompt|prompts|rule|rules|direction|directions|context|information|guidance|guidelines|constraints|directives|programming|configuration)\b`),
 			Confidence: ConfidenceModerate,
 			Prefilter:  []string{"ignore", "Ignore", "IGNORE", "disregard", "Disregard", "forget", "Forget", "override", "Override", "discard", "Discard"},
 			Priority:   40,
@@ -306,6 +316,109 @@ func defaultRules() []Rule {
 			Confidence: ConfidenceHigh,
 			Prefilter:  []string{"<|im_start|>", "<|im_end|>", "<|system|>", "<|endoftext|>", "[INST]", "[/INST]", "<<SYS>>", "### system", "### System", "### assistant", "### Assistant"},
 			Priority:   45,
+		},
+
+		// The rules below were written against the tune split of
+		// analyzer/eval, where they close gaps the classifier leaves: it
+		// scored "Forget everything before that." at 0.0006 and every
+		// non-English attack as benign. They stay at moderate confidence
+		// for the same reason as the four above. Their prefilters are the
+		// case-folded kind: a case-sensitive list in front of a (?i)
+		// pattern is how a rule silently stops matching "FoRgEt
+		// EvErYtHiNg BeFoRe", and with no prefilter at all they tripled the
+		// cost of scanning ordinary prose. Each literal is one the pattern
+		// cannot match without, in every branch; none spans whitespace,
+		// because the patterns allow any run of it.
+		{
+			ID: "injection-prior-dismissal",
+			// Dismissing the whole of what came before, rather than naming
+			// the instructions. The temporal word is required: "forget
+			// everything" alone is a figure of speech, "forget everything
+			// before this" is a reset.
+			Class: ClassInstructionOverride,
+			Pattern: regexp.MustCompile(
+				`(?i)\b(?:ignore|disregard|forget|discard)\s+(?:about\s+)?(?:everything|all|anything)(?:\s+(?:that|which))?(?:\s+(?:we|you)\s+(?:have\s+|had\s+)?(?:discussed|said|told\s+you|were\s+told|have\s+been\s+told|talked\s+about|covered|received|learned|learnt))?\s*,?\s*(?:before(?:hand)?|above|previously|earlier|so\s+far|until\s+now|up\s+to\s+now|prior)\b`),
+			Confidence:    ConfidenceModerate,
+			PrefilterFold: []string{"ignore", "disregard", "forget", "discard"},
+			Priority:      40,
+		},
+		{
+			ID: "injection-guidance-revoked",
+			// Telling the model its own guidance has lapsed. Anchored on
+			// "your", or on "the ... you were given", because "the old rules
+			// no longer apply" is an ordinary sentence about a policy change.
+			Class: ClassInstructionOverride,
+			Pattern: regexp.MustCompile(
+				`(?i)(?:\byour\s+(?:(?:previous|prior|earlier|original|initial)\s+)?(?:instructions|rules|guidance|guidelines|constraints|restrictions|directives|programming|configuration)|\bthe\s+(?:(?:previous|prior|earlier|original|initial)\s+)?(?:instructions|rules|guidance|guidelines|constraints|restrictions|directives|configuration)\s+(?:that\s+|which\s+)?you\s+(?:were\s+given|received|got|have\s+been\s+given|were\s+configured\s+with|started\s+with))(?:\s+(?:earlier|before|previously))?\s+(?:no\s+longer\s+appl(?:y|ies)|(?:have|has)\s+been\s+(?:revoked|lifted|removed|suspended|cancell?ed|disabled|replaced)|(?:are|is)\s+(?:now\s+)?(?:void|revoked|suspended|lifted|cancell?ed|disabled))\b`),
+			Confidence:    ConfidenceModerate,
+			PrefilterFold: []string{"longer", "revoked", "lifted", "removed", "suspended", "cancel", "disabled", "replaced", "void"},
+			Priority:      40,
+		},
+		{
+			ID: "injection-safety-disabled",
+			// Announcing that the model's safeguards are off — usually
+			// dressed as a system notice. Limited to safeguards a model has;
+			// "safety training is suspended" is about a workplace.
+			Class: ClassInstructionOverride,
+			Pattern: regexp.MustCompile(
+				`(?i)\b(?:safety|content|ethical|moral)\s+(?:filters?|guardrails|guidelines|restrictions)\s+(?:(?:are|is|have\s+been|has\s+been|now|been)\s+)*(?:disabled|removed|lifted|switched\s+off|turned\s+off|deactivated|bypassed)\b`),
+			Confidence:    ConfidenceModerate,
+			PrefilterFold: []string{"filter", "guardrails", "guidelines", "restrictions"},
+			Priority:      40,
+		},
+		{
+			ID: "injection-task-hijack",
+			// Replacing the task rather than the rules: the praise-then-pivot
+			// ("well done, now further tasks follow") and the instruction
+			// buried in a question ("do not answer this, just output X").
+			// English and German, because that is what the public data
+			// carries and what the classifier misses.
+			Class: ClassInstructionOverride,
+			Pattern: regexp.MustCompile(
+				`(?i)(?:\bdo\s+not\s+(?:answer|look\s+at|look\s+in|read|use|follow)\b[^.!?\n]{0,60}?\b(?:just|only|instead)\s+(?:output|say|print|write|reply\s+with|respond\s+with)\b|\b(?:now|nun|jetzt)\b[^.!?\n]{0,25}?\b(?:new|further|additional|weitere|neue)\s+(?:tasks?|aufgaben|instructions|anweisungen)\s+(?:follow|are\s+followed|folgen)\b|\bstart\s+(?:over|again|afresh|from\s+(?:the\s+)?(?:front|scratch|beginning))\b[^.!?\n]{0,30}?\bnew\s+task\b|\bleave\s+all\s+(?:the\s+)?previous\s+(?:information|instructions)\s+behind\b|\blassen\s+sie\s+alle\s+vorherigen\s+informationen\s+hinter\s+sich\b)`),
+			Confidence:    ConfidenceModerate,
+			PrefilterFold: []string{"not", "follow", "folgen", "task", "behind", "hinter"},
+			Priority:      40,
+		},
+		{
+			ID: "injection-prompt-extraction-hidden",
+			// Asking for the configuration without naming it "system
+			// prompt": the hidden setup, the secret rules. Limited to
+			// adjectives that only make sense about something withheld,
+			// because "show me your full setup" is a question about a
+			// home lab.
+			Class: ClassPromptExtraction,
+			Pattern: regexp.MustCompile(
+				`(?i)\b(?:paste|repeat|print|show|reveal|output|share|display|tell\s+me|give\s+me|spell\s+out|translate|summari[sz]e|list|encode|recite|dump|leak)\b[^.!?\n]{0,40}?(?:\byour\s+(?:hidden|secret|confidential)\s+(?:setup|instructions|rules|guidelines|prompt|configuration|directives)\b|\b(?:hidden|secret|confidential)\s+(?:setup|system)\s+(?:text|prompt|instructions|message)\b|\beverything\s+(?:that\s+)?(?:appears|comes|came|was\s+written)\s+before\s+my\s+first\s+message\b)`),
+			Confidence:    ConfidenceModerate,
+			PrefilterFold: []string{"hidden", "secret", "confidential", "everything"},
+			Priority:      40,
+		},
+		{
+			ID: "injection-unrestricted-persona",
+			// The persona is defined by what it lacks. The subject must be
+			// the model — "an assistant that answers anything" — so that
+			// "you are free from travel restrictions" is left alone.
+			Class: ClassPersonaOverride,
+			Pattern: regexp.MustCompile(
+				`(?i)(?:\b(?:dan|god|jailbreak|jailbroken|unrestricted|unfiltered|uncensored|evil)\s+mode\b|\ban?\s+(?:ai|assistant|model|chatbot|bot|version\s+of\s+yourself)\b[^.!?\n]{0,40}?(?:\b(?:that|who|which)\s+(?:answers|does|says|will\s+answer|will\s+do|can\s+do|responds\s+to)\s+anything\b|\bnever\s+refuses?\b|\b(?:has|have|with)\s+no\s+(?:filters|restrictions|guidelines|censorship|rules|content\s+policy)\b|\bfreed?\s+from\b[^.!?\n]{0,30}?\b(?:restrictions|rules|guidelines|filters|polic(?:y|ies))\b|\b(?:filters|restrictions|guidelines)\s+(?:have\s+been\s+|are\s+)?(?:switched|turned)\s+off\b))`),
+			Confidence:    ConfidenceModerate,
+			PrefilterFold: []string{"mode", "anything", "refuse", "filters", "restrictions", "guidelines", "censorship", "rules", "polic", "free", "switched", "turned"},
+			Priority:      40,
+		},
+		{
+			ID: "injection-instruction-override-translated",
+			// "Ignore the previous instructions" in the languages the
+			// classifier was never trained on. It is English-only, so
+			// without this every one of these reached a receipt as clean.
+			// Go's \b is ASCII-only, so words are bounded by a non-letter
+			// instead.
+			Class: ClassInstructionOverride,
+			Pattern: regexp.MustCompile(
+				`(?i)(?:^|[^\p{L}])(?:(?:ignorier\p{L}*|vergiss|vergessen\s+sie|missachte\p{L}*)\s+(?:\p{L}+\s+){0,3}?(?:vorherigen?|bisherigen?|obigen?|vorigen?|früheren?)\s+(?:anweisungen|instruktionen|regeln|anordnungen|informationen|befehle)|vergiss\s+alles\s*,?\s*(?:davor|vorher|zuvor|bisher|was\s+(?:wir|du)\b)|(?:ignore[rz]?|oublie[rz]?)\s+(?:\p{L}+\s+){0,3}?(?:instructions|consignes|règles|directives)\s+(?:précédentes|antérieures|ci-dessus)|(?:ignora|ignore|olvida|olvide)\p{L}*\s+(?:\p{L}+\s+){0,3}?(?:instrucciones|reglas|indicaciones|directrices)\s+(?:anteriores|previas)|(?:ignor[ae]\p{L}*|esque[çc]a)\s+(?:\p{L}+\s+){0,3}?(?:instruções|instrucoes|regras|diretrizes)\s+(?:anteriores|prévias|previas)|(?:ignora|dimentica)\p{L}*\s+(?:\p{L}+\s+){0,3}?(?:istruzioni|regole)\s+precedenti|(?:игнорируй|игнорируйте|забудь|забудьте)\s+(?:\p{L}+\s+){0,3}?(?:предыдущие|прошлые|прежние)\s+(?:инструкции|указания|правила)|(?:忽略|无视|忘记|忘掉)(?:之前|以上|前面|先前|上面|此前)的?(?:所有|全部|一切)?的?(?:指令|指示|说明|规则|提示))`),
+			Confidence:    ConfidenceModerate,
+			PrefilterFold: []string{"anweisungen", "instruktionen", "regeln", "anordnungen", "informationen", "befehle", "vergiss", "instructions", "consignes", "règles", "directives", "instrucciones", "reglas", "indicaciones", "directrices", "instruções", "instrucoes", "regras", "diretrizes", "istruzioni", "regole", "инструкции", "указания", "правила", "忽略", "无视", "忘记", "忘掉"},
+			Priority:      40,
 		},
 
 		// --- Contact details ---------------------------------------------
@@ -437,6 +550,62 @@ func validLuhn(s string) bool {
 		double = !double
 	}
 	return sum%10 == 0
+}
+
+// validCard reports whether s is a payment card number: Luhn, and a length
+// the network that owns its leading digits actually issues.
+//
+// Luhn alone passes one run of digits in ten, so every sixteen-digit order
+// number, tracking reference and account id had a one-in-ten chance of
+// being reported as a card; the detection benchmark measured it. Real card
+// numbers start with a network's identifier, and most digit runs do not.
+// Private-label and fleet cards outside these ranges are missed, which is
+// the trade: they are rare in the traffic this sees, and a false card
+// finding is substituted on its way out.
+func validCard(s string) bool {
+	if !validLuhn(s) {
+		return false
+	}
+	d := strings.NewReplacer(" ", "", "-", "").Replace(s)
+	n := len(d)
+	prefix := func(p string) bool { return strings.HasPrefix(d, p) }
+	between := func(width int, lo, hi int) bool {
+		if len(d) < width {
+			return false
+		}
+		v := 0
+		for _, c := range d[:width] {
+			v = v*10 + int(c-'0')
+		}
+		return v >= lo && v <= hi
+	}
+	switch {
+	case prefix("4"): // Visa
+		return n == 13 || n == 16 || n == 19
+	case between(2, 51, 55), between(4, 2221, 2720): // Mastercard
+		return n == 16
+	case prefix("34"), prefix("37"): // American Express
+		return n == 15
+	case prefix("6011"), between(3, 644, 649), prefix("65"), prefix("62"): // Discover, UnionPay
+		return n >= 16 && n <= 19
+	case between(4, 3528, 3589): // JCB
+		return n >= 16 && n <= 19
+	case prefix("36"), prefix("38"), prefix("39"), between(3, 300, 305), prefix("3095"): // Diners Club
+		return n >= 14 && n <= 19
+	case between(4, 2200, 2204): // Mir
+		return n >= 16 && n <= 19
+	case prefix("50"), between(2, 56, 69): // Maestro and other debit ranges
+		return n >= 12 && n <= 19
+	case prefix("1"): // UATP
+		return n == 15
+	case prefix("9999"):
+		// The reserved range card tokens are drawn from. No issuer uses it,
+		// and a substitute has to be found by the rule its original was:
+		// the streaming paths count findings by re-scanning what they
+		// released, which is already substituted.
+		return n >= 13 && n <= 19
+	}
+	return false
 }
 
 // validIBAN reports whether s passes the ISO 13616 mod-97 check.

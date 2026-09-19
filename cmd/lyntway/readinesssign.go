@@ -53,6 +53,11 @@ type readinessReport struct {
 
 	Dependencies []depState `json:"dependencies,omitempty"`
 
+	// AgentReadiness is every MCP server and docs site the operator named,
+	// each check with its criterion, its evidence and what it does not
+	// prove — so the limit is inside the signed bytes, not beside them.
+	AgentReadiness []agentTarget `json:"agent_readiness,omitempty"`
+
 	Changes []struct {
 		Worse bool   `json:"worse"`
 		Text  string `json:"text"`
@@ -91,6 +96,14 @@ func buildReport(snap readinessSnapshot, changes []change, basis surfaceDoc, sur
 			"Packages given as a version range rather than an exact version were not checked, because a range describes what may be installed rather than what is.",
 			"A package with no advisory has none published today. That is not the same as safe.")
 	}
+	if snap.AgentsChecked {
+		rep.AgentReadiness = snap.Agents
+		rep.Limits[0] = "This is a check of authentication, of published advisories and of what agent-facing servers declare about themselves. It is not a penetration test and does not replace one."
+		rep.Limits = append(rep.Limits,
+			"Agent-readiness checks read what each MCP server declares about itself — its tool list, labels and schemas — and how it answers a few protocol requests. No tool a server listed was called, so none was seen doing anything.",
+			"The requests sent to an MCP server were initialize (first with no credential), notifications/initialized, tools/list, one tools/call naming a tool the server does not list, one method that does not exist, and a DELETE of the session the server opened. Docs sites were only fetched with GET.",
+			"These checks say whether an agent could find its way; they do not say whether an agent completed any task. No agent was run.")
+	}
 	for _, c := range changes {
 		rep.Changes = append(rep.Changes, struct {
 			Worse bool   `json:"worse"`
@@ -98,8 +111,22 @@ func buildReport(snap readinessSnapshot, changes []change, basis surfaceDoc, sur
 		}{c.Worse, c.Text})
 	}
 	if !surfaceRead {
+		// Says what the report does cover, rather than the old fixed
+		// "dependencies only" — which was false the moment a run could
+		// check a named server without reading the surface.
+		var covers []string
+		if snap.DepsChecked {
+			covers = append(covers, "dependencies")
+		}
+		if snap.AgentsChecked {
+			covers = append(covers, "the servers named for agent readiness")
+		}
+		what := "nothing else"
+		if len(covers) > 0 {
+			what = strings.Join(covers, " and ") + " only"
+		}
 		rep.Limits = append(rep.Limits,
-			"The observed surface was not read on this run, so this report covers dependencies only.")
+			"The observed surface was not read on this run, so this report covers "+what+".")
 	}
 	return rep
 }

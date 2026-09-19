@@ -31,6 +31,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Class identifies a category of sensitive data.
@@ -148,6 +150,19 @@ type Rule struct {
 	// catch that, and any new prefilter must be a literal the pattern
 	// cannot match without.
 	Prefilter []string
+
+	// PrefilterFold is Prefilter for a case-insensitive pattern: the
+	// literals and the content are both case-folded before comparing, the
+	// way the (?i) flag folds, so "iGnOrE" cannot slip past a list that
+	// spelled out "ignore", "Ignore" and "IGNORE". Either list passing is
+	// enough to scan.
+	//
+	// It exists because the injection rules added in core-2026.09.19 had
+	// no prefilter — the case-sensitive kind is how a (?i) rule quietly
+	// stops matching — and running them on every byte tripled the cost of
+	// scanning ordinary prose. The content is folded once per Scan, and
+	// only if some rule carries one of these.
+	PrefilterFold []string
 }
 
 // Ruleset is a versioned collection of rules.
@@ -217,14 +232,26 @@ func (rs *Ruleset) Rules() []Rule {
 // Results are ordered by position, and Scan is safe for concurrent use.
 func (rs *Ruleset) Scan(content []byte) []Span {
 	var candidates []Span
+	var folded []byte
 
 	for _, rule := range rs.rules {
-		if !rule.mayMatch(content) {
+		if len(rule.PrefilterFold) > 0 && folded == nil {
+			folded = foldCase(content)
+		}
+		if !rule.mayMatch(content, folded) {
 			continue
 		}
 		idx := rule.Pattern.SubexpIndex("target")
+		reject := rule.Pattern.SubexpIndex("reject")
 		matches := rule.Pattern.FindAllSubmatchIndex(content, -1)
 		for _, m := range matches {
+			// A "reject" capture group that matched means the context shows
+			// this is part of something larger — the first twelve digits of a
+			// grouped sixteen-digit number are not an Aadhaar number. RE2 has
+			// no lookahead, so the context is matched and then refused.
+			if reject > 0 && 2*reject+1 < len(m) && m[2*reject] >= 0 && m[2*reject+1] > m[2*reject] {
+				continue
+			}
 			start, end := m[0], m[1]
 			// A "target" capture group narrows the reported span to the
 			// sensitive part, leaving required context unredacted.
@@ -253,9 +280,10 @@ func (rs *Ruleset) Scan(content []byte) []Span {
 
 // mayMatch reports whether the rule's prefilter permits scanning content.
 //
-// A rule with no prefilter always scans.
-func (r Rule) mayMatch(content []byte) bool {
-	if len(r.Prefilter) == 0 {
+// A rule with no prefilter of either kind always scans. folded is content
+// passed through foldCase; it is only read when the rule has PrefilterFold.
+func (r Rule) mayMatch(content, folded []byte) bool {
+	if len(r.Prefilter) == 0 && len(r.PrefilterFold) == 0 {
 		return true
 	}
 	for _, lit := range r.Prefilter {
@@ -263,7 +291,55 @@ func (r Rule) mayMatch(content []byte) bool {
 			return true
 		}
 	}
+	for _, lit := range r.PrefilterFold {
+		if bytes.Contains(folded, foldCase([]byte(lit))) {
+			return true
+		}
+	}
 	return false
+}
+
+// foldCase maps every character to one representative of its case-folding
+// orbit — the smallest code point in it, which is what regexp's (?i) treats
+// as equal. Lowercasing would not do: the Kelvin sign folds with "k" under
+// (?i) but stays itself under unicode.ToLower, so "Kill" would match a
+// pattern for "kill" that a lowercased prefilter had already skipped.
+//
+// The output may differ in length from the input; it is only ever searched,
+// never used for offsets.
+func foldCase(b []byte) []byte {
+	out := make([]byte, 0, len(b))
+	for len(b) > 0 {
+		c := b[0]
+		if c < utf8.RuneSelf {
+			// 'k' and 's' have non-ASCII partners, but their orbit's smallest
+			// member is still the ASCII capital, so this agrees with the
+			// general case below.
+			if 'a' <= c && c <= 'z' {
+				c -= 'a' - 'A'
+			}
+			out = append(out, c)
+			b = b[1:]
+			continue
+		}
+		r, size := utf8.DecodeRune(b)
+		b = b[size:]
+		if r == utf8.RuneError && size == 1 {
+			// Invalid bytes can take part in no case-insensitive match of a
+			// literal, so what they become does not matter; they must only
+			// not become a letter.
+			out = append(out, 0xff)
+			continue
+		}
+		least := r
+		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+			if f < least {
+				least = f
+			}
+		}
+		out = utf8.AppendRune(out, least)
+	}
+	return out
 }
 
 // resolveOverlaps reduces candidates to a non-overlapping set.

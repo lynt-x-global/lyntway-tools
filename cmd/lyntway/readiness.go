@@ -123,6 +123,12 @@ func readiness(args []string) error {
 	fs.StringVar(&statePath, "state", "", "where to remember this run, for a machine that starts fresh each time")
 	var upload bool
 	fs.BoolVar(&upload, "upload", false, "send the report to your account, so every project's last run is in one place")
+	var mcpTargets string
+	fs.StringVar(&mcpTargets, "mcp", "", "comma-separated MCP server URLs to check for agent readiness; naming one is the authorisation to check it")
+	var mcpTokenEnv string
+	fs.StringVar(&mcpTokenEnv, "mcp-token-env", "", "name of an environment variable holding a bearer token, to read tools a server keeps behind a credential")
+	var docsTargets string
+	fs.StringVar(&docsTargets, "docs", "", "comma-separated public documentation URLs to check for agent readiness")
 	_ = fs.Parse(flagsFirst(fs, args))
 
 	// Dependencies first, because reading a lockfile needs no account and
@@ -186,6 +192,20 @@ func readiness(args []string) error {
 		return nil
 	}
 
+	// Agent readiness next, because it too needs no account: the operator
+	// typed each address, and that is the whole of the authorisation.
+	agentsNamed := mcpTargets != "" || docsTargets != ""
+	if agentsNamed {
+		targets, err := runAgentChecks(splitList(mcpTargets), splitList(docsTargets), mcpTokenEnv, dry)
+		if err != nil {
+			return err
+		}
+		if !dry {
+			snap.Agents = targets
+			snap.AgentsChecked = true
+		}
+	}
+
 	if !skipDeps {
 		states, err := reportDependencies(".", offline)
 		if err != nil {
@@ -209,7 +229,9 @@ func readiness(args []string) error {
 		if ferr := finish(); ferr != nil {
 			return ferr
 		}
-		if len(hostSet(scope)) == 0 {
+		// Naming a server to check is being given something to do, so a
+		// run that did only that has not been handed an empty scope.
+		if len(hostSet(scope)) == 0 && !agentsNamed {
 			return errScopeRequired
 		}
 		return nil
@@ -240,6 +262,10 @@ func readiness(args []string) error {
 	// The scope is typed, every time. Without it there is nothing to check
 	// and the right answer is to say so rather than to pick a default.
 	allowed := hostSet(scope)
+	if len(allowed) == 0 && agentsNamed {
+		fmt.Fprintln(stdout, "No --scope was given, so none of these endpoints was checked; the servers named with --mcp or --docs were.")
+		return finish()
+	}
 	if len(allowed) == 0 {
 		fmt.Fprintln(stdout, "\nHosts seen, none checked — name the ones you are authorised to check with --scope:")
 		for _, h := range hostsOf(doc.Endpoints) {
@@ -375,7 +401,14 @@ func probeEndpoint(p probeResult) probeResult {
 	}
 	req.Header.Set("User-Agent", "lyntway-readiness/"+version+" (authentication check; no credential attached)")
 
-	client := &http.Client{Timeout: probeTimeout}
+	// Redirects are not followed. An API that sends a caller with no key to
+	// a sign-in page answers 302; followed, the sign-in page's 200 read as
+	// "answered without a credential" — an open endpoint that was nothing
+	// of the kind, and the one verdict this check must never overstate.
+	client := &http.Client{
+		Timeout:       probeTimeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return probeResult{Endpoint: p.Endpoint, Host: p.Host, Verdict: verdictError, Detail: err.Error()}
@@ -388,6 +421,11 @@ func probeEndpoint(p probeResult) probeResult {
 		out.Verdict = verdictProtected
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
 		out.Verdict = verdictOpen
+	case resp.StatusCode >= 300 && resp.StatusCode < 400:
+		out.Verdict = verdictOther
+		if loc := resp.Header.Get("Location"); loc != "" {
+			out.Detail = "redirected to " + loc
+		}
 	default:
 		// A 404 or a 405 is not a pass. It means this address did not
 		// answer, which says nothing about whether the endpoint behind it
@@ -404,6 +442,9 @@ func describeResult(r probeResult) string {
 	case verdictProtected:
 		return fmt.Sprintf("%d — asked for a credential", r.Status)
 	case verdictOther:
+		if r.Detail != "" {
+			return fmt.Sprintf("%d — %s, not conclusive either way", r.Status, r.Detail)
+		}
 		return fmt.Sprintf("%d — not conclusive either way", r.Status)
 	case verdictError:
 		return "could not be reached: " + r.Detail

@@ -1,0 +1,13 @@
+{
+  "editor.fontSize": 13, // a comment with "quotes" and // slashes
+  "url.example": "https://example.com/not//a//comment",
+  "mcp": {
+    "servers": {
+      "sentry": {
+        "type": "sse",
+        "url": "https://mcp.sentry.dev:8443/sse",
+        "headers": { "X-Api-Key": "{{XAI}}" },
+      },
+    },
+  },
+}

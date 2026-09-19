@@ -62,6 +62,13 @@ type readinessSnapshot struct {
 	// read as a half where everything disappeared.
 	EndpointsChecked bool `json:"endpoints_checked"`
 	DepsChecked      bool `json:"deps_checked"`
+
+	// Agents is added without bumping snapshotVersion: an older snapshot
+	// simply has AgentsChecked false, which compares as "did not run"
+	// rather than as every server disappearing — and bumping the version
+	// would have thrown away every project's dependency history to say so.
+	Agents        []agentTarget `json:"agents,omitempty"`
+	AgentsChecked bool          `json:"agents_checked,omitempty"`
 }
 
 // snapshotPath is per directory, unless the caller names a file. A runner
@@ -200,7 +207,79 @@ func diffSnapshots(old, now readinessSnapshot) []change {
 		}
 	}
 
+	if old.AgentsChecked && now.AgentsChecked {
+		out = append(out, diffAgents(old.Agents, now.Agents)...)
+	}
+
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Worse && !out[j].Worse })
+	return out
+}
+
+// diffAgents compares the agent-readiness answers of two runs, per server
+// and per check.
+//
+// A check that could not be decided this time is reported but never as
+// worse: the server may simply have been down, and an alarm that fires
+// whenever a vendor has a bad minute is an alarm people learn to ignore.
+// Going from undecided to failing is worse, because nothing was known to be
+// wrong before and something is now.
+func diffAgents(old, now []agentTarget) []change {
+	var out []change
+	key := func(t agentTarget) string { return t.Kind + " " + t.Target }
+	before := map[string]agentTarget{}
+	for _, t := range old {
+		before[key(t)] = t
+	}
+	seen := map[string]bool{}
+	for _, t := range now {
+		seen[key(t)] = true
+		was, known := before[key(t)]
+		if !known {
+			if f := t.failed(); f > 0 {
+				out = append(out, change{true, fmt.Sprintf("%s is checked for the first time, and %d of %d agent-readiness checks fail",
+					t.Target, f, len(t.Checks))})
+			} else {
+				out = append(out, change{false, fmt.Sprintf("%s is checked for the first time, and no agent-readiness check fails", t.Target)})
+			}
+			continue
+		}
+		prior := map[string]string{}
+		for _, c := range was.Checks {
+			prior[c.ID] = c.Status
+		}
+		for _, c := range t.Checks {
+			p, had := prior[c.ID]
+			switch {
+			case !had || p == c.Status:
+			case c.Status == checkFail && p == checkPass:
+				out = append(out, change{true, fmt.Sprintf("%s: %q passed last time and fails now", t.Target, c.Title)})
+			case c.Status == checkFail:
+				out = append(out, change{true, fmt.Sprintf("%s: %q fails; last time it could not be decided", t.Target, c.Title)})
+			case c.Status == checkPass && p == checkFail:
+				out = append(out, change{false, fmt.Sprintf("%s: %q failed last time and passes now", t.Target, c.Title)})
+			case c.Status == checkPass:
+				out = append(out, change{false, fmt.Sprintf("%s: %q passes; last time it could not be decided", t.Target, c.Title)})
+			default:
+				out = append(out, change{false, fmt.Sprintf("%s: %q could not be decided this time (it was %s)", t.Target, c.Title, p)})
+			}
+		}
+		// The tool list itself moving is what an agent acts on, so it is
+		// said even when every check still reads the same. Neither
+		// direction is worse by itself; the checks above judge the tools.
+		if was.ToolsRead && t.ToolsRead {
+			if added := notIn(t.Tools, was.Tools); len(added) > 0 {
+				out = append(out, change{false, fmt.Sprintf("%s lists %d new %s: %s", t.Target, len(added), plural(len(added), "tool", "tools"), nameList(added))})
+			}
+			if removed := notIn(was.Tools, t.Tools); len(removed) > 0 {
+				out = append(out, change{false, fmt.Sprintf("%s no longer lists %d %s: %s", t.Target, len(removed), plural(len(removed), "tool", "tools"), nameList(removed))})
+			}
+		}
+	}
+	for _, t := range old {
+		if !seen[key(t)] {
+			out = append(out, change{false, fmt.Sprintf("%s was not checked this time", t.Target)})
+		}
+	}
 	return out
 }
 

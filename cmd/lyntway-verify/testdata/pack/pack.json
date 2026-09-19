@@ -1,0 +1,335 @@
+{
+  "version": "lyntway-compliance/1",
+  "period": "2026-09",
+  "tenant_id": "t_d6261e3e894805da",
+  "generated_at": "2026-09-18T20:22:04Z",
+  "attested": {
+    "summary": {
+      "actions": 3,
+      "bytes_examined": 135,
+      "by_surface": {
+        "model": 3
+      },
+      "by_decision": {
+        "redact": 3
+      },
+      "by_provenance": {
+        "asserted": 3
+      },
+      "findings_by_class": {
+        "pci.card_number": 3,
+        "pii.email": 3
+      },
+      "destinations": [
+        "openai"
+      ],
+      "covers": {
+        "from": "2026-09-01T00:00:00Z",
+        "to": "2026-09-18T20:22:04Z",
+        "complete": false,
+        "gaps": [
+          "The month had not ended when this pack was generated; it counts up to 2026-09-18T20:22:04Z."
+        ],
+        "note": "These counts are this interval's alone. The coverage section describes the account over the last 90 days as of generation, not this month."
+      }
+    },
+    "coverage": {
+      "window_days": 90,
+      "recorded": 3,
+      "seen_first_hand": 0,
+      "only_reported": 3,
+      "destinations_seen": [
+        "openai"
+      ],
+      "credentials_issued": 2,
+      "credentials_unused": [
+        {
+          "key_id": "key_d9054220bedffb30",
+          "label": "first key",
+          "prefix": "lynt_sk_3rxsi5",
+          "created_at": "2026-09-18T20:22:04Z"
+        }
+      ],
+      "detection": [
+        {
+          "name": "deterministic",
+          "health": "healthy",
+          "means": "Working. Anything with a checksum or a vendor prefix is being detected, reproducibly."
+        }
+      ],
+      "unaccounted": "This service cannot tell you how much AI traffic it never saw. Nothing here is evidence that the traffic above is all of it — only that it is what reached us. Reconcile these counts against your providers' own billing to size the difference.",
+      "close": [
+        "Route the reported traffic through the gateway or proxy so it is observed rather than described.",
+        "Some issued keys have never been presented, which usually means an integration that was started and not completed."
+      ]
+    },
+    "controls": {
+      "statement": "This document is operational evidence, not a certification. It records what happened to AI traffic that reached this service and is signed so that later edits are detectable. It is intended to be put in front of an assessor, not to substitute for one. The controls below are the ones this evidence speaks to; the list after them is what it deliberately does not.",
+      "evidenced": [
+        {
+          "framework": "ISO/IEC 42001:2023",
+          "id": "A.6.2.8",
+          "title": "AI system recording of event logs",
+          "evidence": "Every governed action in this period produced a signed receipt, hash-chained to the one before it, so removal or reordering is detectable. The counts above are derived from those receipts and committed to by the attestation.",
+          "limit": "Covers only traffic that reached this service. The coverage section states what is known to be missing, and states plainly that traffic neither party knows about cannot be counted."
+        },
+        {
+          "framework": "ISO/IEC 42001:2023",
+          "id": "A.6.2.6",
+          "title": "AI system operation and monitoring",
+          "evidence": "Actions were examined in flight and the decision taken on each is recorded by class, surface and destination.",
+          "limit": "Monitors what data moved and what was done about it. It does not monitor model accuracy, drift or output quality, which need instrumentation this service does not have."
+        },
+        {
+          "framework": "ISO/IEC 42001:2023",
+          "id": "A.8.4",
+          "title": "Communication of limitations",
+          "evidence": "The coverage section publishes what this service could not observe, including the category it cannot measure at all, rather than reporting only what it caught.",
+          "limit": "Communicates the limitations of this record. It says nothing about the limitations of the AI systems whose traffic it recorded."
+        },
+        {
+          "framework": "ISO/IEC 42001:2023",
+          "id": "A.10.2",
+          "title": "Suppliers and third parties",
+          "evidence": "The destinations list names every third party that received traffic through this service in the period, with counts.",
+          "limit": "Evidence of where data went. It is not evidence about those suppliers' own controls, contracts or handling once the data arrived."
+        },
+        {
+          "framework": "NIST AI RMF 1.0",
+          "id": "MEASURE 2.4",
+          "title": "The functionality and behavior of the AI system and its components – as identified in the map function – are monitored when in production.",
+          "evidence": "Production traffic was monitored continuously for the period, with each action's surface, direction and destination recorded.",
+          "limit": "Monitors the data crossing the system, not the system's functional behaviour. Performance and output monitoring are a separate exercise."
+        },
+        {
+          "framework": "NIST AI RMF 1.0",
+          "id": "MEASURE 2.10",
+          "title": "Privacy risk of the AI system – as identified in the map function – is examined and documented.",
+          "evidence": "Personal data was detected in flight and is documented here by class and count, with the decision taken on each class.",
+          "limit": "Continuous detection and record, not a privacy risk assessment. It shows what personal data moved; it does not assess the risk of the system processing it."
+        },
+        {
+          "framework": "ISO/IEC 27001:2022",
+          "id": "8.12",
+          "title": "Data leakage prevention",
+          "evidence": "Personal data, payment data and credentials were detected in traffic leaving for third-party AI services, and the decision on each — substituted, refused, held for a person, or allowed and recorded — is counted here by class.",
+          "limit": "Evidence that the control operated on the channel this service sits in. Email, file sharing, endpoints and any AI traffic that did not pass through here are outside it, and are somebody else's control to evidence."
+        },
+        {
+          "framework": "ISO/IEC 27001:2022",
+          "id": "8.11",
+          "title": "Data masking",
+          "evidence": "Values detected in flight were replaced with format-preserving substitutes before leaving, so the receiving service never held the original. The counts state how many of each class were substituted.",
+          "limit": "Applies to what the detectors matched, on this channel. It is not evidence of masking in databases, exports or anywhere else."
+        },
+        {
+          "framework": "ISO/IEC 27001:2022",
+          "id": "8.15",
+          "title": "Logging",
+          "evidence": "Each action produced a record that is signed and chained to the one before it, so a removal or a reordering is detectable by anyone holding the receipts, including somebody outside this organisation.",
+          "limit": "The standard asks that logs be produced, kept and protected; it does not prescribe signatures, and this is one way of meeting protection rather than the required way. It covers this service's records only."
+        },
+        {
+          "framework": "ISO/IEC 27001:2022",
+          "id": "8.16",
+          "title": "Monitoring activities",
+          "evidence": "Traffic was examined continuously for the period and anomalies — refusals, holds, new destinations, volume changes — are recorded with the action that caused them.",
+          "limit": "Monitors this channel. Network, endpoint and identity monitoring are separate controls."
+        },
+        {
+          "framework": "ISO/IEC 27001:2022",
+          "id": "5.14",
+          "title": "Information transfer",
+          "evidence": "Every transfer to an external AI service in the period is recorded with its destination, the classes of data it carried, and what was done about them.",
+          "limit": "Evidence of transfers this service carried. Transfers by any other route are not here."
+        },
+        {
+          "framework": "SOC 2 (2017 TSC, revised 2022)",
+          "id": "CC7.2",
+          "title": "The entity monitors system components for anomalies indicative of malicious acts, natural disasters, and errors",
+          "evidence": "Continuous monitoring of AI traffic with a durable, tamper-detectable record for the period, which an auditor can sample and then verify independently rather than taking a screenshot on trust.",
+          "limit": "Operating evidence for a control the organisation defines and the auditor tests. It does not make anybody SOC 2 compliant, and the sufficiency of this evidence is the auditor's judgement, not ours."
+        },
+        {
+          "framework": "SOC 2 (2017 TSC, revised 2022)",
+          "id": "CC6.7",
+          "title": "The entity restricts the transmission, movement, and removal of information",
+          "evidence": "Restriction applied in the path: data classes were substituted or refused before leaving for an external service, with each decision recorded and attributable to the credential that made the request.",
+          "limit": "Covers transmission through this service to the destinations it fronts. Everything else the entity transmits is outside this record."
+        },
+        {
+          "framework": "AIUC-1",
+          "id": "A006",
+          "title": "Filtering of personal identifiers in AI inputs and outputs",
+          "evidence": "Inputs and outputs were scanned for personal identifiers and the configured action applied, with per-class counts and the decision for each.",
+          "limit": "Named against the requirement as published in AIUC-1's evidence list. AIUC's own certification includes adversarial testing that this evidence does not perform and cannot replace."
+        },
+        {
+          "framework": "AIUC-1",
+          "id": "D003",
+          "title": "Tool call logging, including MCP servers",
+          "evidence": "Tool calls through the MCP surface are recorded with the tool named, the destination server and the decision, and a change to a server's advertised tools raises a signal.",
+          "limit": "Covers tool calls that passed through this service. An agent reaching a server directly is invisible here, and the coverage section says so."
+        },
+        {
+          "framework": "NIST AI RMF 1.0",
+          "id": "MANAGE 4.1",
+          "title": "Post-deployment AI system monitoring plans are implemented, including mechanisms for capturing and evaluating input from users and other relevant AI actors, appeal and override, decommissioning, incident response, recovery, and change management.",
+          "evidence": "Supplies the post-deployment monitoring mechanism and its durable record.",
+          "limit": "One mechanism inside a wider requirement. Appeal and override, decommissioning, incident response, recovery and change management are organisational processes this service does not perform."
+        }
+      ],
+      "silent": [
+        {
+          "framework": "SOC 2 (2017 TSC, revised 2022)",
+          "id": "The report itself",
+          "title": "A SOC 2 opinion",
+          "why": "A SOC 2 report is issued by a licensed CPA firm after testing an organisation's own controls. This is evidence one such control operated. It is not an opinion, and nothing in it should be read as one."
+        },
+        {
+          "framework": "AIUC-1",
+          "id": "Adversarial testing",
+          "title": "Red-team evaluation of an AI system",
+          "why": "AIUC-1 certification includes running thousands of adversarial scenarios against the system under test. That is an exercise performed on the system, not a record of its traffic, and this service performs no part of it."
+        },
+        {
+          "framework": "ISO/IEC 27001:2022",
+          "id": "Annex A generally",
+          "title": "The other ninety controls",
+          "why": "This speaks to the handful of controls about data leaving for AI services. Access control, physical security, supplier assurance, business continuity and the rest are evidenced elsewhere or not at all."
+        },
+        {
+          "framework": "ISO/IEC 42001:2023",
+          "id": "A.5.2",
+          "title": "AI system impact assessment process",
+          "why": "An impact assessment is a judgement made about a system before and during its use. This service observes traffic and cannot form one."
+        },
+        {
+          "framework": "ISO/IEC 42001:2023",
+          "id": "A.7.4",
+          "title": "Quality of data",
+          "why": "Concerns data used to develop and train AI systems. This service sees data in flight at inference and never touches a training set."
+        },
+        {
+          "framework": "ISO/IEC 42001:2023",
+          "id": "A.7.2",
+          "title": "Data for development and enhancement of AI system",
+          "why": "Same reason: nothing here observes model development."
+        },
+        {
+          "framework": "NIST AI RMF 1.0",
+          "id": "GOVERN (function)",
+          "title": "Policies, processes, procedures, accountability and culture",
+          "why": "Governance is an organisational structure, evidenced by documents and roles. No amount of traffic observation demonstrates it."
+        },
+        {
+          "framework": "NIST AI RMF 1.0",
+          "id": "MEASURE 2.11",
+          "title": "Fairness and bias evaluation",
+          "why": "Requires evaluating model outputs against defined groups. This service inspects content for data classes and does not evaluate model behaviour."
+        },
+        {
+          "framework": "ISO/IEC 42001:2023",
+          "id": "Clauses 4-10",
+          "title": "The management system itself",
+          "why": "Certification assesses a management system: leadership, planning, competence, internal audit, management review. This is one operational input to that, and no part of the system."
+        }
+      ]
+    }
+  },
+  "attestation": {
+    "version": "lyntway-receipt/1",
+    "id": "rcpt_5b5f15bb120a6c07d58f2ed3",
+    "issued_at": "2026-09-18T20:22:04Z",
+    "issuer": {
+      "key_id": "lyntway-t-f9897b14b57156de7459551b5ac9766e",
+      "name": "Lyntway (lyntway.com)",
+      "key_attestation": {
+        "version": "lyntway-key-attestation/1",
+        "key_id": "lyntway-t-f9897b14b57156de7459551b5ac9766e",
+        "algorithm": "ed25519",
+        "public_key": "dK7LbwrOs/a2ApOsvOaIKZnxes9TmjwDpzS727Xhbh8=",
+        "scope": "t_d6261e3e894805da/",
+        "not_before": "2026-09-18T20:17:04Z",
+        "not_after": "2026-10-18T20:22:04Z",
+        "root_key_id": "lyntway-dev",
+        "root_algorithm": "ed25519",
+        "signature": "i7vL9bx3GxX3oUYRYXhJCHTU3Qok0ycHwWXMglQQklH98+ZafOriHJQqb0pOXb3tQsENk1I4jwBlYO3vJKsgAw=="
+      }
+    },
+    "chain": {
+      "id": "t_d6261e3e894805da/compliance",
+      "seq": 0,
+      "prev_hash": ""
+    },
+    "action": {
+      "surface": "primitive",
+      "direction": "response",
+      "method": "GET /v1/compliance/pack",
+      "target": "2026-09",
+      "destination": "the holder of this document"
+    },
+    "actor": {
+      "type": "service",
+      "id": "lyntway-compliance",
+      "source": "none",
+      "verified": false
+    },
+    "content": {
+      "algorithm": "sha-256",
+      "input_digest": "89ea2b864928e7ec87b8ab36850aee4454a80f95af2e0e8e8e9556cda74a705e",
+      "output_digest": "89ea2b864928e7ec87b8ab36850aee4454a80f95af2e0e8e8e9556cda74a705e",
+      "bytes": 11562,
+      "subject": "metadata"
+    },
+    "governance": {
+      "mode": "full",
+      "decision": "allow",
+      "detector": {
+        "engine": "lyntway-core",
+        "engine_version": "0.1.0",
+        "ruleset_version": "core-2026.09.17",
+        "health": "healthy",
+        "components": [
+          {
+            "name": "deterministic",
+            "health": "healthy"
+          }
+        ]
+      },
+      "policy": {
+        "id": "pack.core.default",
+        "version": "1",
+        "bundle_digest": "5eaafcc460fd435be07402f592de2f543336353cdbcc305d4d5c75c27ca706a8"
+      }
+    },
+    "evidence": {
+      "provenance": "observed",
+      "vantage": "compliance"
+    },
+    "signature": {
+      "algorithm": "ed25519",
+      "key_id": "lyntway-t-f9897b14b57156de7459551b5ac9766e",
+      "canonicalization": "jcs",
+      "value": "hSJT/H00k0evE8tqLvQ3bog0FN57SGIGblQde9eTemyX8Z0/Td8J7hHxEt9XxyHniN/qgh8GzzvZkNOox62UDA=="
+    }
+  },
+  "how_to_verify": {
+    "public_keys": "http://127.0.0.1:8891/.well-known/lyntway-keys.json",
+    "steps": [
+      "Verify the attestation receipt against the published key. It needs no account and no network beyond fetching the key once.",
+      "Canonicalise the attested object with RFC 8785 and take its SHA-256.",
+      "Compare that digest with the attestation's content.input_digest. If anything inside attested was edited after signing — a number, a coverage gap, or a control claim — they will not match.",
+      "Check the transparency log's signed head independently if completeness matters: a receipt removed after the fact is detectable there, not here."
+    ],
+    "tool": "lyntway-verify, or any RFC 8785 and RFC 9052 implementation"
+  },
+  "limits": [
+    "This evidences that the actions below were governed and recorded, and that this record has not been altered since it was signed.",
+    "It does not evidence that these were all the actions. Traffic that never reached this service is invisible to it; the coverage section states what is known to be missing and what cannot be measured at all.",
+    "Counts described as attested or asserted were reported to this service rather than observed by it. They are as good as your trust in the system named as their vantage.",
+    "No content appears here. Findings are classes and counts, which is deliberate: this document travels further than a dashboard does.",
+    "This is not a certification and asserts no framework conformity. The controls section names what this evidence speaks to and, in the same place, the controls it is silent on.",
+    "This account forwards receipts nowhere, so the individual receipts behind these counts were returned to the caller and retained by no one. Their digests are in the transparency log, so a receipt you already hold can be verified against it; a receipt nobody kept cannot be produced. Configure a destination to keep them."
+  ]
+}

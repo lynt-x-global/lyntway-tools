@@ -85,6 +85,11 @@ type VerifyOptions struct {
 	// Now overrides the clock, for tests and for verifying against a
 	// historical point in time. Zero means time.Now.
 	Now time.Time
+
+	// Revoked lists keys no longer trusted, as the deployment publishes
+	// them beside its keys. Checked for the key that signed the receipt and
+	// for the root key that attested it.
+	Revoked RevocationList
 }
 
 func (o *VerifyOptions) now() time.Time {
@@ -255,9 +260,19 @@ func verify(r *Receipt, raw []byte, keys KeyResolver, opts VerifyOptions) (*Resu
 	// trusted set. A verifier that took the embedded key on faith would
 	// accept a receipt from anyone able to generate a keypair.
 	var pub crypto.PublicKey
+	if err := opts.Revoked.check(sig.KeyID, issuedAt); err != nil {
+		return nil, err
+	}
 	if att := r.Issuer.KeyAttestation; att != nil {
-		pub, err = att.Verify(keys, now)
+		// Judged at the moment the receipt was issued, as a certificate
+		// is: an attestation that has since expired does not un-sign what
+		// was signed while it was valid. What a later compromise does to
+		// that is the revocation list's job, checked beside this.
+		pub, err = att.Verify(keys, issuedAt)
 		if err != nil {
+			return nil, err
+		}
+		if err := opts.Revoked.check(att.RootKeyID, issuedAt); err != nil {
 			return nil, err
 		}
 		if att.KeyID != sig.KeyID {

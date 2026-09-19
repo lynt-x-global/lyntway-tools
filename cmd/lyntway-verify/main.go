@@ -46,7 +46,10 @@ Keys:
                      ID may carry an algorithm: -key "k1:es256=BFq..."
   -keys FILE         JSON key file, as published at
                      /.well-known/lyntway-keys.json:
-                     {"keys": {"<id>": "..."}, "algorithms": {"<id>": "es256"}}
+                     {"keys": {"<id>": "..."}, "algorithms": {"<id>": "es256"},
+                      "revoked": [{"key_id": "<id>", "revoked_at": "...", "compromised": true}]}
+                     Revoked keys are honoured: a retired key's later
+                     receipts and every receipt of a compromised key fail.
 
 Options:
   -chain             input is a chain of receipts — a JSON array or one
@@ -171,6 +174,10 @@ type keyFile struct {
 	// from a corrupt Ed25519 one — which is exactly how it used to be
 	// reported.
 	Algorithms map[string]string `json:"algorithms"`
+
+	// Revoked lists keys the deployment no longer stands behind. It rides
+	// in the same file so a saved key set carries its own warnings.
+	Revoked []receipt.Revocation `json:"revoked,omitempty"`
 }
 
 // version is stamped at link time by the release workflow. "dev" means a
@@ -220,9 +227,17 @@ func run() int {
 		return 2
 	}
 
+	var revoked receipt.RevocationList
 	if *keysPath != "" {
-		if err := loadKeyFile(*keysPath, keys); err != nil {
+		entries, err := loadKeyFile(*keysPath, keys)
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "lyntway-verify: %v\n", err)
+			return 2
+		}
+		// A malformed revocation is refused rather than skipped: skipping
+		// it would trust exactly the key somebody meant to withdraw.
+		if revoked, err = receipt.NewRevocationList(entries); err != nil {
+			fmt.Fprintf(os.Stderr, "lyntway-verify: %s: %v\n", *keysPath, err)
 			return 2
 		}
 	}
@@ -246,6 +261,7 @@ func run() int {
 	opts := receipt.VerifyOptions{
 		MaxAge:              *maxAge,
 		RequireFullStrength: *requireFull,
+		Revoked:             revoked,
 	}
 
 	if *asChain {
@@ -261,7 +277,7 @@ func run() int {
 		logResolver := resolver
 		if *logKeysPath != "" {
 			logKeys := keyFlag{}
-			if err := loadKeyFile(*logKeysPath, logKeys); err != nil {
+			if _, err := loadKeyFile(*logKeysPath, logKeys); err != nil {
 				fmt.Fprintf(os.Stderr, "lyntway-verify: %v\n", err)
 				return 2
 			}
@@ -374,17 +390,17 @@ func readInput(path string) ([]byte, error) {
 	return data, nil
 }
 
-func loadKeyFile(path string, into keyFlag) error {
+func loadKeyFile(path string, into keyFlag) ([]receipt.Revocation, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("reading key file: %w", err)
+		return nil, fmt.Errorf("reading key file: %w", err)
 	}
 	var kf keyFile
 	if err := json.Unmarshal(raw, &kf); err != nil {
-		return fmt.Errorf("parsing key file: %w", err)
+		return nil, fmt.Errorf("parsing key file: %w", err)
 	}
 	if len(kf.Keys) == 0 {
-		return fmt.Errorf("key file %s contains no keys", path)
+		return nil, fmt.Errorf("key file %s contains no keys", path)
 	}
 	for id, encoded := range kf.Keys {
 		alg := kf.Algorithms[id]
@@ -393,11 +409,11 @@ func loadKeyFile(path string, into keyFlag) error {
 		}
 		decoded, err := decodeKey(encoded, alg)
 		if err != nil {
-			return fmt.Errorf("key %q in %s: %w", id, path, err)
+			return nil, fmt.Errorf("key %q in %s: %w", id, path, err)
 		}
 		into[id] = keyMaterial{raw: decoded, algorithm: alg}
 	}
-	return nil
+	return kf.Revoked, nil
 }
 
 // output is the machine-readable shape emitted under -json.
@@ -500,7 +516,108 @@ func unwrapEnvelope(data []byte) ([]byte, bool) {
 	return inner, true
 }
 
+// unwrapPack recognises a compliance pack: a signed attestation beside
+// the "attested" object whose canonical digest it commits to.
+//
+// Handing this tool a pack used to fail with "no signature present",
+// because it read the pack as a malformed receipt. The evidence bundle's
+// own instructions said to do exactly that, so an auditor following our
+// README would have concluded our evidence was invalid. A pack is now
+// verified as what it is: the attestation's signature, and then whether
+// the attested object in hand is the one that signature covers.
+func unwrapPack(data []byte) (attestation, attested []byte, ok bool) {
+	var pack struct {
+		Attestation json.RawMessage `json:"attestation"`
+		Attested    json.RawMessage `json:"attested"`
+	}
+	if err := json.Unmarshal(data, &pack); err != nil {
+		return nil, nil, false
+	}
+	a, b := bytes.TrimSpace(pack.Attestation), bytes.TrimSpace(pack.Attested)
+	if len(a) == 0 || a[0] != '{' || len(b) == 0 || b[0] != '{' {
+		return nil, nil, false
+	}
+	return a, b, true
+}
+
+// checkPackLogo holds a pack's logo to the digest its signed part names.
+//
+// The picture travels outside the signed object, as a data URI, and its
+// SHA-256 inside it. A pack whose picture was swapped would otherwise
+// verify: the signature covers the digest, and only this comparison ties
+// the digest to the picture a reader actually sees. A picture with no
+// signed digest is refused as well, since nothing then says the preparer
+// attached it. A pack with neither has nothing to check.
+func checkPackLogo(data []byte) error {
+	var pack struct {
+		Logo     string `json:"prepared_by_logo"`
+		Attested struct {
+			PreparedBy *struct {
+				Logo *struct {
+					SHA256 string `json:"sha256"`
+				} `json:"logo"`
+			} `json:"prepared_by"`
+		} `json:"attested"`
+	}
+	if err := json.Unmarshal(data, &pack); err != nil {
+		return fmt.Errorf("reading the pack: %w", err)
+	}
+	var signed string
+	if p := pack.Attested.PreparedBy; p != nil && p.Logo != nil {
+		signed = p.Logo.SHA256
+	}
+	if pack.Logo == "" {
+		return nil
+	}
+	if signed == "" {
+		return errors.New("this pack carries a logo that its signed part does not name, so nothing says its preparer attached it")
+	}
+	encoded, ok := strings.CutPrefix(pack.Logo, "data:image/png;base64,")
+	if !ok {
+		return errors.New("this pack's logo is not a PNG data URI")
+	}
+	raw, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return fmt.Errorf("this pack's logo could not be decoded: %w", err)
+	}
+	sum := sha256.Sum256(raw)
+	if got := hex.EncodeToString(sum[:]); got != signed {
+		return fmt.Errorf("this pack's logo has been changed since it was signed: it hashes to %s, "+
+			"and the signed prepared_by names %s", got, signed)
+	}
+	return nil
+}
+
 func verifyOne(data []byte, keys receipt.KeyResolver, opts receipt.VerifyOptions, jsonOut bool, incl *inclusionOutput, filePath string) int {
+	// A pack is checked in two steps, and both must pass: the signature on
+	// its attestation, and that the attested object in this file is the one
+	// that signature covers. Canonicalised from the bytes as read, so a
+	// field this build has never heard of is still hashed — dropping it
+	// would report an intact pack as edited.
+	if attestation, attested, isPack := unwrapPack(data); isPack {
+		canonical, err := receipt.Canonicalize(json.RawMessage(attested))
+		if err != nil {
+			return fail(jsonOut, fmt.Errorf("reading the pack's attested content: %w", err), 2)
+		}
+		var att receipt.Receipt
+		if err := json.Unmarshal(attestation, &att); err != nil {
+			return fail(jsonOut, fmt.Errorf("parsing the pack's attestation: %w", err), 2)
+		}
+		if sum := receipt.DigestContent(canonical); sum != att.Content.InputDigest {
+			return fail(jsonOut, fmt.Errorf(
+				"this pack's content has been changed since it was signed: it hashes to %s, "+
+					"and the attestation names %s", sum, att.Content.InputDigest), 1)
+		}
+		if err := checkPackLogo(data); err != nil {
+			return fail(jsonOut, err, 1)
+		}
+		if !jsonOut {
+			fmt.Println("  (compliance pack: its attested content matches the signed digest;" +
+				" verifying the attestation)")
+		}
+		data = attestation
+	}
+
 	if looksLikeCOSE(data) {
 		r, err := cose.DecodeReceipt(data, keys)
 		if err != nil {

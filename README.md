@@ -68,6 +68,19 @@ when one of them is a provider key, with the fix in the job summary. The
 scan runs on the runner and sends nothing anywhere; the key's value is
 never printed. Details in [action/README.md](action/README.md).
 
+## Reporting what AI is on a machine
+
+```bash
+lyntway agent --explain   # what it collects, and what it never does
+lyntway agent --dry-run   # the exact report it would send, sent nowhere
+```
+
+`lyntway agent` lists the AI apps, editor extensions, local models and MCP
+servers on a laptop or server, and which AI hosts it is connected to, and
+reports that to the account with a line per surface saying how much is
+actually covered. No content, no credential values, no browser history.
+Fleet installs for RMM tools are in [scripts/agent](scripts/agent/).
+
 ## Python: the SDK and the LiteLLM callback
 
 ```bash

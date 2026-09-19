@@ -103,6 +103,22 @@ type ChainStore interface {
 	SaveChain(chainID string, nextSeq uint64, head string) error
 }
 
+// ChainLocker is a ChainStore that can hold a chain while one receipt is
+// placed on it.
+//
+// Two replicas that each loaded a chain's position and issued the next
+// receipt have forked it: both receipts claim one sequence number, and
+// SaveChain keeps whichever wrote last. LockChain reads the position under
+// a lock that other replicas wait on, lets the caller sign exactly one
+// receipt at that position, and records the new one before releasing. The
+// lock is held for a signature, not for a request.
+type ChainLocker interface {
+	// LockChain calls place with the chain's current position — found is
+	// false for a chain never written — and stores the position it
+	// returns. An error from place leaves the stored position unchanged.
+	LockChain(chainID string, place func(nextSeq uint64, head string, found bool) (uint64, string, error)) error
+}
+
 // ChainPersistError reports that a receipt was issued but its chain
 // position could not be saved.
 //
@@ -956,7 +972,7 @@ func (e *Engine) issue(chainID string, signer receipt.Signer, r *receipt.Receipt
 		}
 		e.chains[chainID] = b
 		e.chainKeys[chainID] = signer.KeyID()
-		return e.issueOn(b, r)
+		return e.issueOn(b, signer, r)
 	}
 
 	// A chain belongs to one customer, so it is signed by one key for its
@@ -968,7 +984,7 @@ func (e *Engine) issue(chainID string, signer receipt.Signer, r *receipt.Receipt
 		return fmt.Errorf("govern: chain %q is signed by key %q; refusing to issue under %q",
 			chainID, existing, signer.KeyID())
 	}
-	return e.issueOn(b, r)
+	return e.issueOn(b, signer, r)
 }
 
 // openChain builds a chain the process has not seen yet, resuming from the
@@ -992,7 +1008,10 @@ func (e *Engine) openChain(chainID string, signer receipt.Signer) (*receipt.Chai
 }
 
 // issueOn signs r into the chain and records the new position.
-func (e *Engine) issueOn(b *receipt.ChainBuilder, r *receipt.Receipt) error {
+func (e *Engine) issueOn(b *receipt.ChainBuilder, signer receipt.Signer, r *receipt.Receipt) error {
+	if locker, ok := e.chainStore.(ChainLocker); ok {
+		return e.issueLocked(locker, b, signer, r)
+	}
 	if err := b.Issue(r); err != nil {
 		return err
 	}
@@ -1002,6 +1021,42 @@ func (e *Engine) issueOn(b *receipt.ChainBuilder, r *receipt.Receipt) error {
 	if err := e.chainStore.SaveChain(b.ChainID(), b.NextSeq(), b.Head()); err != nil {
 		return &ChainPersistError{ChainID: b.ChainID(), Err: err}
 	}
+	return nil
+}
+
+// issueLocked places r at the chain's stored position, whatever this
+// process last believed it was, so a replica never signs on a stale head.
+func (e *Engine) issueLocked(locker ChainLocker, b *receipt.ChainBuilder, signer receipt.Signer, r *receipt.Receipt) error {
+	chainID := b.ChainID()
+	var placed *receipt.ChainBuilder
+	err := locker.LockChain(chainID, func(nextSeq uint64, head string, found bool) (uint64, string, error) {
+		current, err := receipt.NewChainBuilder(chainID, signer)
+		if err != nil {
+			return 0, "", err
+		}
+		if found {
+			if current, err = receipt.ResumeChainBuilder(chainID, signer, nextSeq, head); err != nil {
+				return 0, "", err
+			}
+		}
+		if err := current.Issue(r); err != nil {
+			return 0, "", err
+		}
+		placed = current
+		return current.NextSeq(), current.Head(), nil
+	})
+	if err != nil {
+		if placed != nil {
+			// Signed, but the position may not have been stored. Withdrawn
+			// rather than returned: the next receipt could take the same
+			// sequence number, and a receipt that might be a fork is worse
+			// than one that was never issued.
+			r.Signature = nil
+			return fmt.Errorf("govern: recording chain %q position: %w", chainID, err)
+		}
+		return err
+	}
+	*b = *placed
 	return nil
 }
 

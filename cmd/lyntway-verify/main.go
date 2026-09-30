@@ -588,6 +588,59 @@ func checkPackLogo(data []byte) error {
 	return nil
 }
 
+// checkPackInstructions holds a pack's own verification instructions to the
+// digest its signed part names.
+//
+// how_to_verify and limits travel outside the signed object. how_to_verify
+// carries public_keys — the address this document tells its reader to fetch
+// our keys from — so a pack whose instructions could be edited without
+// breaking the signature can be pointed at a key file the editor controls:
+// re-sign the attested object with the matching key, and a recipient
+// following the document's own first step is told it verifies.
+//
+// Canonicalised from the bytes as read rather than through a struct, so a
+// field this build has never heard of is still hashed. Dropping one would
+// report an intact pack as edited, which is the failure that costs most.
+//
+// A pack with no signed digest is accepted with a warning rather than
+// refused. Packs issued before this binding existed are honest documents
+// and must not start reading as tampered with; a pack that carries the
+// digest and disagrees with it is a different matter.
+func checkPackInstructions(data []byte) error {
+	var pack struct {
+		Verify   json.RawMessage `json:"how_to_verify"`
+		Limits   json.RawMessage `json:"limits"`
+		Attested struct {
+			InstructionsSHA256 string `json:"instructions_sha256"`
+		} `json:"attested"`
+	}
+	if err := json.Unmarshal(data, &pack); err != nil {
+		return fmt.Errorf("reading the pack: %w", err)
+	}
+	signed := pack.Attested.InstructionsSHA256
+	if signed == "" {
+		fmt.Fprintln(os.Stderr,
+			"warning: this pack's signature does not cover its own verification instructions. "+
+				"It predates that binding. The address it gives for our public keys is therefore "+
+				"not attested — compare it against the one you already trust.")
+		return nil
+	}
+	canonical, err := receipt.Canonicalize(map[string]json.RawMessage{
+		"how_to_verify": pack.Verify,
+		"limits":        pack.Limits,
+	})
+	if err != nil {
+		return fmt.Errorf("reading the pack's instructions: %w", err)
+	}
+	sum := sha256.Sum256(canonical)
+	if got := hex.EncodeToString(sum[:]); got != signed {
+		return fmt.Errorf("this pack's verification instructions have been changed since it was "+
+			"signed: they hash to %s, and the signed attested.instructions_sha256 names %s. Do not "+
+			"follow them — in particular, do not fetch keys from the address they give", got, signed)
+	}
+	return nil
+}
+
 func verifyOne(data []byte, keys receipt.KeyResolver, opts receipt.VerifyOptions, jsonOut bool, incl *inclusionOutput, filePath string) int {
 	// A pack is checked in two steps, and both must pass: the signature on
 	// its attestation, and that the attested object in this file is the one
@@ -609,6 +662,9 @@ func verifyOne(data []byte, keys receipt.KeyResolver, opts receipt.VerifyOptions
 					"and the attestation names %s", sum, att.Content.InputDigest), 1)
 		}
 		if err := checkPackLogo(data); err != nil {
+			return fail(jsonOut, err, 1)
+		}
+		if err := checkPackInstructions(data); err != nil {
 			return fail(jsonOut, err, 1)
 		}
 		if !jsonOut {
@@ -1077,10 +1133,30 @@ func reportAnchors(r *receipt.Receipt, results []anchor.AnchorResult, err error)
 	for _, res := range results {
 		fmt.Printf("  anchored       %s by %s\n",
 			res.GenTime.Format(time.RFC3339), string(res.Type))
+		// Who signed it. The result carried this and never printed it, so
+		// the line told an auditor to quote a serial to "the authority"
+		// without saying which authority that was.
+		if res.SignerSubject != "" {
+			fmt.Printf("                 signed by %s\n", res.SignerSubject)
+		}
+		if res.Authority != "" {
+			fmt.Printf("                 under policy %s\n", res.Authority)
+		}
 		if res.SerialNumber != "" {
 			// The serial is what an auditor quotes when asking the
 			// authority to confirm the token independently.
 			fmt.Printf("                 authority serial %s\n", res.SerialNumber)
+		}
+		// What was checked, said in the same breath as the claim.
+		//
+		// This line used to be absent and the word "anchored" stood alone,
+		// which read as corroboration by a third party when at the time
+		// nothing had checked that anybody had signed the token at all.
+		switch {
+		case res.SignatureVerified && !res.ChainVerified:
+			fmt.Printf("                 (token signature valid; the signing certificate was not checked against any trust store)\n")
+		case !res.SignatureVerified:
+			fmt.Printf("                 (the token's signature was NOT checked)\n")
 		}
 	}
 }

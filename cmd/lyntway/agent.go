@@ -480,7 +480,10 @@ func (a *agent) collect(ctx context.Context, window time.Duration) collected {
 
 func (a *agent) finish(agg *destAggregator, procs []procInfo, procErr error, window time.Duration) collected {
 	c := collected{
-		apps:     inventory(a.host, procs),
+		// The endpoints are attached to the inventory rather than kept
+		// beside it, so an endpoint can only exist on an application this
+		// machine actually has.
+		apps:     withEndpoints(inventory(a.host, procs), configuredEndpoints(a.host)),
 		procErr:  procErr,
 		mcp:      discoverMCP(mcpSources(a.host, projectRoots(a.host))),
 		local:    localModels(),
@@ -737,6 +740,12 @@ func (a *agent) printSummary(r deviceReport, c collected) {
 			v = "version unknown"
 		}
 		fmt.Fprintf(stdout, "  %-40s %-12s %-10s %s\n", app.Name, app.Kind, state, v)
+		// Printed under the app and worded as configuration, because the
+		// person reading this is the person whose machine it is, and
+		// "sends to" would be a claim about them that is not made.
+		for _, e := range app.Endpoints {
+			fmt.Fprintf(stdout, "      configured to send to %s (%s in %s)\n", e.Host, e.Setting, endpointWhere(e.Source))
+		}
 	}
 
 	fmt.Fprintf(stdout, "\nMCP servers (%d)\n", len(r.MCPServers))

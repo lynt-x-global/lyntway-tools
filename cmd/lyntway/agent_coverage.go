@@ -35,6 +35,12 @@ func buildCoverage(in coverageInputs) []coverageEntry {
 		apps.Detail = fmt.Sprintf("%d AI app%s found from app folders, editor extensions and process names; names and versions only, nothing they send is seen.",
 			len(in.Apps), pluralS(len(in.Apps)))
 	}
+	// Said here rather than left to the console to infer from the rows:
+	// an endpoint is where a file says the app would send, and the
+	// surface that carries it must not read as one that saw it go.
+	if n := appsWithEndpoint(in.Apps); n > 0 {
+		apps.Detail += fmt.Sprintf(" %d name a configured endpoint, from a settings file or a shell profile: configuration, not traffic.", n)
+	}
 	out = append(out, apps)
 
 	// MCP: configuration, not traffic.
@@ -190,6 +196,29 @@ func sanitiseReport(r *deviceReport) {
 	for i := range r.AIApps {
 		r.AIApps[i].Name = field(r.AIApps[i].Name, 100)
 		r.AIApps[i].Version = field(r.AIApps[i].Version, 64)
+		// An endpoint that is not exactly a host, a known source and a
+		// name-shaped setting is dropped, not repaired. The endpoint is
+		// the field most likely to arrive carrying a whole URL, and a URL
+		// carries a query string; a rule that trimmed one into a host
+		// would be a rule that sometimes kept the part it meant to lose.
+		kept := r.AIApps[i].Endpoints[:0]
+		for _, e := range r.AIApps[i].Endpoints {
+			e.Host = strings.ToLower(strings.TrimSpace(e.Host))
+			if len(e.Host) > 253 || !deviceHostPattern.MatchString(e.Host) {
+				continue
+			}
+			if e.Source != endpointFromShell && e.Source != endpointFromConfig {
+				continue
+			}
+			if e.Setting != "" && !deviceSettingPattern.MatchString(e.Setting) {
+				continue
+			}
+			if len(kept) >= maxEndpointsPerApp {
+				break
+			}
+			kept = append(kept, e)
+		}
+		r.AIApps[i].Endpoints = kept
 	}
 	for i := range r.MCPServers {
 		m := &r.MCPServers[i]

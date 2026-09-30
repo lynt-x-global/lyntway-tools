@@ -48,6 +48,26 @@ type AnchorResult struct {
 	// SerialNumber identifies the token at the authority, which is what an
 	// auditor quotes when asking them to confirm it.
 	SerialNumber string
+
+	// SignatureVerified is true when the certificate inside the token was
+	// shown to have signed the statement the token carries.
+	//
+	// Always true on a result Verify returns, because Verify now refuses
+	// anything else. It is a field rather than an assumption so that a
+	// report can say which check was made rather than leaving a reader to
+	// infer it — the inference is what went wrong before.
+	SignatureVerified bool
+
+	// ChainVerified is whether the signing certificate was checked against
+	// a trust store. Always false: that is a policy decision this package
+	// keeps out of, and saying so is the point.
+	ChainVerified bool
+
+	// SignerSubject and SignerNotAfter name the certificate that signed,
+	// so an auditor can see whose corroboration is being claimed and
+	// whether it was within its own validity.
+	SignerSubject  string
+	SignerNotAfter time.Time
 }
 
 // Skew reports how far the receipt's claimed anchor time is from the time
@@ -121,7 +141,18 @@ func Verify(a *receipt.Anchor, digest []byte) (*AnchorResult, error) {
 		return nil, fmt.Errorf("anchor: token is not valid base64: %w", err)
 	}
 
-	info, err := parseTSTInfo(token)
+	info, sd, err := parseTSTInfo(token)
+	if err != nil {
+		return nil, err
+	}
+
+	// Who signed this, before anything it says is believed.
+	//
+	// Nothing used to. A token with an empty signer set was accepted, the
+	// verifier printed "anchored", and the warning that issuance time
+	// rests on the issuer's clock alone went away — so a forgery read as
+	// stronger evidence than the honest receipt it was made from.
+	signer, err := verifySignedData(sd, sd.EncapContentInfo.EContent)
 	if err != nil {
 		return nil, err
 	}
@@ -138,8 +169,14 @@ func Verify(a *receipt.Anchor, digest []byte) (*AnchorResult, error) {
 	}
 
 	out := &AnchorResult{
-		Type:    a.Type,
-		GenTime: info.GenTime.UTC(),
+		Type:              a.Type,
+		GenTime:           info.GenTime.UTC(),
+		SignatureVerified: true,
+		ChainVerified:     signer.ChainChecked,
+	}
+	if signer.Certificate != nil {
+		out.SignerSubject = signer.Certificate.Subject.String()
+		out.SignerNotAfter = signer.Certificate.NotAfter.UTC()
 	}
 	if info.SerialNumber != nil {
 		out.SerialNumber = info.SerialNumber.String()
@@ -197,7 +234,48 @@ func VerifyAll(r *receipt.Receipt) ([]AnchorResult, error) {
 				i+1, len(r.Anchors), res.ClaimedAt.Format(time.RFC3339),
 				res.GenTime.Format(time.RFC3339), skew.Round(time.Second))
 		}
+		if err := anchorAfterIssuance(r, res); err != nil {
+			return out, fmt.Errorf("anchor %d of %d: %w", i+1, len(r.Anchors), err)
+		}
 		out = append(out, *res)
 	}
 	return out, nil
+}
+
+// backdateGrace is how far before its own issued_at an anchor may sit.
+//
+// An anchor commits to the finished, signed receipt, so the authority
+// cannot honestly have seen it earlier. A little slack absorbs clocks that
+// disagree between the issuer and the authority; anything more is not
+// clock drift, it is a token describing something that had not happened.
+const backdateGrace = 5 * time.Minute
+
+// anchorAfterIssuance refuses an anchor dated before the receipt it anchors.
+//
+// The cheapest possible check against a forged or borrowed token, needing
+// no trust store and no network, and it was absent. Anchors dated 2019 and
+// 2030 were both accepted on a receipt issued today, without a warning.
+//
+// MaxAnchorSkew does not cover this: it compares genTime against the
+// receipt's anchored_at, and anchored_at is set from genTime when the
+// anchor is made, so for a token minted by an attacker the two agree by
+// construction and the comparison is always zero. This compares against
+// issued_at, which is inside the signature and cannot be moved without
+// breaking it.
+func anchorAfterIssuance(r *receipt.Receipt, res *AnchorResult) error {
+	if r.IssuedAt == "" || res.GenTime.IsZero() {
+		return nil
+	}
+	issued, err := time.Parse(time.RFC3339, r.IssuedAt)
+	if err != nil {
+		// Not this function's error to report; receipt verification
+		// already refuses a receipt whose issued_at will not parse.
+		return nil
+	}
+	if early := issued.Sub(res.GenTime); early > backdateGrace {
+		return fmt.Errorf("the token is dated %s but the receipt it anchors was issued %s, %s later: "+
+			"an authority cannot have timestamped a receipt that did not yet exist",
+			res.GenTime.Format(time.RFC3339), issued.UTC().Format(time.RFC3339), early.Round(time.Second))
+	}
+	return nil
 }

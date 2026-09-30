@@ -22,15 +22,18 @@ import "strings"
 
 // classLabels names each class the way somebody would say it aloud.
 var classLabels = map[Class]string{
-	ClassEmail:      "Email address",
-	ClassPhone:      "Phone number",
-	ClassIPv4:       "IP address",
-	ClassCreditCard: "Payment card number",
-	ClassIBAN:       "Bank account number (IBAN)",
-	ClassUSSSN:      "US Social Security number",
-	ClassINPAN:      "Indian PAN",
-	ClassINAadhaar:  "Aadhaar number",
-	ClassUKNINO:     "UK National Insurance number",
+	ClassEmail:       "Email address",
+	ClassPhone:       "Phone number",
+	ClassIPv4:        "IP address",
+	ClassCreditCard:  "Payment card number",
+	ClassIBAN:        "Bank account number (IBAN)",
+	ClassUSSSN:       "US Social Security number",
+	ClassINPAN:       "Indian PAN",
+	ClassINAadhaar:   "Aadhaar number",
+	ClassINUPI:       "UPI ID",
+	ClassUSRouting:   "US bank routing number",
+	ClassBankAccount: "Bank account number",
+	ClassUKNINO:      "UK National Insurance number",
 
 	ClassAWSAccessKey: "AWS access key",
 	ClassGitHubToken:  "GitHub token",

@@ -273,8 +273,16 @@ func parseResponse(der, digest []byte, nonce *big.Int) ([]byte, time.Time, error
 	}
 	token := resp.TimeStampToken.FullBytes
 
-	info, err := parseTSTInfo(token)
+	info, sd, err := parseTSTInfo(token)
 	if err != nil {
+		return nil, time.Time{}, err
+	}
+
+	// Check the authority actually signed this before storing it. A token
+	// nobody signed is worthless later and there is no reason to keep one
+	// — better to fail the anchoring now, loudly, than to write a receipt
+	// carrying an anchor that will not survive being checked.
+	if _, err := verifySignedData(sd, sd.EncapContentInfo.EContent); err != nil {
 		return nil, time.Time{}, err
 	}
 
@@ -290,40 +298,57 @@ func parseResponse(der, digest []byte, nonce *big.Int) ([]byte, time.Time, error
 	}
 	// A mismatched nonce means the response is not an answer to this
 	// request — most likely a replayed token.
-	if nonce != nil && info.Nonce != nil && info.Nonce.Cmp(nonce) != 0 {
-		return nil, time.Time{}, errors.New("anchor: nonce mismatch; the response does not correspond to this request")
+	//
+	// An absent one means the same thing. RFC 3161 section 2.4.2 requires
+	// the nonce back when it was sent, so a response without it is not an
+	// answer to this request either. The previous condition also required
+	// info.Nonce to be non-nil, which left an authority that simply omits
+	// the field accepted and the replay protection inert — the second time
+	// this particular check has been inert, by a different route.
+	if nonce != nil {
+		if info.Nonce == nil {
+			return nil, time.Time{}, errors.New("anchor: the authority returned no nonce, so the response cannot be tied to this request")
+		}
+		if info.Nonce.Cmp(nonce) != 0 {
+			return nil, time.Time{}, errors.New("anchor: nonce mismatch; the response does not correspond to this request")
+		}
 	}
 
 	return token, info.GenTime, nil
 }
 
 // parseTSTInfo unwraps CMS SignedData to reach the timestamp statement.
-func parseTSTInfo(token []byte) (*tstInfo, error) {
+//
+// It reads the statement and says nothing about who signed it. Every
+// caller must put the SignedData it returns through verifySignedData
+// before believing a word of the result — reading a time out of an
+// unsigned token is exactly how a forged anchor came to read as evidence.
+func parseTSTInfo(token []byte) (*tstInfo, *signedData, error) {
 	var ci contentInfo
 	if _, err := asn1.Unmarshal(token, &ci); err != nil {
-		return nil, fmt.Errorf("anchor: decoding token ContentInfo: %w", err)
+		return nil, nil, fmt.Errorf("anchor: decoding token ContentInfo: %w", err)
 	}
 	if !ci.ContentType.Equal(oidSignedData) {
-		return nil, fmt.Errorf("anchor: token content type is %v, expected CMS SignedData", ci.ContentType)
+		return nil, nil, fmt.Errorf("anchor: token content type is %v, expected CMS SignedData", ci.ContentType)
 	}
 
 	var sd signedData
 	if _, err := asn1.Unmarshal(ci.Content.Bytes, &sd); err != nil {
-		return nil, fmt.Errorf("anchor: decoding SignedData: %w", err)
+		return nil, nil, fmt.Errorf("anchor: decoding SignedData: %w", err)
 	}
 	if !sd.EncapContentInfo.EContentType.Equal(oidCTTSTInfo) {
-		return nil, fmt.Errorf("anchor: encapsulated content type is %v, expected TSTInfo",
+		return nil, nil, fmt.Errorf("anchor: encapsulated content type is %v, expected TSTInfo",
 			sd.EncapContentInfo.EContentType)
 	}
 	if len(sd.EncapContentInfo.EContent) == 0 {
-		return nil, errNoTSTInfo
+		return nil, nil, errNoTSTInfo
 	}
 
 	var info tstInfo
 	if _, err := asn1.Unmarshal(sd.EncapContentInfo.EContent, &info); err != nil {
-		return nil, fmt.Errorf("anchor: decoding TSTInfo: %w", err)
+		return nil, nil, fmt.Errorf("anchor: decoding TSTInfo: %w", err)
 	}
-	return &info, nil
+	return &info, &sd, nil
 }
 
 // hashFor reports the OID for a supported hash. Present so adding SHA-384

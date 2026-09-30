@@ -199,11 +199,17 @@ func consoleUser(goos string) (name, home string) {
 }
 
 // aiApp is one piece of AI software, as reported.
+//
+// Endpoints is where the machine's configuration says this application
+// sends, and is filled in by agent_endpoints.go. Configuration, never
+// traffic: there is no field here for what the application did, because
+// this agent does not watch it do anything.
 type aiApp struct {
-	Name    string `json:"name"`
-	Kind    string `json:"kind"`
-	Running bool   `json:"running"`
-	Version string `json:"version"`
+	Name      string          `json:"name"`
+	Kind      string          `json:"kind"`
+	Running   bool            `json:"running"`
+	Version   string          `json:"version"`
+	Endpoints []aiAppEndpoint `json:"endpoints,omitempty"`
 }
 
 // aiAppDef is how to recognise one application on each OS.

@@ -19,6 +19,14 @@ Collected, every report
     tools are installed, whether each is running, and its version when the
     app's own folder says. Read from application folders, extension folders
     and the list of running process names.
+  - Where those apps are configured to send: the host, the name of the
+    variable or settings key it came from, and whether that was a shell
+    profile or the app's own settings file. Four variable names are looked
+    for in your login profiles — OPENAI_BASE_URL, OPENAI_API_BASE,
+    ANTHROPIC_BASE_URL and OLLAMA_HOST — and nothing else in those files
+    is kept. Only the host survives: the path and the query string of a
+    base URL are dropped before anything is stored, because that is where
+    a key rides. It says where an app would go, never that it went.
   - MCP servers: for each server your AI clients are configured to use, the
     client, the server's name, whether it runs locally or over HTTP, the
     host it reaches, and whether a credential is written into the config
@@ -41,6 +49,9 @@ Never collected
   - The value of any key, token or password, or any part or digest of one.
   - Commands, arguments, environment variables or headers from MCP
     configurations; only the facts above are kept of them.
+  - The contents of your shell profiles. They are read for the four
+    variable names listed above and for nothing else, and only the host
+    each names is kept.
   - Browser history, page titles, window titles, screenshots, keystrokes,
     clipboard or file contents.
   - Network packets. No traffic is captured, decrypted or redirected.

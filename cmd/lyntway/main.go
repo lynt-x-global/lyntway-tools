@@ -101,6 +101,9 @@ func main() {
 		err = scanCommand(args[1:])
 	case "proxy":
 		err = proxyCmd(args[1:])
+	case "device":
+		cliCommand = "device"
+		err = deviceCommand(args[1:])
 	case "agent":
 		err = agentCommand(args[1:])
 	case "mcp-server":
@@ -140,6 +143,8 @@ Usage:
   lyntway keys sign      give this key a signing keypair
   lyntway hook install   have Claude Code or Cursor refuse a prompt that carries a key
   lyntway scan           find provider keys in files, or in a diff before it is pushed
+  lyntway device         install the on-device governance agent
+  lyntway device doctor  check the agent's health
   lyntway proxy          govern Ollama or LM Studio on this machine
   lyntway agent          report which AI tools are on this machine (--explain says what)
   lyntway mcp-server     MCP tool server for AI agents (runs over stdio)

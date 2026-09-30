@@ -11,7 +11,7 @@ import (
 // Bump it on ANY change to rule content. The digest will change regardless
 // and would expose an unbumped edit, but a stale version string makes a
 // receipt harder to interpret for anyone reading it later.
-const RulesetVersion = "core-2026.09.19"
+const RulesetVersion = "core-2026.09.22c"
 
 // Classes detected by the default ruleset.
 const (
@@ -23,7 +23,16 @@ const (
 	ClassUSSSN      Class = "pii.us_ssn"
 	ClassINPAN      Class = "pii.in_pan"
 	ClassINAadhaar  Class = "pii.in_aadhaar"
-	ClassUKNINO     Class = "pii.uk_nino"
+	ClassINUPI      Class = "pii.in_upi"
+
+	// Wire instructions: the routing number that says which bank, and the
+	// account number that says whose money. Real-estate closings lose more
+	// to fraudulent wire instructions than to anything else, and pasting a
+	// closing's instructions into an assistant to "check the details" is
+	// exactly how they leave.
+	ClassUSRouting   Class = "pci.us_routing_number"
+	ClassBankAccount Class = "pii.bank_account_number"
+	ClassUKNINO      Class = "pii.uk_nino"
 
 	ClassAWSAccessKey Class = "secret.aws_access_key"
 	ClassGitHubToken  Class = "secret.github_token"
@@ -171,8 +180,19 @@ func defaultRules() []Rule {
 			// the match, where it failed the checksum and turned a
 			// detection into a silent miss — the worse of the two
 			// failures, and one a test now holds shut.
+			// Case-insensitive since 22 September 2026. The pattern required
+			// capitals while validIBAN already uppercased before checking,
+			// so "gb82 west 1234 5698 7654 32" — an IBAN as somebody types
+			// it into a chat message or a ticket, which is exactly the
+			// content this service reads — never reached the checksum. The
+			// third form of the same defect in this one rule.
+			//
+			// Safe to loosen because the mod-97 check is doing the real
+			// work: two letters, two digits and a run of alphanumerics is
+			// a weak pattern, and essentially nothing that is not an IBAN
+			// survives ISO 13616.
 			Pattern: regexp.MustCompile(
-				`\b([A-Z]{2}\d{2}(?:[A-Z0-9]{11,30}|(?:[ -][A-Z0-9]{4})*(?:[ -][A-Z0-9]{1,4})?))\b`),
+				`(?i)\b([A-Z]{2}\d{2}(?:[A-Z0-9]{11,30}|(?:[ -][A-Z0-9]{4})*(?:[ -][A-Z0-9]{1,4})?))\b`),
 			Confidence: ConfidenceExact,
 			Validate:   validIBAN,
 			Priority:   80,
@@ -186,16 +206,37 @@ func defaultRules() []Rule {
 			// Go's regexp is RE2, which has no lookahead — and a validator
 			// is easier to read and test than a wall of negative
 			// assertions would have been anyway.
-			Pattern:    regexp.MustCompile(`\b(\d{3}-\d{2}-\d{4})\b`),
+			//
+			// The separator was a hyphen and only a hyphen until
+			// 22 September 2026. "078 05 1120" and "078.05.1120" both went
+			// through untouched, which an evaluator found by pasting the
+			// four forms a US system might emit and watching three of them
+			// reach the model. The same shape as the IBAN that matched
+			// unspaced and was missed in the spaced form printed on every
+			// invoice, and as the phone number that needed a leading "+".
+			//
+			// Nine bare digits are still not matched here, deliberately:
+			// that is any nine-digit identifier, and it belongs to the
+			// model tier where context is available. A number written with
+			// separators is a different proposition.
+			//
+			// No Prefilter: the separators are "-", " " and ".", and a set
+			// containing a space filters nothing.
+			Pattern:    regexp.MustCompile(`\b(\d{3}[ .-]\d{2}[ .-]\d{4})\b`),
 			Confidence: ConfidenceHigh,
 			Validate:   validUSSSN,
-			Prefilter:  []string{"-"},
 			Priority:   70,
 		},
 		{
-			ID:         "india-pan",
-			Class:      ClassINPAN,
-			Pattern:    regexp.MustCompile(`\b([A-Z]{5}\d{4}[A-Z])\b`),
+			ID:    "india-pan",
+			Class: ClassINPAN,
+			// Case-insensitive since 22 September 2026. A PAN is printed in
+			// capitals and typed however the person typing it likes, and a
+			// line pasted from a chat — "my pan is abcpe1234f" — reached the
+			// model untouched. Five letters, four digits and a letter
+			// standing as one word is rare enough in either case that the
+			// pattern carries the rule on its own.
+			Pattern:    regexp.MustCompile(`(?i)\b([A-Z]{5}\d{4}[A-Z])\b`),
 			Confidence: ConfidenceModerate,
 			Priority:   70,
 		},
@@ -241,7 +282,13 @@ func defaultRules() []Rule {
 			// sixteen-digit number passed Verhoeff one time in ten, and a
 			// card number that failed Luhn was then reported as an Aadhaar
 			// number. The detection benchmark found both.
-			Pattern:    regexp.MustCompile(`(?:^|[^\w+\-])(?P<target>[2-9]\d{3}\s?\d{4}\s?\d{4})(?P<reject>[ -]\d+)?\b`),
+			//
+			// Hyphenated groups are matched too: "2345-6789-0124" is how the
+			// number comes out of plenty of Indian forms and spreadsheets,
+			// and it went through untouched while the spaced form was
+			// caught. The guards above still hold — a hyphen before the
+			// number, or another group after it, rejects the match.
+			Pattern:    regexp.MustCompile(`(?:^|[^\w+\-])(?P<target>[2-9]\d{3}[\s-]?\d{4}[\s-]?\d{4})(?P<reject>[ -]\d+)?\b`),
 			Confidence: ConfidenceExact,
 			Validate:   validVerhoeff,
 			Priority:   75,
@@ -458,6 +505,132 @@ func defaultRules() []Rule {
 			Priority:   55,
 		},
 		{
+			ID: "phone-nanp",
+			// A North American number written the way people write one.
+			//
+			// The rule above requires a leading "+", and its reasoning —
+			// that bare runs of ten digits produce false positives against
+			// ordinary numeric text — is correct and still stands. But it
+			// was applied as a rule about national formats when it is
+			// really a rule about UNSEPARATED digits. "512-555-0148" and
+			// "(512) 555-0148" are not ten loose digits; they are a
+			// punctuation pattern almost nothing else wears, and they are
+			// the two forms every US clinical, billing and CRM system
+			// emits.
+			//
+			// Found on 22 September 2026 by a healthcare evaluator who fed
+			// the detector a realistic patient line and watched the phone
+			// number reach the model while the receipt read mode "full".
+			// Exactly the shape of the IBAN defect: matched unspaced, and
+			// missed in the spaced form printed on every invoice. The rule
+			// was right about the value and wrong about how it is written.
+			//
+			// A separator or bracketed area code is required throughout, so
+			// "5125550148" still does not match here. That was a real
+			// judgement, not an oversight, and it is left alone.
+			//
+			// Priority 54 puts it below phone-international deliberately:
+			// "+1 512 555 0148" matches both, the spans overlap, and the
+			// international rule must claim it so one number is one
+			// finding.
+			//
+			// No Prefilter: its separators are "-", ".", " " and "(", and a
+			// set containing a space filters nothing. An always-scanning
+			// RE2 pattern is the honest cost of covering this class.
+			Class: ClassPhone,
+			Pattern: regexp.MustCompile(
+				`(?:^|[^\d+])(?P<target>(?:1[ .\-])?(?:\([2-9]\d{2}\)[ ]?|[2-9]\d{2}[ .\-])[2-9]\d{2}[ .\-]\d{4})`),
+			Confidence: ConfidenceHigh,
+			Validate:   validNANPPhone,
+			Priority:   54,
+		},
+		{
+			ID: "us-routing-number",
+			// An ABA routing number, only where the text says it is one.
+			//
+			// Nine digits with the ABA 3-7-1 checksum is not enough on its
+			// own: one nine-digit run in ten passes it, and nine digits are
+			// also an SSN written without separators, a ZIP+4, an order
+			// number. The word in front of it — routing, ABA, RTN, transit —
+			// is what wire instructions always carry, so the rule requires
+			// it and the checksum both. The word is context and stays out of
+			// the span, so substitution leaves it readable.
+			//
+			// The first two digits must be a Federal Reserve district or
+			// thrift range (00-12, 21-32), a government range (61-72) or
+			// 80 for traveller's cheques; the checksum does the rest.
+			Class: ClassUSRouting,
+			Pattern: regexp.MustCompile(`(?i)\b(?:routing|aba|rtn|transit)(?:\s*/\s*aba)?` +
+				`(?:\s+(?:no\.?|number|num|#))?\s*[:#.-]?\s*(?P<target>\d{9})\b`),
+			Confidence: ConfidenceExact,
+			Validate:   validABARouting,
+			Priority:   75,
+		},
+		{
+			ID: "bank-account-number",
+			// A bank account number, only where the text names it as one.
+			//
+			// There is no checksum and no shared format — six to seventeen
+			// digits covers US and Indian banks — so a bare run of digits is
+			// never matched. "Account", "acct" or "a/c" immediately before
+			// it is what makes it one, and is what every set of wire
+			// instructions and every Indian passbook line carries.
+			//
+			// Family pii rather than pci: under GLBA an account number is
+			// nonpublic personal information, and the default policy
+			// tokenises pii at this confidence. Priority 50, below the card
+			// rule, so a Luhn-valid card number written after "account" is
+			// still reported as the card it is.
+			Class: ClassBankAccount,
+			Pattern: regexp.MustCompile(`(?i)\b(?:account|acct|acc|a/c)(?:\s*(?:no\.?|number|num|#))?` +
+				`\s*[:#.-]?\s*(?P<target>\d{6,17})\b`),
+			Confidence: ConfidenceHigh,
+			Priority:   50,
+		},
+		{
+			ID: "phone-india",
+			// An Indian mobile written the way Indians write one: five
+			// digits, a space or hyphen, five digits, beginning 6 to 9,
+			// sometimes with a trunk 0 in front. "98840 12345" went through
+			// untouched while "+91 98840 12345" was caught by the rule
+			// above, and the first is how the number appears in almost every
+			// form, invoice and chat message in India.
+			//
+			// The same judgement as phone-nanp: a separator is required, so
+			// "9884012345" as ten bare digits is still not matched here — it
+			// is also an order number, and belongs to the model tier. And the
+			// same priority, below phone-international, so "+91 98840 12345"
+			// stays one finding.
+			Class:      ClassPhone,
+			Pattern:    regexp.MustCompile(`(?:^|[^\d+])(?P<target>0?[6-9]\d{4}[ -]\d{5})(?P<reject>[ -]?\d+)?\b`),
+			Confidence: ConfidenceHigh,
+			Priority:   54,
+		},
+		{
+			ID: "india-upi",
+			// A UPI ID: name@handle, where the handle is one of the payment
+			// apps' own. It is the address money is sent to in India, and it
+			// was missed entirely — it has no dot after the "@", so the
+			// email rule never saw it.
+			//
+			// Only known handles, deliberately. "anything@anything" is a
+			// social handle, a git remote, a mention. The list is the handles
+			// the large PSP apps issue; a UPI ID on a smaller bank's handle
+			// is missed, which is the trade against flagging every "@word"
+			// in a chat. Priority 55, below email, so "x@ybl.com" — an email
+			// address at a domain that happens to share a handle's name —
+			// stays an email.
+			Class: ClassINUPI,
+			Pattern: regexp.MustCompile(`(?i)(?:^|[^\w.@-])(?P<target>[a-z0-9][a-z0-9._-]{1,63}@` +
+				`(?:okhdfcbank|okicici|oksbi|okaxis|ybl|ibl|axl|paytm|ptyes|ptaxis|pthdfc|ptsbi|apl|yapl|` +
+				`upi|axisbank|axisb|icici|hdfcbank|sbi|kotak|pnb|boi|barodampay|idfcbank|indus|rbl|yesbank|` +
+				`airtel|jio|fbl|ikwik|freecharge|waaxis|wahdfcbank|wasbi|abfspay|jupiteraxis|naviaxis|` +
+				`superyes|timecosmos|slc|tapicici|pingpay))(?:$|[^\w.@-]|\.(?:$|\s))`),
+			Confidence: ConfidenceHigh,
+			Prefilter:  []string{"@"},
+			Priority:   55,
+		},
+		{
 			ID:    "ipv4",
 			Class: ClassIPv4,
 			// Reported at low confidence: an IP address is only personal
@@ -477,7 +650,19 @@ func defaultRules() []Rule {
 // 0000. Excluding them removes a large share of false positives from
 // ordinary formatted numbers without needing any context.
 func validUSSSN(s string) bool {
-	if len(s) != 11 || s[3] != '-' || s[6] != '-' {
+	if len(s) != 11 {
+		return false
+	}
+	// One separator, used consistently. RE2 has no backreference, so the
+	// pattern cannot require the two to match and this has to. "078-05
+	// 1120" is not a Social Security number anybody writes; it is two
+	// unrelated numbers that happen to be adjacent.
+	switch s[3] {
+	case '-', ' ', '.':
+	default:
+		return false
+	}
+	if s[6] != s[3] {
 		return false
 	}
 	area, group, serial := s[0:3], s[4:6], s[7:11]
@@ -594,8 +779,19 @@ func validCard(s string) bool {
 		return n >= 14 && n <= 19
 	case between(4, 2200, 2204): // Mir
 		return n >= 16 && n <= 19
-	case prefix("50"), between(2, 56, 69): // Maestro and other debit ranges
+	case prefix("5018"), prefix("5020"), prefix("5038"), between(2, 56, 69): // Maestro and other debit ranges
+		// Not every number beginning "50". That was the rule until
+		// 22 September 2026, and HDFC Bank's savings accounts are fourteen
+		// digits beginning 50100 — one in ten passes Luhn, and each of those
+		// was reported as a payment card. A receipt saying a card crossed
+		// the wire when an account number did is a false claim, and a card
+		// finding is substituted on its way out. The real card ranges in
+		// the fifties are Maestro's 5018, 5020 and 5038, and RuPay's 508.
 		return n >= 12 && n <= 19
+	case prefix("508"), prefix("81"), prefix("82"): // RuPay
+		// India's domestic network. 81 and 82 were missed entirely before:
+		// they matched no case and fell through to "no network".
+		return n == 16
 	case prefix("1"): // UATP
 		return n == 15
 	case prefix("9999"):
@@ -606,6 +802,30 @@ func validCard(s string) bool {
 		return n >= 13 && n <= 19
 	}
 	return false
+}
+
+// validABARouting reports whether s is a structurally valid ABA routing
+// number: nine digits, a prefix the Federal Reserve assigns, and the 3-7-1
+// checksum.
+func validABARouting(s string) bool {
+	if len(s) != 9 {
+		return false
+	}
+	d := make([]int, 9)
+	for i := 0; i < 9; i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+		d[i] = int(s[i] - '0')
+	}
+	prefix := d[0]*10 + d[1]
+	switch {
+	case prefix <= 12, prefix >= 21 && prefix <= 32, prefix >= 61 && prefix <= 72, prefix == 80:
+	default:
+		return false
+	}
+	sum := 3*(d[0]+d[3]+d[6]) + 7*(d[1]+d[4]+d[7]) + (d[2] + d[5] + d[8])
+	return sum%10 == 0
 }
 
 // validIBAN reports whether s passes the ISO 13616 mod-97 check.
@@ -705,6 +925,37 @@ func validVerhoeff(s string) bool {
 // is format-preserving, so the released text still reads as a phone number
 // and nothing is deleted, and that is a far smaller cost than the alternative
 // this replaces, which missed every separated number written anywhere.
+// validNANPPhone rejects the North American codes that cannot begin a real
+// subscriber number.
+//
+// N11 — 211, 311, 411, 611, 911 — is reserved for services and is never an
+// area code or an exchange. Without this check a date range, a version
+// triple or a document reference written with the right punctuation reads
+// as somebody's phone number, and a false finding on a receipt is as
+// damaging as a missed one: it is a claim that something was in the traffic
+// that was not.
+func validNANPPhone(s string) bool {
+	digits := make([]byte, 0, 11)
+	for i := 0; i < len(s); i++ {
+		if s[i] >= '0' && s[i] <= '9' {
+			digits = append(digits, s[i])
+		}
+	}
+	// The pattern allows an optional leading country code of 1.
+	if len(digits) == 11 && digits[0] == '1' {
+		digits = digits[1:]
+	}
+	if len(digits) != 10 {
+		return false
+	}
+	for _, code := range [][]byte{digits[0:3], digits[3:6]} {
+		if code[1] == '1' && code[2] == '1' {
+			return false
+		}
+	}
+	return true
+}
+
 func validInternationalPhone(s string) bool {
 	digits, groups, spacers := 0, 1, 0
 	for _, r := range s {

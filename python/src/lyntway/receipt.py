@@ -49,7 +49,11 @@ class VerificationResult:
     #: The signature verified and the schema is sound.
     valid: bool
 
-    #: Governance ran at full strength with a healthy detector.
+    #: No detector that ran reported a failure.
+    #:
+    #: Mode ``full`` means every detector the deployment configured ran —
+    #: not that it configured every detector this service can run. A
+    #: receipt cannot establish the latter, so no interface may claim it.
     #:
     #: Any interface showing a "verified" badge must consult this rather than
     #: :attr:`valid`. A receipt can be cryptographically perfect and still
@@ -101,7 +105,13 @@ def signing_input(receipt: Mapping[str, Any]) -> bytes:
 
 
 def is_full_strength(receipt: Mapping[str, Any]) -> bool:
-    """Report whether a receipt attests complete governance."""
+    """Report whether any detector that ran failed.
+
+    The name is kept for compatibility and overstates what it checks. A
+    deployment with no model tier returns ``True`` here all day: the rules
+    ran, nothing failed, and nothing in the receipt says a model tier was
+    ever expected.
+    """
     governance = receipt.get("governance") or {}
     detector = governance.get("detector") or {}
     return governance.get("mode") == "full" and detector.get("health") == "healthy"

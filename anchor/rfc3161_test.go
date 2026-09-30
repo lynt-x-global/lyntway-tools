@@ -59,7 +59,7 @@ func wrapInResponse(t *testing.T, token []byte, status int) []byte {
 func TestParseTSTInfoFromRealToken(t *testing.T) {
 	token, digest := loadFixture(t)
 
-	info, err := parseTSTInfo(token)
+	info, _, err := parseTSTInfo(token)
 	if err != nil {
 		t.Fatalf("parsing TSTInfo: %v", err)
 	}
@@ -470,7 +470,7 @@ func TestLiveTimestampAuthority(t *testing.T) {
 			if err != nil {
 				t.Fatalf("decoding token: %v", err)
 			}
-			info, err := parseTSTInfo(token)
+			info, _, err := parseTSTInfo(token)
 			if err != nil {
 				t.Fatalf("parsing returned token: %v", err)
 			}

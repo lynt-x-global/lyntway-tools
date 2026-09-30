@@ -42,9 +42,54 @@ func deviceCommand(args []string) error {
 			return deviceStart()
 		case "status":
 			return deviceStatus()
+		case "help", "-h", "--help":
+			deviceUsage()
+			return nil
+		}
+		// Anything that looks like a flag but is not one we know is a typo, and
+		// installing an agent is not a reasonable response to a typo. Every
+		// unrecognised argument used to fall through to deviceInstall, so
+		// `lyntway device --help` installed the agent and configured it.
+		for _, a := range args {
+			if strings.HasPrefix(a, "-") && !knownInstallFlag(a) {
+				deviceUsage()
+				return fmt.Errorf("device: no option called %q", a)
+			}
 		}
 	}
 	return deviceInstall(args)
+}
+
+// knownInstallFlag reports whether deviceInstall's flag parser understands this
+// argument. It has to agree with the loop in deviceInstall; the test asserts
+// that every flag that loop reads is listed here.
+func knownInstallFlag(a string) bool {
+	switch {
+	case a == "--key" || strings.HasPrefix(a, "--key="):
+		return true
+	case a == "--url" || strings.HasPrefix(a, "--url="):
+		return true
+	case a == "--no-proxy":
+		return true
+	}
+	return false
+}
+
+func deviceUsage() {
+	fmt.Println(`lyntway device — install and manage the on-device governance agent
+
+Usage:
+  lyntway device [--key KEY] [--url URL] [--no-proxy]   install and enrol
+  lyntway device start | stop | restart | status        control a running agent
+  lyntway device doctor                                 check its health
+  lyntway device uninstall                              remove it
+
+Options:
+  --key KEY    an enrollment key from the console at /on-device. Single-use,
+               and it expires. Without one, and with nothing already signed in,
+               the install stops rather than leaving an agent that cannot report.
+  --url URL    a self-hosted Lyntway (default https://lyntway.com)
+  --no-proxy   install without changing this machine's system proxy`)
 }
 
 func deviceStart() error {
@@ -238,6 +283,22 @@ func deviceInstall(args []string) error {
 		apiKey = result.APIKey
 		fmt.Fprintln(stdout, "  Activated.")
 		fmt.Fprintln(stdout)
+	}
+
+	// No key, from the arguments, from an existing sign-in, or from the prompt.
+	//
+	// This used to carry on: the prompt reads from stdin, its error is
+	// discarded, and a closed stdin gives an empty line — so a non-interactive
+	// run skipped activation entirely, downloaded the agent, wrote a config with
+	// an empty auth_token and printed "Configured." An agent that cannot
+	// authenticate reports nothing, and an install that says it worked is worse
+	// than one that stops, because nobody goes looking.
+	if apiKey == "" {
+		fmt.Fprintln(stdout)
+		fmt.Fprintln(stdout, "  No enrollment key, and this machine is not signed in.")
+		fmt.Fprintln(stdout, "  Generate one from the console at /on-device, then:")
+		fmt.Fprintln(stdout, "    lyntway device --key KEY")
+		return fmt.Errorf("device: no enrollment key, so there is nothing to install against")
 	}
 
 	// Save credentials so the agent binary can find them.

@@ -360,6 +360,34 @@ func (s *Scope) derive(class detect.Class, value string, attempt int) string {
 		// exhaustion is exact: a re-hash could revisit the same few
 		// addresses forever while free ones sat unvisited.
 		return ipToken(s.mac(class, value, 0), attempt)
+	case detect.ClassUSSSN:
+		return ssnToken(s.mac(class, value, attempt))
+	case detect.ClassINAadhaar:
+		return aadhaarToken(s.mac(class, value, attempt))
+	case detect.ClassINPAN:
+		return panToken(s.mac(class, value, attempt), value)
+	case detect.ClassIBAN:
+		return ibanToken(s.mac(class, value, attempt))
+	case detect.ClassINHealthID:
+		return healthIDToken(s.mac(class, value, attempt))
+	case detect.ClassUKNINO:
+		return ninoToken(s.mac(class, value, attempt))
+	case detect.ClassINUPI:
+		return upiToken(s.mac(class, value, attempt))
+	case detect.ClassUSRouting:
+		return routingToken(s.mac(class, value, attempt))
+	case detect.ClassBankAccount:
+		return bankAccountToken(s.mac(class, value, attempt), len(digitsOnly(value)))
+	case detect.ClassINPIN:
+		return pinToken(s.mac(class, value, attempt))
+	case detect.ClassPassportNumber:
+		return passportToken(s.mac(class, value, attempt))
+	case detect.ClassDateOfBirth:
+		return dobToken(class, s.mac(class, value, attempt), value)
+	case detect.ClassPersonName:
+		return nameToken(s.mac(class, value, attempt), value)
+	case detect.ClassLocation:
+		return addressToken(s.mac(class, value, attempt))
 	default:
 		return genericToken(class, s.mac(class, value, attempt))
 	}
@@ -668,9 +696,20 @@ func IsToken(s string) bool {
 var tokenPattern = regexp.MustCompile(
 	`lynt-[a-z2-7]{13}@tokenized\.invalid` +
 		`|\+99\d{10}` +
-		`|\b9999\d{9,15}\b` +
+		`|\b9999\d{4,20}\b` + // cards (9999 test BIN) and bank accounts
 		`|(?:192\.0\.2|198\.51\.100|203\.0\.113)\.\d{1,3}` +
-		`|LYNT_[A-Z0-9_]+_[a-z2-7]{16}`)
+		`|LYNT_[A-Z0-9_]+_[a-z2-7]{16}` +
+		// The shaped tokens, each on its reserved range (see shaped.go).
+		`|\b9\d{2}-\d{2}-\d{4}\b` + // SSN, area 900–999
+		`|\b0\d{3} \d{4} \d{4}\b` + // Aadhaar beginning 0
+		`|\bLYN[A-Z]T\d{4}[A-Z]\b` + // PAN, LYN series
+		`|\bGB\d{2}LYNT\d{14}\b` + // IBAN, bank LYNT
+		`|\b00-\d{4}-\d{4}-\d{4}\b` + // ABHA/HPR beginning 00
+		`|\bZZ \d{2} \d{2} \d{2} [A-D]\b` + // NINO, prefix ZZ
+		`|lynt[a-z2-7]{8}@tokenized` + // UPI
+		`|\b99\d{7}\b` + // ABA routing, prefix 99
+		`|\b00\d{4}\b` + // Indian PIN beginning 00
+		`|\bZ9\d{6}\b`) // passport, Z9 series
 
 // KeyMatches reports whether other holds the same key as s, in constant
 // time.

@@ -70,6 +70,11 @@ func TestKnownInstallFlagsAreTheOnesInstallReads(t *testing.T) {
 func TestInstallWithoutAKeyDownloadsNothing(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	// The machine running the tests may have a live agent; this test is
+	// about the no-key path, which only exists when there is none.
+	oldReach := agentReachable
+	agentReachable = func() bool { return false }
+	t.Cleanup(func() { agentReachable = oldReach })
 
 	oldIn, oldOut := stdin, stdout
 	var out strings.Builder

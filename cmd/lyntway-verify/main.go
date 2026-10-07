@@ -421,8 +421,11 @@ type output struct {
 	Status       string `json:"status"`
 	Valid        bool   `json:"valid"`
 	FullStrength bool   `json:"full_strength"`
-	Mode         string `json:"mode,omitempty"`
-	Decision     string `json:"decision,omitempty"`
+	// Named separately from the warnings so automation can tell "upgrade
+	// the verifier" from "the governance really was degraded".
+	Unrecognised []string `json:"unrecognised_fields,omitempty"`
+	Mode         string   `json:"mode,omitempty"`
+	Decision     string   `json:"decision,omitempty"`
 	// Approval is who resolved a held action and which way. Without it a
 	// require_approval decision with a digest of released content reads
 	// as a hold that was quietly waved through.
@@ -815,6 +818,7 @@ func reportWith(jsonOut bool, res *receipt.Result, r *receipt.Receipt, policyErr
 		Inclusion:    incl,
 		Valid:        res.Valid,
 		FullStrength: res.FullStrength,
+		Unrecognised: res.Unrecognised,
 		Mode:         string(res.Mode),
 		Decision:     string(res.Decision),
 		Approval:     r.Governance.Approval,
@@ -874,6 +878,13 @@ func reportWith(jsonOut bool, res *receipt.Result, r *receipt.Receipt, policyErr
 		out.Status = "VERIFIED — GOVERNANCE BYPASSED"
 	case res.Mode == receipt.ModeDegraded:
 		out.Status = "VERIFIED — GOVERNANCE DEGRADED"
+	case len(res.Unrecognised) > 0:
+		// The signature is sound and the bytes are unaltered, so this is
+		// not "NOT VERIFIED" — but it is not a plain "VERIFIED" either,
+		// because part of what was signed is illegible to this build.
+		// Colour alone would not carry it: a pipe, a log or -json shows
+		// the text and nothing else.
+		out.Status = "VERIFIED — NEWER THAN THIS VERIFIER"
 	default:
 		out.Status = "VERIFIED"
 	}

@@ -26,6 +26,16 @@ func TestWireInstructionsAreFound(t *testing.T) {
 		{"Account No. 998877665544", ClassBankAccount, "998877665544"},
 		// The Indian passbook form, which was reported as a card before.
 		{"a/c no 50100123456789 HDFC", ClassBankAccount, "50100123456789"},
+		// The sentence, which is how a supplier chasing a payment writes
+		// it and which went through untouched until 7 Oct 2026. The rule
+		// read the forms above and missed the commonest phrasing there is.
+		{"Is invoice 8841 paid? My account is 50100123456789.", ClassBankAccount, "50100123456789"},
+		{"Our account number is 998877665544, please remit there.", ClassBankAccount, "998877665544"},
+		{"The new account is now 0045812377.", ClassBankAccount, "0045812377"},
+		{"Account details: 123456789012", ClassBankAccount, "123456789012"},
+		{"a/c no. : 50100123456789", ClassBankAccount, "50100123456789"},
+		{"Routing number is 121000248 and we bank with Chase.", ClassUSRouting, "121000248"},
+		{"The ABA is 026009593.", ClassUSRouting, "026009593"},
 	} {
 		var got []string
 		for _, s := range rs.Scan([]byte(tc.content)) {
@@ -52,8 +62,22 @@ func TestWireLookalikesAreNotReported(t *testing.T) {
 		{"routing 991000021 on file", ClassUSRouting},           // prefix no Reserve district uses
 		{"routing table has 123456789 entries", ClassUSRouting}, // "routing" in another sense, bad checksum
 		{"account 2024 renewal", ClassBankAccount},              // a year, too short
-		{"account balance 123456789", ClassBankAccount},         // a word between: not a number for the account
 		{"order 123456789012 shipped", ClassBankAccount},        // no context
+		// The words the gap steps over are a closed list on purpose.
+		// Widening it to "any few words" would make every number after
+		// the word "account" an account number, and these are the ones
+		// that would have gone wrong first: a balance is not an account,
+		// a holder is a person, and a statement is a document.
+		{"account balance 123456789", ClassBankAccount},
+		{"account balance is 123456789", ClassBankAccount},
+		{"account holder 998877665544", ClassBankAccount},
+		{"account statement 123456789012 attached", ClassBankAccount},
+		{"account manager called about 123456789", ClassBankAccount},
+		{"account is not 123456789 any more", ClassBankAccount},
+		// And a whole clause between the two is not a match either, which
+		// is what bounds the gap rather than leaving it open.
+		{"account with the Dubai branch of HDFC Bank 50100123456789", ClassBankAccount},
+		{"routing table has 123456789 entries now", ClassUSRouting},
 	} {
 		for _, s := range rs.Scan([]byte(tc.content)) {
 			if s.Class == tc.never {

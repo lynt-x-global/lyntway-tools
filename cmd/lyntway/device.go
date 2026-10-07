@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -98,6 +99,10 @@ func deviceStart() error {
 		return fmt.Errorf("agent not installed — run 'npx lyntway device' first")
 	}
 	fmt.Println("  Starting Lyntway agent...")
+	if runtime.GOOS == "windows" {
+		// Use the scheduled task so the agent survives terminal close.
+		return exec.Command("schtasks", "/Run", "/TN", "LyntwayAgent").Run()
+	}
 	cmd := exec.Command(bin, "--daemon")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -207,8 +212,11 @@ func killProcessOnPort(port string) {
 func deviceInstall(args []string) error {
 	fmt.Fprint(stdout, banner)
 
-	// Step 1: check if agent is already running.
-	if agentHealthy() {
+	// Step 1: check if agent is already running. Through the seam, so a
+	// test can say "no agent" on a machine that has one — this used to call
+	// agentHealthy() directly, and the no-key test began returning nil the
+	// first time it ran beside a real install.
+	if agentReachable() {
 		fmt.Fprintln(stdout, "  The Lyntway agent is already running on this machine.")
 		fmt.Fprintln(stdout, "  Run `lyntway device doctor` for diagnostics.")
 		fmt.Fprintln(stdout)
@@ -340,33 +348,58 @@ func deviceInstall(args []string) error {
 		fmt.Fprintln(stdout, "  Skipping system proxy (--no-proxy).")
 	}
 	if err := runAgentSetup(agentPath, setupArgs); err != nil {
-		// Setup failures are warnings, not fatal — the agent can still
-		// run without CA or autostart; they just need manual steps.
-		fmt.Fprintf(stdout, "  Warning: setup had issues: %v\n", err)
-		fmt.Fprintln(stdout, "  The agent may need manual CA or autostart configuration.")
+		// Not fatal: the agent runs, the extension can hand it files, and
+		// whatever opts in is governed. But the machine is deliberately NOT
+		// pointed at the proxy until the OS trusts the CA, and that is said
+		// here in plain words. This used to print "CA installed" over a
+		// logged failure, and the person went on believing their HTTPS was
+		// inspected.
+		fmt.Fprintln(stdout, "  Setup finished with a problem:")
+		fmt.Fprintf(stdout, "    %v\n", err)
+		fmt.Fprintln(stdout, "  Autostart and the sidecar are in place. The system proxy is OFF until this")
+		fmt.Fprintln(stdout, "  machine trusts the agent's CA, so HTTPS keeps working but is not inspected.")
+		fmt.Fprintln(stdout, "  To trust it (you may be asked for your password):")
+		fmt.Fprintln(stdout, "    "+trustCACommand(runtime.GOOS))
+		fmt.Fprintln(stdout, "  then restart the agent, or run: lyntway device install again.")
+		fmt.Fprintln(stdout)
 	} else {
-		fmt.Fprintln(stdout, "  CA installed, autostart registered.")
+		fmt.Fprintln(stdout, "  CA trusted by this machine, autostart registered.")
 		fmt.Fprintln(stdout)
 	}
 
 	// Step 6: health check.
 	fmt.Fprintln(stdout, "Step 5/5: Health check")
 
-	// Kill any stale agent process from a previous install before starting.
-	killExistingAgent()
-
-	// Start the agent if it isn't already running.
+	// On Windows, installWindowsService already ran /Run on the scheduled
+	// task. Give it a moment and check — do NOT kill and re-start, because
+	// the scheduled-task instance is the one that survives terminal close.
+	// On other platforms, start a detached process as before.
 	if !agentHealthy() {
-		if err := startAgent(agentPath); err != nil {
-			fmt.Fprintf(stdout, "  Could not start agent: %v\n", err)
-		} else {
-			// Give it a moment to come up.
-			for i := 0; i < 20; i++ {
-				if agentHealthy() {
-					break
-				}
-				time.Sleep(250 * time.Millisecond)
+		// Wait for the scheduled-task or launchd instance to come up.
+		for i := 0; i < 20; i++ {
+			if agentHealthy() {
+				break
 			}
+			time.Sleep(250 * time.Millisecond)
+		}
+	}
+	if !agentHealthy() {
+		// Still not up — kill anything stale and start fresh.
+		killExistingAgent()
+		if runtime.GOOS == "windows" {
+			// Re-run the scheduled task so the agent is managed by the
+			// task scheduler and survives terminal close.
+			_ = exec.Command("schtasks", "/Run", "/TN", "LyntwayAgent").Run()
+		} else {
+			if err := startAgent(agentPath); err != nil {
+				fmt.Fprintf(stdout, "  Could not start agent: %v\n", err)
+			}
+		}
+		for i := 0; i < 20; i++ {
+			if agentHealthy() {
+				break
+			}
+			time.Sleep(250 * time.Millisecond)
 		}
 	}
 
@@ -435,14 +468,19 @@ func deviceUninstall(args []string) error {
 	fmt.Fprintln(stdout)
 
 	// Step 1: Stop the agent — gracefully first, then force-kill the ports.
-	fmt.Fprintln(stdout, "Step 1/4: Stopping agent")
+	fmt.Fprintln(stdout, "Step 1/5: Stopping agent")
 	killExistingAgent()
 	fmt.Fprintln(stdout, "  Agent stopped.")
 
-	// Step 2: Remove system configuration (proxy, CA, autostart).
+	// Step 2: Stop and remove the AI sidecar.
+	fmt.Fprintln(stdout, "Step 2/5: Removing sidecar")
+	removeSidecar()
+	fmt.Fprintln(stdout, "  Sidecar removed.")
+
+	// Step 3: Remove system configuration (proxy, CA, autostart).
 	// Done directly instead of via --uninstall because the token has
 	// already been consumed by the verify call above.
-	fmt.Fprintln(stdout, "Step 2/4: Removing system configuration")
+	fmt.Fprintln(stdout, "Step 3/5: Removing system configuration")
 	agentBin := agentBinaryPath()
 	if exists(agentBin) {
 		// Disable system proxy first — most critical, keeps internet working.
@@ -472,8 +510,8 @@ func deviceUninstall(args []string) error {
 	// deleted cert file breaks Node.js apps (Claude Code, Cursor, etc.).
 	clearCAEnvVarsDirect()
 
-	// Step 3: Remove the agent binary.
-	fmt.Fprintln(stdout, "Step 3/4: Removing agent binary")
+	// Step 4: Remove the agent binary.
+	fmt.Fprintln(stdout, "Step 4/5: Removing agent binary")
 	if exists(agentBin) {
 		if err := os.Remove(agentBin); err != nil {
 			fmt.Fprintf(stdout, "  Warning: could not remove %s: %v\n", agentBin, err)
@@ -484,8 +522,8 @@ func deviceUninstall(args []string) error {
 		fmt.Fprintln(stdout, "  Already removed.")
 	}
 
-	// Step 4: Remove config.
-	fmt.Fprintln(stdout, "Step 4/4: Removing credentials")
+	// Step 5: Remove config.
+	fmt.Fprintln(stdout, "Step 5/5: Removing credentials")
 	cfgPath, err := configPath()
 	if err == nil && exists(cfgPath) {
 		if err := os.Remove(cfgPath); err != nil {
@@ -515,12 +553,83 @@ func deviceUninstall(args []string) error {
 
 // ── Doctor ──────────────────────────────────────────────────────────────
 
+// agentProxyAddr is where the agent listens, from its own config rather than a
+// constant. The doctor printed 127.0.0.1:9090 unconditionally, which is a
+// reassuring line about a port the agent may not be using.
+func agentProxyAddr() string {
+	if b, err := os.ReadFile(filepath.Join(home(), ".lyntway", "agent", "agent.json")); err == nil {
+		var cfg struct {
+			ListenAddr string `json:"listen_addr"`
+		}
+		if json.Unmarshal(b, &cfg) == nil && strings.TrimSpace(cfg.ListenAddr) != "" {
+			return cfg.ListenAddr
+		}
+	}
+	return "127.0.0.1:9090"
+}
+
+// clearStrandedProxy undoes the one failure of this product that stops somebody
+// working.
+//
+// The agent points the machine's system proxy at itself. On a graceful shutdown
+// it puts that back, and launchd restarts it after a crash so the startup clean
+// runs. Neither covers an agent that was killed and did not come back: the proxy
+// setting outlives the process, every browser is told to send to a port nothing
+// is listening on, and the machine has no network until a person works out why.
+//
+// That happened three times while testing this, and it is the worst thing this
+// software can do to somebody — far worse than failing to detect a card number.
+// So the doctor, which is what a person runs when something is wrong, checks for
+// it and puts it back rather than printing a diagnosis they then have to act on.
+//
+// Nothing is listening at this point, so there is no risk of disabling a proxy
+// that is in use: that is exactly the condition this branch is under.
+// proxyPointsAt and clearProxy are variables so a test can exercise the decision
+// without changing the network settings of the machine running the suite. There
+// is no other way to cover this: the branch's whole purpose is to act on the real
+// system, and a test that called it for real would take the developer offline.
+var (
+	proxyPointsAt = systemProxyPointsAt
+	clearProxy    = clearSystemProxyDirect
+	// agentReachable is a variable for the same reason: the doctor's healthy
+	// branch cannot otherwise be reached in a test without standing up an IPC
+	// listener, and that branch is where it prints the address it believes the
+	// proxy is on — the line that used to be a constant.
+	agentReachable = agentHealthy
+)
+
+func clearStrandedProxy() {
+	addr := agentProxyAddr()
+	if !proxyPointsAt(addr) {
+		return
+	}
+	fmt.Fprintf(stdout, "\n  The system proxy still points at %s and nothing is listening there.\n", addr)
+	fmt.Fprintln(stdout, "  Every browser on this machine would have no network. Putting it back.")
+
+	bin := agentBinaryPath()
+	if exists(bin) {
+		if err := exec.Command(bin, "--disable-system-proxy").Run(); err == nil {
+			fmt.Fprintln(stdout, "  Done — the system proxy is off.")
+			return
+		}
+	}
+	// No agent binary, or it failed. Do it directly rather than leave somebody
+	// offline with an explanation.
+	if clearProxy() {
+		fmt.Fprintln(stdout, "  Done — the system proxy is off.")
+		return
+	}
+	fmt.Fprintln(stdout, "  Could not change it automatically. On a Mac:")
+	fmt.Fprintln(stdout, "    networksetup -setwebproxystate Wi-Fi off")
+	fmt.Fprintln(stdout, "    networksetup -setsecurewebproxystate Wi-Fi off")
+}
+
 func deviceDoctor() error {
 	fmt.Fprintln(stdout, "Lyntway On-Device Agent")
 	fmt.Fprintln(stdout, strings.Repeat("─", 50))
 
 	// Agent process.
-	if agentHealthy() {
+	if agentReachable() {
 		info, err := agentStatus()
 		if err == nil && info != nil {
 			if v, ok := info["version"].(string); ok {
@@ -534,10 +643,13 @@ func deviceDoctor() error {
 		} else {
 			fmt.Fprintln(stdout, "  Agent:     running")
 		}
-		fmt.Fprintln(stdout, "  Proxy:     127.0.0.1:9090 ✓")
+		fmt.Fprintf(stdout, "  Proxy:     %s ✓\n", agentProxyAddr())
 	} else {
 		fmt.Fprintln(stdout, "  Agent:     not running")
 		fmt.Fprintln(stdout, "  Proxy:     not responding")
+		// The state that takes a machine off the network: nothing is
+		// listening, and every browser is still being told to send here.
+		clearStrandedProxy()
 	}
 
 	// Config.
@@ -793,6 +905,20 @@ func writeAgentConfig(origin, apiKey, hostname string) error {
 }
 
 // runAgentSetup shells out to the agent binary for CA + proxy + autostart.
+// trustCACommand is the command that makes this machine trust the agent's
+// CA, for the platform the person is on. The macOS one was printed on every
+// platform, which on Windows is advice that cannot be followed.
+func trustCACommand(goos string) string {
+	switch goos {
+	case "windows":
+		return `certutil -user -addstore Root "%USERPROFILE%\.lyntway\agent\ca.crt"`
+	case "linux":
+		return "sudo cp ~/.lyntway/agent/ca.crt /usr/local/share/ca-certificates/lyntway-agent.crt && sudo update-ca-certificates"
+	default:
+		return "security add-trusted-cert -r trustRoot -k ~/Library/Keychains/login.keychain-db ~/.lyntway/agent/ca.crt"
+	}
+}
+
 func runAgentSetup(agentPath string, extraArgs []string) error {
 	cmd := exec.Command(agentPath, extraArgs...)
 	cmd.Stdout = stdout
@@ -826,6 +952,38 @@ func removeAutoStart() {
 		svc := filepath.Join(home(), ".config", "systemd", "user", "lyntway-agent.service")
 		os.Remove(svc)
 	}
+}
+
+// removeSidecar stops the AI sidecar service, kills any lingering Python
+// process, removes the scheduled task / service file, and deletes the
+// sidecar directory. Mirrors uninstallSidecar in the agent binary.
+func removeSidecar() {
+	switch runtime.GOOS {
+	case "windows":
+		_ = exec.Command("schtasks", "/End", "/TN", "LyntwaySidecar").Run()
+		_ = exec.Command("schtasks", "/Delete", "/TN", "LyntwaySidecar", "/F").Run()
+		// The scheduled task stop is not synchronous on Windows — kill the
+		// Python process explicitly so file locks release before removal.
+		_ = exec.Command("powershell", "-NoProfile", "-Command",
+			`Get-Process -Name python -ErrorAction SilentlyContinue | `+
+				`Where-Object { $_.Path -match 'lyntway' } | Stop-Process -Force`).Run()
+	case "darwin":
+		_ = exec.Command("launchctl", "unload", "-w",
+			"/Library/LaunchDaemons/com.lyntway.sidecar.plist").Run()
+		_ = os.Remove("/Library/LaunchDaemons/com.lyntway.sidecar.plist")
+		userPlist := filepath.Join(home(), "Library", "LaunchAgents", "com.lyntway.sidecar.plist")
+		_ = exec.Command("launchctl", "unload", userPlist).Run()
+		_ = os.Remove(userPlist)
+	case "linux":
+		_ = exec.Command("systemctl", "disable", "--now", "lyntway-sidecar").Run()
+		_ = os.Remove("/etc/systemd/system/lyntway-sidecar.service")
+		_ = exec.Command("systemctl", "--user", "stop", "lyntway-sidecar").Run()
+		_ = exec.Command("systemctl", "--user", "disable", "lyntway-sidecar").Run()
+		svc := filepath.Join(home(), ".config", "systemd", "user", "lyntway-sidecar.service")
+		_ = os.Remove(svc)
+	}
+	dir := filepath.Join(home(), ".lyntway", "sidecar")
+	_ = os.RemoveAll(dir)
 }
 
 // clearCAEnvVarsDirect removes NODE_EXTRA_CA_CERTS and related env vars
@@ -897,4 +1055,117 @@ func disableProxyDirect() {
 	case "linux":
 		_ = exec.Command("gsettings", "set", "org.gnome.system.proxy", "mode", "none").Run()
 	}
+}
+
+// systemProxyPointsAt reports whether this machine is configured to send HTTP
+// traffic to addr.
+//
+// Read from the operating system rather than from our own records, because the
+// case that matters is exactly the one where our records are gone: the agent was
+// killed, its state may be inconsistent, and the only truth is what the network
+// settings say.
+func systemProxyPointsAt(addr string) bool {
+	host, port, err := net.SplitHostPort(addr)
+	// SplitHostPort accepts ":" and "127.0.0.1:" — empty halves, no error —
+	// and an empty half made the substring checks below match any enabled
+	// proxy at all. Found the first time a test ran on a machine whose proxy
+	// was actually on. Nothing with an empty host or port is an address.
+	if err != nil || host == "" || port == "" {
+		return false
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		for _, svc := range networkServices() {
+			out, err := exec.Command("networksetup", "-getwebproxy", svc).Output()
+			if err != nil {
+				continue
+			}
+			// Enabled and pointing at us. Both halves matter: a disabled
+			// setting that still records the address is harmless. Matched
+			// per line, not by substring, so port 90 does not match 9090.
+			enabled, server, portLine := false, "", ""
+			for _, line := range strings.Split(string(out), "\n") {
+				line = strings.TrimSpace(line)
+				switch {
+				case line == "Enabled: Yes":
+					enabled = true
+				case strings.HasPrefix(line, "Server: "):
+					server = strings.TrimPrefix(line, "Server: ")
+				case strings.HasPrefix(line, "Port: "):
+					portLine = strings.TrimPrefix(line, "Port: ")
+				}
+			}
+			if enabled && server == host && portLine == port {
+				return true
+			}
+		}
+	case "windows":
+		out, err := exec.Command("reg", "query",
+			`HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings`,
+			"/v", "ProxyServer").Output()
+		if err == nil && strings.Contains(string(out), addr) {
+			return true
+		}
+	case "linux":
+		out, err := exec.Command("gsettings", "get", "org.gnome.system.proxy.http", "port").Output()
+		if err == nil && strings.TrimSpace(string(out)) == port {
+			return true
+		}
+	}
+	return false
+}
+
+// networkServices lists the network services to ask about on a Mac. Hard-coding
+// Wi-Fi would miss a machine on Ethernet or a dock.
+func networkServices() []string {
+	out, err := exec.Command("networksetup", "-listallnetworkservices").Output()
+	if err != nil {
+		return []string{"Wi-Fi", "Ethernet"}
+	}
+	return parseNetworkServices(string(out))
+}
+
+// parseNetworkServices reads networksetup's listing.
+//
+// Separate so the empty case is reachable in a test: a parser that returns
+// nothing means no service is asked about, so a stranded proxy is reported as
+// fine and somebody stays offline. That is the branch worth pinning.
+func parseNetworkServices(out string) []string {
+	var svcs []string
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		// The first line is a preamble, and a leading asterisk marks a disabled
+		// service.
+		if line == "" || strings.HasPrefix(line, "An asterisk") || strings.HasPrefix(line, "*") {
+			continue
+		}
+		svcs = append(svcs, line)
+	}
+	if len(svcs) == 0 {
+		return []string{"Wi-Fi", "Ethernet"}
+	}
+	return svcs
+}
+
+// clearSystemProxyDirect turns the proxy off without the agent binary, for the
+// case where it has been removed but its setting has not.
+func clearSystemProxyDirect() bool {
+	switch runtime.GOOS {
+	case "darwin":
+		ok := false
+		for _, svc := range networkServices() {
+			if exec.Command("networksetup", "-setwebproxystate", svc, "off").Run() == nil {
+				ok = true
+			}
+			_ = exec.Command("networksetup", "-setsecurewebproxystate", svc, "off").Run()
+		}
+		return ok
+	case "windows":
+		return exec.Command("reg", "add",
+			`HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings`,
+			"/v", "ProxyEnable", "/t", "REG_DWORD", "/d", "0", "/f").Run() == nil
+	case "linux":
+		return exec.Command("gsettings", "set", "org.gnome.system.proxy", "mode", "none").Run() == nil
+	}
+	return false
 }

@@ -9,7 +9,7 @@ import (
 //
 // OCR does not return the text on the page. It returns its best guess, and one
 // of the ways the guess differs is that engines drop the spaces inside a line
-// they detected as a single box. RapidOCR does this consistently: a form line
+// they detected as a single box. OCR engines do this: a form line
 // reading
 //
 //	Contact   4111 1111 1111 1111

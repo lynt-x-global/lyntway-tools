@@ -209,13 +209,39 @@ ENVEOF
 
   step 4 "Install MITM CA certificate"
 
-  "$dest/lyntway-agent" --install-ca 2>/dev/null \
-    || warn "CA installation needs manual attention — run: lyntway-agent --install-ca"
-  ok "CA certificate installed to OS trust store"
+  # The ok line used to print whatever --install-ca did, and on every
+  # non-root Mac it had failed: the System keychain needs root. A person
+  # read "installed to OS trust store" over a failure, and the proxy was
+  # then switched on against a CA their browser did not trust — every
+  # HTTPS site a certificate error. The agent now installs to the login
+  # keychain when not root, and this step asks the OS whether it trusts
+  # the result before saying so, or before pointing the machine at it.
+  ca_trusted=false
+  if "$dest/lyntway-agent" --install-ca 2>/dev/null; then
+    if [ "$os" = "darwin" ]; then
+      if security verify-cert -c "$HOME/.lyntway/agent/ca.crt" -R offline -p ssl >/dev/null 2>&1; then
+        ca_trusted=true
+      fi
+    else
+      ca_trusted=true
+    fi
+  fi
+  if [ "$ca_trusted" = "true" ]; then
+    ok "CA certificate trusted by this machine"
+  else
+    warn "this machine does not trust the agent's CA yet; HTTPS will not be inspected"
+    warn "to trust it: security add-trusted-cert -r trustRoot -k ~/Library/Keychains/login.keychain-db ~/.lyntway/agent/ca.crt"
+  fi
 
-  # Step 5: Configure system proxy.
+  # Step 5: Configure system proxy — only against a CA the machine trusts.
+  # A proxy that opens TLS with an untrusted certificate is a person locked
+  # out of their own laptop by our policy, the one outcome this must never
+  # produce. The agent runs either way, for whatever opts in.
 
-  if [ "$NO_PROXY" = "false" ]; then
+  if [ "$NO_PROXY" = "false" ] && [ "$ca_trusted" != "true" ]; then
+    warn "system proxy left OFF until the CA is trusted; re-run this installer afterwards"
+  fi
+  if [ "$NO_PROXY" = "false" ] && [ "$ca_trusted" = "true" ]; then
     step 5 "Enable system proxy"
 
     if [ "$os" = "darwin" ]; then
@@ -340,14 +366,41 @@ UNITEOF
       ok "sidecar package extracted"
 
       # Python venv + dependencies.
-      if command -v python3 >/dev/null 2>&1; then
-        info "creating Python environment (this may take a few minutes)..."
-        python3 -m venv "$sidecar_dir/venv"
-        "$sidecar_dir/venv/bin/pip" install --quiet -r "$sidecar_dir/requirements.txt" \
-          || warn "pip install had errors — sidecar may not start"
-
-        # spaCy English model for NER.
-        "$sidecar_dir/venv/bin/python" -m spacy download en_core_web_sm 2>/dev/null || true
+      #
+      # The interpreter is chosen rather than taken from PATH. `python3` on a Mac
+      # is often 3.9, and gliner, transformers and onnxruntime need 3.10 or newer
+      # — so the venv was being built on an interpreter that cannot install the
+      # requirements, pip failed, and the install carried on with a warning. The
+      # result was a machine that reported a successful install and had no model
+      # tier, which every receipt then reported as degraded for a reason nobody
+      # had been told to expect.
+      # The window is 3.10 to 3.12, and both ends are real:
+      #
+      #   below 3.10  gliner, transformers and onnxruntime will not install
+      #   3.13 and up the model tier has not been installed and measured there;
+      #               it stays outside the window until it has been
+      #
+      # Choosing the newest interpreter on the machine is therefore wrong: it
+      # picks the one version nothing here has been proven on.
+      py=""
+      for cand in python3.12 python3.11 python3.10 python3; do
+        command -v "$cand" >/dev/null 2>&1 || continue
+        if "$cand" -c 'import sys; sys.exit(0 if (3,10) <= sys.version_info < (3,13) else 1)' 2>/dev/null; then
+          py="$cand"
+          break
+        fi
+      done
+      if [ -n "$py" ]; then
+        info "creating Python environment with $py ($("$py" --version 2>&1)) — this may take a few minutes..."
+        "$py" -m venv "$sidecar_dir/venv"
+        # Not quiet, and not forgiven. A model tier that failed to install is the
+        # difference between detecting a name and not, so it fails the step rather
+        # than warning in a wall of output nobody reads.
+        if ! "$sidecar_dir/venv/bin/pip" install -r "$sidecar_dir/requirements.txt"; then
+          warn "the model tier did not install"
+          warn "the agent still runs: deterministic rules only, and every event will say degraded"
+          warn "to retry: $sidecar_dir/venv/bin/pip install -r $sidecar_dir/requirements.txt"
+        fi
 
         # Write a profile marker so the sidecar knows which tier to load.
         printf '%s' "$profile" > "$sidecar_dir/.profile"
@@ -381,7 +434,45 @@ UNITEOF
           warn "sidecar not yet healthy — models downloading in background"
         fi
       else
-        warn "python3 not found — skipping sidecar (install Python 3.10+ and re-run)"
+        # Named precisely: "python3 not found" sent people looking for a
+        # missing interpreter when the real problem is usually that the one they
+        # have is too old.
+        warn "no Python between 3.10 and 3.12 found — the model tier is not installed"
+        warn "the agent still runs: deterministic rules only, and every event will say degraded"
+        warn "install one (brew install python@3.12) and re-run this script to add it"
+        warn "3.13 and newer are outside the window the model tier has been installed and measured on"
+      fi
+
+      # Tesseract reads the pixels: scanned pages, and the painted copies the
+      # redactor writes, which it reads back to prove the values are gone.
+      # It is a system package, not a pip one, so it is installed here. Not
+      # fatal when it cannot be: the sidecar names the missing engine in
+      # /health and records scanned pages as unread, never as clean.
+      if command -v tesseract >/dev/null 2>&1 || [ -x /opt/homebrew/bin/tesseract ] || [ -x /usr/local/bin/tesseract ]; then
+        ok "tesseract present"
+      elif [ "$os" = "darwin" ]; then
+        brew_user="${SUDO_USER:-$(id -un)}"
+        if command -v brew >/dev/null 2>&1 || [ -x /opt/homebrew/bin/brew ]; then
+          info "installing tesseract with Homebrew..."
+          # brew refuses to run as root; run it as the person who invoked sudo.
+          if sudo -u "$brew_user" -H bash -lc 'brew install tesseract' >/dev/null 2>&1; then
+            ok "tesseract installed"
+          else
+            warn "tesseract did not install — scanned pages and painted copies cannot be read on this machine"
+            warn "to add it: brew install tesseract"
+          fi
+        else
+          warn "Homebrew not found, so tesseract was not installed — scanned pages and painted copies cannot be read"
+          warn "to add it: install Homebrew, then: brew install tesseract"
+        fi
+      else
+        if command -v apt-get >/dev/null 2>&1; then apt-get install -y -q tesseract-ocr >/dev/null 2>&1 && ok "tesseract installed" || warn "tesseract did not install (apt-get install tesseract-ocr)"
+        elif command -v dnf >/dev/null 2>&1; then dnf install -y -q tesseract >/dev/null 2>&1 && ok "tesseract installed" || warn "tesseract did not install (dnf install tesseract)"
+        elif command -v yum >/dev/null 2>&1; then yum install -y -q tesseract >/dev/null 2>&1 && ok "tesseract installed" || warn "tesseract did not install (yum install tesseract)"
+        elif command -v zypper >/dev/null 2>&1; then zypper -n install tesseract-ocr >/dev/null 2>&1 && ok "tesseract installed" || warn "tesseract did not install (zypper install tesseract-ocr)"
+        elif command -v apk >/dev/null 2>&1; then apk add -q tesseract-ocr >/dev/null 2>&1 && ok "tesseract installed" || warn "tesseract did not install (apk add tesseract-ocr)"
+        else warn "no package manager found for tesseract — scanned pages and painted copies cannot be read"
+        fi
       fi
     fi
   elif [ "$NO_SIDECAR" = "true" ]; then

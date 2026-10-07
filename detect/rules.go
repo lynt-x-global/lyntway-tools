@@ -11,7 +11,7 @@ import (
 // Bump it on ANY change to rule content. The digest will change regardless
 // and would expose an unbumped edit, but a stale version string makes a
 // receipt harder to interpret for anyone reading it later.
-const RulesetVersion = "core-2026.09.22c"
+const RulesetVersion = "core-2026.10.07a"
 
 // Classes detected by the default ruleset.
 const (
@@ -23,6 +23,7 @@ const (
 	ClassUSSSN      Class = "pii.us_ssn"
 	ClassINPAN      Class = "pii.in_pan"
 	ClassINAadhaar  Class = "pii.in_aadhaar"
+	ClassINHealthID Class = "pii.in_health_id"
 	ClassINUPI      Class = "pii.in_upi"
 
 	// Wire instructions: the routing number that says which bank, and the
@@ -33,6 +34,24 @@ const (
 	ClassUSRouting   Class = "pci.us_routing_number"
 	ClassBankAccount Class = "pii.bank_account_number"
 	ClassUKNINO      Class = "pii.uk_nino"
+	// Classes only the model tier produces. They have no rule and so no
+	// place in Categories(); they are named here so a receipt, a panel and
+	// the agent all spell them the same way, and so detect.Label can say
+	// what they are instead of "Personal data (entity)".
+	ClassPersonName     Class = "pii.person_name"
+	ClassLocation       Class = "pii.location"
+	ClassDateOfBirth    Class = "pii.date_of_birth"
+	ClassPassportNumber Class = "pii.passport_number"
+	ClassEntity         Class = "pii.entity"
+	// ClassINPIN is an Indian postal code, found only beside its label.
+	ClassINPIN Class = "pii.in_pin"
+	// ClassUserMarked is a region a person boxed out by hand, in the
+	// comparison view, because the detectors missed it or because they
+	// simply did not want it to leave. It is its own class so a receipt
+	// says plainly which protections were automatic and which were
+	// judgement; folding it into a model's count would be the receipt
+	// claiming a capability the model does not have.
+	ClassUserMarked Class = "pii.user_marked"
 
 	ClassAWSAccessKey Class = "secret.aws_access_key"
 	ClassGitHubToken  Class = "secret.github_token"
@@ -51,7 +70,33 @@ const (
 	ClassPromptExtraction    Class = "injection.prompt_extraction"
 	ClassPersonaOverride     Class = "injection.persona_override"
 	ClassContextEscape       Class = "injection.context_escape"
+
+	// Business email compromise. A separate family from injection because
+	// the target is different: injection aims at the model, these aim at
+	// the process the model is running.
+	ClassBECBankChange    Class = "bec.bank_detail_change"
+	ClassBECPayeeRedirect Class = "bec.payee_redirect"
 )
+
+// cueGap is what a rule will step over between the word that names a
+// number and the number itself.
+//
+// Two rules here are gated on a cue word — "routing", "account" — because
+// the digits alone are an order number as often as they are wire
+// instructions. Both required the number to follow the cue almost
+// immediately, which caught "account no. 50100123456789" and the
+// passbook forms and missed the single commonest phrasing in real mail:
+// "my account is 50100123456789". A supplier chasing a payment writes a
+// sentence, not a form.
+//
+// The gap is a closed list of connectives rather than "any few words",
+// and that is the whole care in it. "account balance 123456789" is a
+// balance and "account holder 998877" is somebody's name badge, so the
+// words that mean nothing — is, number, our, the, new, now — are stepped
+// over and every other word still ends the match. Four of them at most,
+// which covers "account number is" and "a/c no. :" and stops short of a
+// clause.
+const cueGap = `(?:\s*(?:no|nos|number|num|is|are|was|were|the|our|my|your|their|new|now|to|as|of|details?|same|reads|shows|below|follows)\b|\s*[:#.,=-]+){0,4}`
 
 // Default returns the built-in deterministic ruleset.
 //
@@ -130,6 +175,38 @@ func defaultRules() []Rule {
 			Confidence: ConfidenceExact,
 			Prefilter:  []string{"PRIVATE KEY"},
 			Priority:   110,
+		},
+		{
+			ID: "private-key-truncated",
+			// A key whose END line never arrived.
+			//
+			// The rule above needs both delimiters, which is right for the
+			// common case and right about the bare header: "-----BEGIN RSA
+			// PRIVATE KEY-----" on its own appears in documentation, in code
+			// comments and in this file, and flagging it would fire on people
+			// writing about keys rather than pasting one.
+			//
+			// But the delimiter is not the secret — the body is. A key cut off
+			// by a field length limit, a half-selected copy, or a log that
+			// truncated the line is still a key, and it was going through
+			// unnoticed. So this matches the header followed by enough base64
+			// to be a key and no closing line.
+			//
+			// "Enough" is two full-width PEM lines. A 2048-bit RSA key is
+			// twenty-five of them, so this still catches a badly truncated one;
+			// a documentation example showing a header and an ellipsis does not
+			// reach it. The span stops at the body rather than running to the
+			// end of the input, because everything after it is not the key.
+			Class:      ClassPrivateKey,
+			Pattern:    regexp.MustCompile(`-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY(?: BLOCK)?-----[\r\n]+(?:[A-Za-z0-9+/=]{40,}[\r\n]+){2,}`),
+			Confidence: ConfidenceExact,
+			Prefilter:  []string{"PRIVATE KEY"},
+			// Below the complete block as a statement of intent. It is not
+			// what prevents a complete key being counted twice — both rules
+			// match it, and overlap resolution keeps the longer span, which is
+			// the whole block either way. Checked by raising this to 110 and
+			// confirming the count stays at one.
+			Priority: 109,
 		},
 		{
 			ID:         "azure-connection-string",
@@ -228,6 +305,38 @@ func defaultRules() []Rule {
 			Priority:   70,
 		},
 		{
+			ID: "india-health-id",
+			// India's fourteen-digit health identifiers: the ABHA number every
+			// patient is issued, and the HPR ID every registered practitioner
+			// is. Both come from the National Health Authority and both are
+			// written in the same 2-4-4-4 grouping.
+			//
+			// Added because one went to an AI service inside an uploaded
+			// registration PDF while every other identifier on the page was
+			// known. Aadhaar and PAN were covered; the health identifier that
+			// sits beside them on the same forms was not, which is the gap a
+			// rule list acquires by growing one leak at a time.
+			//
+			// # Why the grouping is required
+			//
+			// There is no published check digit for these, unlike Aadhaar's
+			// Verhoeff, so the shape is all there is. Fourteen bare digits are
+			// far too common to claim — a timestamp, an order line, a phone
+			// number with a country code and an extension. Requiring the
+			// separators makes it the written form rather than any run of
+			// digits, and that written form is what appears on a certificate,
+			// in a form field and in the text somebody pastes.
+			//
+			// The cost is admitted rather than hidden: an identifier typed
+			// without its separators is not matched. Moderate confidence says
+			// so, and this is deliberately not ConfidenceExact — nothing was
+			// verified, only recognised.
+			Class:      ClassINHealthID,
+			Pattern:    regexp.MustCompile(`\b(\d{2}[- ]\d{4}[- ]\d{4}[- ]\d{4})\b`),
+			Confidence: ConfidenceModerate,
+			Priority:   70,
+		},
+		{
 			ID:    "india-pan",
 			Class: ClassINPAN,
 			// Case-insensitive since 22 September 2026. A PAN is printed in
@@ -236,8 +345,21 @@ func defaultRules() []Rule {
 			// model untouched. Five letters, four digits and a letter
 			// standing as one word is rare enough in either case that the
 			// pattern carries the rule on its own.
+			//
+			// High, not moderate, since 2 October 2026, and with a validator.
+			// The default policy substitutes personal data only at high
+			// confidence, so a PAN on the hosted gateway was found, counted
+			// and sent as it was — visible as the one value left standing in
+			// a demo where everything beside it had been replaced. The fourth
+			// character of a PAN is the holder type and takes one of ten
+			// letters; checking it rejects the product codes a bare
+			// five-letters-four-digits-letter pattern would otherwise call a
+			// PAN, which is what earns the higher confidence. "ABCDE1234F",
+			// the placeholder half the internet uses, has a D there and is
+			// not a PAN.
 			Pattern:    regexp.MustCompile(`(?i)\b([A-Z]{5}\d{4}[A-Z])\b`),
-			Confidence: ConfidenceModerate,
+			Confidence: ConfidenceHigh,
+			Validate:   validINPAN,
 			Priority:   70,
 		},
 		{
@@ -545,6 +667,77 @@ func defaultRules() []Rule {
 			Priority:   54,
 		},
 		{
+			ID: "india-mobile-labelled",
+			// An Indian mobile number, only where the text says it is one.
+			//
+			// phone-international is right that a bare run of ten digits is
+			// too common to claim, and phone-nanp is right that the fix is a
+			// written form nothing else wears. Neither covers India, where
+			// the written form is ten bare digits with no separators at all:
+			// "9951310751" is how a mobile appears on a registration
+			// certificate, a KYC form and an invoice, and "+91" is the
+			// exception rather than the rule.
+			//
+			// So the distinguishing mark cannot be punctuation, and it is
+			// taken from us-routing-number instead: the label in front of
+			// it. Every form that prints one of these prints "Mobile No"
+			// beside it. The label is required context and stays out of the
+			// span, so substitution leaves the field heading readable.
+			//
+			// The first digit must be 6-9, which is the whole of India's
+			// mobile range and excludes a ten-digit order number starting
+			// with 0-5. There is no check digit to lean on.
+			//
+			// The run between the label and the number allows "*", "#", "."
+			// and ":" as well as spaces, because the form that prompted this
+			// prints "Mobile No*:" — the asterisk is the required-field
+			// marker every Indian government form puts there, and a
+			// separator class of whitespace alone missed the real document
+			// while matching the one written out in a test. It is bounded so
+			// a label cannot claim a number further down the page.
+			//
+			// Found on 1 October 2026: a practitioner's registration PDF
+			// reached a model with the mobile number intact while the
+			// receipt read mode "full", because every other identifier on
+			// the page was covered and this one was not. The same shape as
+			// the IBAN and NANP defects before it — the value was known,
+			// the form it is actually written in was not.
+			//
+			// What this deliberately does not do is match an unlabelled run
+			// of ten digits. That judgement belongs to phone-international
+			// and it is not reopened here; an unlabelled number is still
+			// the model tier's to find.
+			Class: ClassPhone,
+			Pattern: regexp.MustCompile(
+				`(?i)\b(?:mobile|mob|telephone|phone|tel|contact|cell|whatsapp)\b[\s*.:#\-]{0,40}` +
+					`(?:no|number|num)?[\s*.:#\-]{0,40}(?P<target>[6-9]\d{9})(?:[^\d]|$)`),
+			Confidence: ConfidenceHigh,
+			// Folded, because the pattern is (?i): a case-sensitive list is
+			// how such a rule quietly stops matching. Each literal is one
+			// the pattern cannot match without — the longer alternatives
+			// contain the shorter ones ("mobile" carries "mob").
+			PrefilterFold: []string{"mob", "tel", "phone", "contact", "cell", "whatsapp"},
+			Priority:      53,
+		},
+		{
+			ID: "india-pin-labelled",
+			// An Indian postal code, only where the text says it is one.
+			//
+			// Six digits are everywhere. Beside "Postal code", "PIN code" or
+			// "Pincode" they are an address, and an address was the one
+			// thing still readable in a registration certificate after the
+			// rest of it had been boxed. The label is context and stays out
+			// of the span. The first digit is 1-9: Indian PINs do not start
+			// with zero, and that alone excludes a run of six that is a
+			// time, a count or the tail of something longer.
+			Class: ClassINPIN,
+			Pattern: regexp.MustCompile(
+				`(?i)\b(?:pin\s*code|pincode|postal\s*code|post\s*code|zip)\b[\s*.:#\-]{0,40}(?P<target>[1-9]\d{5})(?:[^\d]|$)`),
+			Confidence:    ConfidenceHigh,
+			PrefilterFold: []string{"pin", "postal", "post", "zip"},
+			Priority:      52,
+		},
+		{
 			ID: "us-routing-number",
 			// An ABA routing number, only where the text says it is one.
 			//
@@ -559,9 +752,14 @@ func defaultRules() []Rule {
 			// The first two digits must be a Federal Reserve district or
 			// thrift range (00-12, 21-32), a government range (61-72) or
 			// 80 for traveller's cheques; the checksum does the rest.
+			//
+			// cueGap is what lets "routing number is 021000021" through.
+			// The checksum carries most of the weight here, so stepping
+			// over a connective costs little and the sentence form is how
+			// the number usually arrives.
 			Class: ClassUSRouting,
 			Pattern: regexp.MustCompile(`(?i)\b(?:routing|aba|rtn|transit)(?:\s*/\s*aba)?` +
-				`(?:\s+(?:no\.?|number|num|#))?\s*[:#.-]?\s*(?P<target>\d{9})\b`),
+				cueGap + `\s*(?P<target>\d{9})\b`),
 			Confidence: ConfidenceExact,
 			Validate:   validABARouting,
 			Priority:   75,
@@ -572,9 +770,16 @@ func defaultRules() []Rule {
 			//
 			// There is no checksum and no shared format — six to seventeen
 			// digits covers US and Indian banks — so a bare run of digits is
-			// never matched. "Account", "acct" or "a/c" immediately before
-			// it is what makes it one, and is what every set of wire
-			// instructions and every Indian passbook line carries.
+			// never matched. "Account", "acct" or "a/c" in front of it is
+			// what makes it one, and is what every set of wire instructions
+			// and every Indian passbook line carries.
+			//
+			// It used to require the number almost immediately after the
+			// cue, which read the forms and missed the sentence: "my
+			// account is 50100123456789" went through untouched, and that
+			// is how a supplier chasing a payment writes it. cueGap steps
+			// over the connectives and nothing else, so a balance and an
+			// account holder are still not account numbers.
 			//
 			// Family pii rather than pci: under GLBA an account number is
 			// nonpublic personal information, and the default policy
@@ -582,8 +787,8 @@ func defaultRules() []Rule {
 			// rule, so a Luhn-valid card number written after "account" is
 			// still reported as the card it is.
 			Class: ClassBankAccount,
-			Pattern: regexp.MustCompile(`(?i)\b(?:account|acct|acc|a/c)(?:\s*(?:no\.?|number|num|#))?` +
-				`\s*[:#.-]?\s*(?P<target>\d{6,17})\b`),
+			Pattern: regexp.MustCompile(`(?i)\b(?:account|acct|acc|a/c)` +
+				cueGap + `\s*(?P<target>\d{6,17})\b`),
 			Confidence: ConfidenceHigh,
 			Priority:   50,
 		},
@@ -641,6 +846,68 @@ func defaultRules() []Rule {
 			Confidence: ConfidenceLow,
 			Priority:   30,
 		},
+
+		// Business email compromise. Not injection, and the difference is
+		// the whole point: an injection attacks the model's instruction
+		// following, while this attacks the business process. There is
+		// nothing hidden, nothing encoded, and nothing a prompt filter can
+		// see — it is an ordinary, well-written message asking for a
+		// harmful thing, and an agent processing invoices will comply
+		// because complying is its job.
+		//
+		// These classes exist to feed a gate, not a filter. The control is
+		// that anything moving money waits for a person, so a perfect
+		// attack still fails because the agent was never able to act on it.
+		// That makes the cost of a false positive ten seconds of somebody's
+		// attention and the cost of a false negative a wire transfer, which
+		// is why these are deliberately generous and why nothing here
+		// should ever be wired to block.
+		{
+			ID: "bec-bank-detail-change",
+			// The announcement, in both word orders. A change verb is
+			// required next to the payment noun: "please find our bank
+			// details below" is ordinary business correspondence, and only
+			// the claim that they have *changed* is the fraud signal.
+			Class: ClassBECBankChange,
+			Pattern: regexp.MustCompile(
+				`(?i)\b(?:(?:new|updated|changed|amended|revised|different)\s+(?:our\s+|the\s+|my\s+|their\s+)?` +
+					`(?:bank(?:ing)?|account|wire|payment|remittance|beneficiary|payee)\s+` +
+					`(?:details|instructions|information|number|account)` +
+					`|(?:bank(?:ing)?|account|wire|payment|remittance|beneficiary|payee)\s+` +
+					`(?:details|instructions|information|number)\s+` +
+					`(?:have|has|had)?\s*(?:now\s+)?(?:been\s+)?(?:changed|updated|amended|revised))\b`),
+			Confidence: ConfidenceHigh,
+			// Every alternation in the pattern contains one of these
+			// nouns, so the prefilter is a safe superset. A narrower list
+			// reads better and silently suppresses matches: "updated bank
+			// account" was missed by a prefilter of "updated account",
+			// which is the failure a prefilter is most likely to cause and
+			// the hardest to notice, because nothing errors.
+			PrefilterFold: []string{
+				"bank", "account", "wire", "payment", "remittance", "beneficiary", "payee",
+			},
+			Priority: 45,
+		},
+		{
+			ID: "bec-payee-redirect",
+			// The instruction that follows the announcement: stop using
+			// the account you have, use this one. "No longer" and "instead
+			// of" next to a payment noun is the shape, and it is the half
+			// that survives when the sender never says the word "changed".
+			Class: ClassBECPayeeRedirect,
+			Pattern: regexp.MustCompile(
+				`(?i)\b(?:(?:do\s+not|don't|no\s+longer|cease\s+to)\s+(?:use|send|remit|wire|pay|transfer)` +
+					`[^.!?\n]{0,50}?\b(?:account|bank|iban|routing|sort\s*code|wire|details)` +
+					`|(?:use|to|into)\s+(?:the\s+)?(?:new|updated|following|below|revised)\s+` +
+					`(?:bank\s+)?(?:account|details|iban|wire\s+instructions))\b`),
+			Confidence: ConfidenceModerate,
+			// Same rule as above: the payment noun is present in both
+			// alternations, the adjectives are not.
+			PrefilterFold: []string{
+				"account", "bank", "iban", "routing", "sort code", "wire", "details",
+			},
+			Priority: 45,
+		},
 	}
 }
 
@@ -686,6 +953,16 @@ func validUSSSN(s string) bool {
 // I, O, Q, U or V; and the prefixes BG, GB, KN, NK, NT, TN and ZZ have
 // never been allocated. The suffix, when the number carries one, is A to D.
 // The pattern already insists on the suffix, so this checks the prefix.
+// validINPAN checks the holder-type letter: P individual, C company, H HUF,
+// A association, B body of individuals, G government, J artificial juridical
+// person, L local authority, F firm, T trust. Nothing else is issued.
+func validINPAN(s string) bool {
+	if len(s) != 10 {
+		return false
+	}
+	return strings.IndexByte("PCHABGJLFT", strings.ToUpper(s)[3]) >= 0
+}
+
 func validUKNINO(s string) bool {
 	if len(s) < 2 {
 		return false
@@ -889,6 +1166,28 @@ var verhoeffP = [8][10]int{
 
 // validVerhoeff reports whether s passes the Verhoeff checksum used by
 // Aadhaar numbers.
+// VerhoeffCheckDigit is the digit that makes body plus the digit pass the
+// Verhoeff check — exported for the tokeniser, so a substitute Aadhaar
+// number validates on a form the way the real one did. ok is false when
+// body is not all digits.
+func VerhoeffCheckDigit(body string) (digit int, ok bool) {
+	c := 0
+	n := len(body)
+	for i := n - 1; i >= 0; i-- {
+		if body[i] < '0' || body[i] > '9' {
+			return 0, false
+		}
+		// The check digit will sit at position 0; the body's positions
+		// start at 1.
+		pos := (n - i) % 8
+		c = verhoeffD[c][verhoeffP[pos][int(body[i]-'0')]]
+	}
+	return verhoeffInverse[c], true
+}
+
+// verhoeffInverse is the multiplicative inverse in the dihedral group D5.
+var verhoeffInverse = [10]int{0, 4, 3, 2, 1, 5, 6, 7, 8, 9}
+
 func validVerhoeff(s string) bool {
 	var digits []int
 	for _, r := range s {

@@ -82,6 +82,14 @@ class VerificationResult:
     #: on any other receipt would be a contradiction.
     truncated: bool = False
 
+    #: Fields carrying vocabulary this build does not know, in receipt
+    #: order. Non-empty means the receipt came from a newer issuer: the
+    #: signature is good, but part of what it says is illegible here.
+    #: Separate from :attr:`warnings` because the remedy differs — a
+    #: degraded receipt is as good as it will get, this one reads in full
+    #: under a newer build.
+    unrecognised: list[str] = field(default_factory=list)
+
     #: Conditions that do not invalidate the receipt but must be surfaced.
     warnings: list[str] = field(default_factory=list)
 
@@ -237,7 +245,24 @@ def verify(
     except Exception as exc:  # noqa: BLE001 - surfaced verbatim, never swallowed
         return fail(f"verification failed: {exc}")
 
+    unreadable = unreadable_honesty_field(receipt)
+    if unreadable:
+        return fail(unreadable)
+
     governance = receipt.get("governance") or {}
+    unrecognised: list[str] = []
+    extra_warnings: list[str] = []
+    # Tolerated, not refused. A surface added after this SDK shipped still
+    # verifies; the SDK just says it cannot name what it read.
+    surface = (receipt.get("action") or {}).get("surface")
+    if surface is not None and surface not in KNOWN_SURFACES:
+        unrecognised.append("action.surface")
+        extra_warnings.append(
+            f"action.surface is {surface!r}, which this build does not recognise: "
+            "the signature is valid and the bytes are unaltered, but this build "
+            "cannot say what that value means. A newer build may."
+        )
+
     result = VerificationResult(
         valid=True,
         full_strength=is_full_strength(receipt),
@@ -251,8 +276,13 @@ def verify(
         truncated=(receipt.get("content") or {}).get("truncated") is True,
         issued_at=issued_at,
         digest=hashlib.sha256(message).hexdigest(),
-        warnings=_collect_warnings(receipt),
+        unrecognised=unrecognised,
+        warnings=_collect_warnings(receipt) + extra_warnings,
     )
+    # A build that cannot name what it read must not vouch for the whole of
+    # it, whatever the receipt's own governance mode says.
+    if unrecognised:
+        result.full_strength = False
 
     if require_full_strength and not result.full_strength:
         result.valid = False
@@ -261,6 +291,55 @@ def verify(
         )
 
     return result
+
+
+#: The vocabulary this build can read.
+#:
+#: Split in two, and the split is the honesty rule. The honesty fields --
+#: how strong the claim is -- fail hard when this build cannot read them,
+#: because a reader that cannot tell ``full`` from ``bypassed``, or
+#: ``observed`` from ``asserted``, has no business reporting on the receipt
+#: at all. Everything else is tolerated with a warning: refusing a receipt
+#: over a surface added after this SDK shipped would report a perfectly good
+#: signature as invalid, which a reader takes to mean tampered. That is what
+#: every installed verifier did the day the email surface was added.
+#:
+#: This SDK had the opposite bug, which is the worse direction: a provenance
+#: outside the three matched neither branch below, produced no warning, and
+#: so read exactly like ``observed`` -- the strongest of the three.
+KNOWN_MODES = ("full", "degraded", "bypassed")
+KNOWN_DECISIONS = ("allow", "block", "transform", "tokenize", "log_only", "hold")
+KNOWN_PROVENANCE = ("observed", "attested", "asserted")
+KNOWN_SURFACES = ("model", "mcp", "database", "http", "primitive", "email")
+
+
+def unreadable_honesty_field(receipt: Mapping[str, Any]) -> str | None:
+    """Return why the receipt cannot be reported on, or ``None``.
+
+    The wording says illegible, not altered. The signature is checked before
+    this runs, so telling a reader the receipt was tampered with would be its
+    own overclaim -- the mirror of the one this exists to prevent.
+    """
+    governance = receipt.get("governance") or {}
+
+    def refuse(field_name: str, value: Any) -> str:
+        return (
+            f"{field_name} is {value!r}, which this build does not recognise: "
+            "the signature is valid and the bytes are unaltered, but that field says "
+            "how much the receipt claims, so nothing here can be reported without it. "
+            "A newer build will read it."
+        )
+
+    if governance.get("mode") not in KNOWN_MODES:
+        return refuse("governance.mode", governance.get("mode"))
+    if governance.get("decision") not in KNOWN_DECISIONS:
+        return refuse("governance.decision", governance.get("decision"))
+    evidence = receipt.get("evidence")
+    # Absent evidence is not unreadable: it reads as ``asserted``, the
+    # weakest value, and is warned about separately.
+    if evidence and evidence.get("provenance") not in KNOWN_PROVENANCE:
+        return refuse("evidence.provenance", evidence.get("provenance"))
+    return None
 
 
 #: Algorithms this build can actually check.

@@ -183,11 +183,21 @@ const (
 	// SurfacePrimitive is a direct call to the govern API, where the caller
 	// hands us content rather than us intercepting it.
 	SurfacePrimitive Surface = "primitive"
+	// SurfaceEmail is a message delivered to an ingestion address — copied
+	// to us by a person or by a transport rule — and governed before an
+	// agent is allowed to read it.
+	//
+	// Distinct from SurfaceHTTP, whose doc above covers calls made *to* an
+	// email API. This is the opposite direction: nothing was called, a
+	// message arrived. The distinction matters because the two answer
+	// different questions in a dispute — what an application sent to a
+	// provider, versus what an agent was permitted to see.
+	SurfaceEmail Surface = "email"
 )
 
 func (s Surface) valid() bool {
 	switch s {
-	case SurfaceModel, SurfaceMCP, SurfaceDatabase, SurfaceHTTP, SurfacePrimitive:
+	case SurfaceModel, SurfaceMCP, SurfaceDatabase, SurfaceHTTP, SurfacePrimitive, SurfaceEmail:
 		return true
 	}
 	return false
@@ -277,6 +287,11 @@ const (
 	IdentityOIDC IdentitySource = "oidc"
 	// IdentityDID is a W3C Decentralized Identifier.
 	IdentityDID IdentitySource = "did"
+	// IdentityEmailAuth is a sending domain proven by the receiving mail
+	// edge's own SPF, DKIM and DMARC checks. Not a person and not an
+	// account: it says the domain in From: was established, which is the
+	// most any inbound message can offer about who sent it.
+	IdentityEmailAuth IdentitySource = "email_auth"
 	// IdentityLyntwayKey is a Lyntway-issued virtual key. Weakest of the
 	// sources: it authenticates the caller to us, but attests nothing about
 	// the agent to anyone else.
@@ -286,7 +301,8 @@ const (
 func (i IdentitySource) valid() bool {
 	switch i {
 	case IdentityNone, IdentityWebBotAuth, IdentityEntraAgent,
-		IdentityOkta, IdentityOIDC, IdentityDID, IdentityLyntwayKey:
+		IdentityOkta, IdentityOIDC, IdentityDID, IdentityLyntwayKey,
+		IdentityEmailAuth:
 		return true
 	}
 	return false
@@ -900,7 +916,7 @@ func (r *Receipt) Validate() error {
 	if !r.Action.Surface.valid() {
 		// Every surface the type accepts, listed. A message that omits a
 		// valid value sends somebody looking for a bug in their own code.
-		errs.add("action.surface", "must be one of: model, mcp, database, http, primitive")
+		errs.addUnknown("action.surface", "not a surface this build recognises (known: model, mcp, database, http, primitive, email)")
 	}
 	if !r.Action.Direction.valid() {
 		errs.add("action.direction", "must be one of: request, response")
@@ -911,13 +927,13 @@ func (r *Receipt) Validate() error {
 
 	// Actor.
 	if !r.Actor.Type.valid() {
-		errs.add("actor.type", "must be one of: agent, human, service")
+		errs.addUnknown("actor.type", "not an actor type this build recognises (known: agent, human, service)")
 	}
 	if strings.TrimSpace(r.Actor.ID) == "" {
 		errs.add("actor.id", "must not be empty")
 	}
 	if !r.Actor.Source.valid() {
-		errs.add("actor.source", "unrecognised identity source")
+		errs.addUnknown("actor.source", "not an identity source this build recognises")
 	}
 	if r.Actor.Agent != nil {
 		r.Actor.Agent.validateInto(&errs)

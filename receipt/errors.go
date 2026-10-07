@@ -57,6 +57,18 @@ type FieldError struct {
 	Field string
 	// Reason explains what is wrong and, where useful, why the rule exists.
 	Reason string
+	// Unrecognised marks a value that is well-formed but not in the
+	// vocabulary this build knows — a surface, actor type or identity
+	// source added after it was compiled.
+	//
+	// The distinction exists because a verifier is a long-lived thing in
+	// somebody else's hands. When a new surface was added, every verifier
+	// already installed reported NOT VERIFIED on a receipt whose signature
+	// was perfectly good, which reads as "tampered" rather than "newer than
+	// me". Refusing to say what a receipt means is right; implying it was
+	// forged is an overclaim in the other direction, and this product does
+	// not get to make those.
+	Unrecognised bool
 }
 
 func (e *FieldError) Error() string { return e.Field + ": " + e.Reason }
@@ -97,6 +109,27 @@ func (fe FieldErrors) Fields() []string {
 
 func (fe *FieldErrors) add(field, reason string) {
 	*fe = append(*fe, &FieldError{Field: field, Reason: reason})
+}
+
+// addUnknown records a value this build does not recognise, as opposed to
+// one that is structurally wrong.
+func (fe *FieldErrors) addUnknown(field, reason string) {
+	*fe = append(*fe, &FieldError{Field: field, Reason: reason, Unrecognised: true})
+}
+
+// OnlyUnrecognised reports whether every problem is an unknown vocabulary
+// value rather than a malformed receipt. Empty is false: a caller asking
+// this is deciding whether to proceed despite errors, and there are none.
+func (fe FieldErrors) OnlyUnrecognised() bool {
+	if len(fe) == 0 {
+		return false
+	}
+	for _, e := range fe {
+		if !e.Unrecognised {
+			return false
+		}
+	}
+	return true
 }
 
 func (fe *FieldErrors) merge(other FieldErrors) {

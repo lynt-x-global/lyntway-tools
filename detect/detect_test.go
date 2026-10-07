@@ -363,7 +363,7 @@ func TestPrefiltersDoNotSuppressMatches(t *testing.T) {
 		"ssn 123-45-6789 and 078-05-1120",
 		"phone +442071838750 and +14155552671 and +919876543210",
 		"host 192.168.14.201 and 10.0.0.1 and 255.255.255.255",
-		"pan ABCDE1234F issued",
+		"pan ABCPE1234F issued",
 		fakeAzureAccountKey(),
 		"nothing sensitive here at all, just ordinary prose about governance",
 		"",

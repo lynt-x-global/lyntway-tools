@@ -153,57 +153,43 @@ LYNTWAY_MACHINE_ID=$machineId
 
     Step 4 "Install MITM CA certificate"
 
-    try {
-      & $exe --install-ca 2>$null
-      Ok "CA certificate installed to OS trust store"
-    } catch {
-      Warn "CA installation needs manual attention - run: lyntway-agent --install-ca"
-    }
-
-    # Step 5: Configure system proxy.
-
-    if (-not $NoProxy) {
-      Step 5 "Enable system proxy"
-
-      # Internet Settings registry (per-machine).
-      $regPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\Internet Settings'
-      if (-not (Test-Path $regPath)) { New-Item -Path $regPath -Force | Out-Null }
-      Set-ItemProperty -Path $regPath -Name ProxyEnable -Value 1
-      Set-ItemProperty -Path $regPath -Name ProxyServer -Value '127.0.0.1:9090'
-      Set-ItemProperty -Path $regPath -Name ProxyOverride -Value 'localhost;127.0.0.1;<local>'
-
-      # WinHTTP proxy (for services that don't read IE settings).
-      & netsh winhttp set proxy proxy-server="127.0.0.1:9090" bypass-list="localhost;127.0.0.1" 2>$null | Out-Null
-
-      # Environment variables (for CLI tools, Node, Python, etc).
-      [Environment]::SetEnvironmentVariable('HTTPS_PROXY', 'http://127.0.0.1:9090', 'Machine')
-      [Environment]::SetEnvironmentVariable('HTTP_PROXY', 'http://127.0.0.1:9090', 'Machine')
-      [Environment]::SetEnvironmentVariable('NO_PROXY', 'localhost,127.0.0.1', 'Machine')
-
-      # Block QUIC so browsers fall back to HTTPS through the proxy.
-      $fwName = 'Lyntway - Block QUIC (UDP 443)'
-      Remove-NetFirewallRule -DisplayName $fwName -ErrorAction SilentlyContinue
-      New-NetFirewallRule -DisplayName $fwName -Direction Outbound -Protocol UDP `
-        -RemotePort 443 -Action Block | Out-Null
-
-      # Broadcast WM_SETTINGCHANGE so running apps pick up the new proxy.
-      Add-Type -Namespace Win32 -Name NativeMethods -MemberDefinition @"
-        [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
-        public static extern IntPtr SendMessageTimeout(
-          IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam,
-          uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
-"@
-      $HWND_BROADCAST = [IntPtr]0xffff
-      $WM_SETTINGCHANGE = 0x1a
-      $result = [UIntPtr]::Zero
-      [Win32.NativeMethods]::SendMessageTimeout(
-        $HWND_BROADCAST, $WM_SETTINGCHANGE, [UIntPtr]::Zero,
-        'Environment', 2, 5000, [ref]$result) | Out-Null
-
-      Ok "system proxy set to 127.0.0.1:9090"
+    # A native command does not throw on failure, so the old try/catch
+    # printed "installed" over every failure. The exit code is the truth,
+    # and the agent itself checks the store before it ever enables the
+    # proxy, so a CA this machine does not trust leaves HTTPS alone.
+    & $exe --install-ca 2>&1 | Out-Null
+    $caOk = ($LASTEXITCODE -eq 0)
+    if ($caOk) {
+      Ok "CA certificate installed to the machine's Root store"
     } else {
-      Info "skipping proxy configuration (-NoProxy)"
+      Warn "the CA was not installed - the system proxy will stay OFF until it is trusted,"
+      Warn "so HTTPS keeps working on this machine but is not inspected"
+      Warn "to retry as administrator: `"$exe`" --install-ca"
     }
+
+    # Step 5: System proxy.
+    #
+    # Not set here. The agent points the machine at itself only once its
+    # listener is bound AND the OS trusts its CA, and it clears the same keys
+    # when it stops. This script used to write the machine-wide policy keys
+    # directly; the agent cleared only the per-user ones, so a service that
+    # died left a machine pointed at a port nothing served, with nothing able
+    # to undo it. Stale keys from that version are cleared below.
+
+    Step 5 "System proxy"
+    foreach ($v in 'ProxyEnable','ProxyServer','ProxyOverride','ProxySettingsPerUser') {
+      Remove-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\Internet Settings' -Name $v -ErrorAction SilentlyContinue
+    }
+    & netsh winhttp reset proxy 2>$null | Out-Null
+    Remove-NetFirewallRule -DisplayName 'Lyntway - Block QUIC (UDP 443)' -ErrorAction SilentlyContinue
+    if ($NoProxy) {
+      Info "the agent will run without pointing this machine at it (-NoProxy)"
+    } elseif ($caOk) {
+      Info "the agent enables the system proxy itself once it is listening and the CA is trusted"
+    } else {
+      Info "the system proxy stays OFF until this machine trusts the CA"
+    }
+
 
     # Step 6: Register Windows service.
 
@@ -218,7 +204,9 @@ LYNTWAY_MACHINE_ID=$machineId
     }
 
     # Create service (sc.exe because New-Service doesn't support all options).
-    & sc.exe create $svcName binPath= "`"$exe`" --daemon" `
+    $daemonArgs = '--daemon'
+    if ($NoProxy) { $daemonArgs = '--daemon --no-system-proxy' }
+    & sc.exe create $svcName binPath= "`"$exe`" $daemonArgs" `
       start= auto DisplayName= "Lyntway On-Device Agent" | Out-Null
     & sc.exe description $svcName "Intercepts and governs AI traffic on this machine" | Out-Null
     & sc.exe failure $svcName reset= 60 actions= restart/5000/restart/10000/restart/30000 | Out-Null
@@ -268,17 +256,37 @@ LYNTWAY_MACHINE_ID=$machineId
         Remove-Item "$env:TEMP\lw-sidecar.tar.gz" -Force -ErrorAction SilentlyContinue
         Ok "sidecar package extracted"
 
-        # Check for Python.
-        $pythonExe = Get-Command python -ErrorAction SilentlyContinue
-        if (-not $pythonExe) { $pythonExe = Get-Command python3 -ErrorAction SilentlyContinue }
+        # Check for Python, and for a new enough one.
+        #
+        # The first interpreter on PATH was used, and gliner, transformers and
+        # onnxruntime need 3.10 or newer — so on a machine with an older Python
+        # the venv was built on an interpreter that cannot install the
+        # requirements, pip failed quietly behind --quiet, and the install
+        # reported success with no model tier on the machine.
+        # The window is 3.10 to 3.12: below 3.10 gliner, transformers and
+        # onnxruntime will not install, and 3.13 upward is where the model tier
+        # has not been installed and measured. Choosing the newest interpreter
+        # therefore picks the one version nothing here has been proven on.
+        $pythonExe = $null
+        foreach ($cand in @('python3.12','python3.11','python3.10','python','python3')) {
+          $c = Get-Command $cand -ErrorAction SilentlyContinue
+          if (-not $c) { continue }
+          & $c.Source -c 'import sys; sys.exit(0 if (3,10) <= sys.version_info < (3,13) else 1)' 2>$null
+          if ($LASTEXITCODE -eq 0) { $pythonExe = $c; break }
+        }
 
         if ($pythonExe) {
-          Info "creating Python environment (this may take a few minutes)..."
+          $pyVer = (& $pythonExe.Source --version 2>&1)
+          Info "creating Python environment with $pyVer — this may take a few minutes..."
           & $pythonExe.Source -m venv "$sidecarDir\venv"
-          & "$sidecarDir\venv\Scripts\pip" install --quiet -r "$sidecarDir\requirements.txt"
-
-          # spaCy English model for NER.
-          & "$sidecarDir\venv\Scripts\python" -m spacy download en_core_web_sm 2>$null
+          # Not quiet, and not forgiven: a model tier that failed to install is
+          # the difference between detecting a name and not.
+          & "$sidecarDir\venv\Scripts\pip" install -r "$sidecarDir\requirements.txt"
+          if ($LASTEXITCODE -ne 0) {
+            Warn "the model tier did not install"
+            Warn "the agent still runs: deterministic rules only, and every event will say degraded"
+            Warn "to retry: $sidecarDir\venv\Scripts\pip install -r $sidecarDir\requirements.txt"
+          }
 
           # Write a profile marker so the sidecar knows which tier to load.
           Set-Content -Path "$sidecarDir\.profile" -Value $profile -NoNewline
@@ -291,11 +299,13 @@ LYNTWAY_MACHINE_ID=$machineId
             -Execute "$sidecarDir\venv\Scripts\uvicorn.exe" `
             -Argument "app:app --host 127.0.0.1 --port 8092" `
             -WorkingDirectory $sidecarDir
-          $trigger = New-ScheduledTaskTrigger -AtLogOn
-          $settings = New-ScheduledTaskSettingsSet -RestartCount 3 `
-            -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries `
+          $triggerStartup = New-ScheduledTaskTrigger -AtStartup
+          $triggerLogon = New-ScheduledTaskTrigger -AtLogOn
+          $settings = New-ScheduledTaskSettingsSet -RestartCount 999 `
+            -RestartInterval (New-TimeSpan -Seconds 30) -AllowStartIfOnBatteries `
             -DontStopIfGoingOnBatteries
-          Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
+          Register-ScheduledTask -TaskName $taskName -Action $action `
+            -Trigger @($triggerStartup, $triggerLogon) `
             -Settings $settings -Description "Lyntway AI Sidecar ($profile profile)" `
             -Force | Out-Null
 
@@ -321,7 +331,36 @@ LYNTWAY_MACHINE_ID=$machineId
             Warn "sidecar not yet healthy - models downloading in background"
           }
         } else {
-          Warn "Python not found - skipping sidecar (install Python 3.10+ and re-run)"
+          # Named precisely: "not found" sent people looking for a missing
+          # interpreter when the usual problem is that theirs is too old.
+          Warn "no Python between 3.10 and 3.12 found - the model tier is not installed"
+          Warn "the agent still runs: deterministic rules only, and every event will say degraded"
+          Warn "install one and re-run this script to add it"
+          Warn "3.13 and newer are outside the window the model tier has been installed and measured on"
+        }
+
+        # Tesseract reads the pixels: scanned pages, and the painted copies the
+        # redactor writes and reads back to prove the values are gone. A system
+        # package, installed here with winget (UB Mannheim's build, the standard
+        # Windows one). Not fatal when it cannot be: the sidecar names the
+        # missing engine in /health and records scans as unread, never clean.
+        $tess = Get-Command tesseract -ErrorAction SilentlyContinue
+        if (-not $tess -and -not (Test-Path "$env:ProgramFiles\Tesseract-OCR\tesseract.exe")) {
+          if (Get-Command winget -ErrorAction SilentlyContinue) {
+            Info "installing Tesseract OCR with winget..."
+            & winget install --id UB-Mannheim.TesseractOCR -e --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+            if (Test-Path "$env:ProgramFiles\Tesseract-OCR\tesseract.exe") {
+              Ok "tesseract installed"
+            } else {
+              Warn "tesseract did not install - scanned pages and painted copies cannot be read on this machine"
+              Warn "to add it: winget install UB-Mannheim.TesseractOCR"
+            }
+          } else {
+            Warn "winget not found, so tesseract was not installed - scanned pages and painted copies cannot be read"
+            Warn "to add it: https://github.com/UB-Mannheim/tesseract/wiki"
+          }
+        } else {
+          Ok "tesseract present"
         }
       }
     } elseif ($NoSidecar) {
@@ -352,11 +391,13 @@ LYNTWAY_MACHINE_ID=$machineId
       Warn "agent may still be starting - check: curl http://127.0.0.1:9090/health"
     }
 
+    $summary = if ($caOk) { "  LYNTWAY agent installed and active               " } else { "  LYNTWAY agent installed; CA NOT trusted, proxy OFF  " }
+    $colour = if ($caOk) { 'Green' } else { 'Yellow' }
     Write-Host ""
-    Write-Host "  +-------------------------------------------------------+" -ForegroundColor Green
-    Write-Host "  |   " -ForegroundColor Green -NoNewline
-    Write-Host "OK" -ForegroundColor Green -NoNewline
-    Write-Host "  LYNTWAY agent installed and active               " -NoNewline
+    Write-Host "  +-------------------------------------------------------+" -ForegroundColor $colour
+    Write-Host "  |   " -ForegroundColor $colour -NoNewline
+    Write-Host $(if ($caOk) { 'OK' } else { '!!' }) -ForegroundColor $colour -NoNewline
+    Write-Host $summary -NoNewline
     Write-Host "|" -ForegroundColor Green
     Write-Host "  |   Manage:    $ApiBase/on-device" -ForegroundColor Green -NoNewline
     Write-Host "$(' ' * [Math]::Max(0, 34 - $ApiBase.Length))" -NoNewline

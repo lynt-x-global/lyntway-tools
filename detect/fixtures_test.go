@@ -69,3 +69,30 @@ func fakePEMBlock(kind string) string {
 
 // fakeAzureAccountKey returns a synthetic Azure storage connection fragment.
 func fakeAzureAccountKey() string { return "Account" + "Key=" + strings.Repeat("A", 64) + "==" }
+
+// --- PEM blocks ---------------------------------------------------------
+//
+// Split so no literal PEM header appears in this file. gitleaks scans the
+// repository's whole history with its private-key rule, and it is right to: a
+// file that carries a PEM BEGIN line followed by base64 looks exactly like a
+// leaked key whether or not the bytes are real — including, the first time this
+// was written, the comment explaining why not to write one. Building the
+// string at runtime keeps the scanner honest instead of teaching it to ignore a
+// path, which is how a real key eventually walks through the same hole.
+
+// pemHeader returns a PEM BEGIN line for the given kind ("RSA ", "EC ", "").
+func pemHeader(kind string) string { return "-----" + "BEGIN " + kind + "PRIVATE" + " KEY-----" }
+
+// pemFooter returns the matching END line.
+func pemFooter(kind string) string { return "-----" + "END " + kind + "PRIVATE" + " KEY-----" }
+
+// pemBlockHeader and pemBlockFooter are the PGP "BLOCK" spelling.
+func pemBlockHeader(kind string) string {
+	return "-----" + "BEGIN " + kind + "PRIVATE" + " KEY BLOCK-----"
+}
+
+// pemBodyLine is one full-width line of a PEM body: base64, 64 characters, and
+// not derived from any key.
+func pemBodyLine() string {
+	return strings.Repeat("Qk1h", 16)
+}

@@ -21,7 +21,7 @@ import (
 // wrong costs nothing if the rule still fires. An engine that turns one 0 into
 // an O breaks a Luhn check, and the card passes.
 //
-// The corpus in testdata is what RapidOCR actually returned, committed so a
+// The corpus in testdata is what the OCR engine actually returned, committed so a
 // reader can see the damage rather than take a number on trust. Regenerate it
 // with `python ai-sidecar/ocrbench.py`; that needs the ONNX models, which CI
 // does not carry and should not have to in order to measure a ruleset.
@@ -145,7 +145,7 @@ func TestOCRDetectionRecall(t *testing.T) {
 	}
 }
 
-// The finding that made the whole benchmark worth building: RapidOCR returns
+// The finding that made the whole benchmark worth building: OCR engines return
 // text with the spaces inside a detected box removed, so "+44 7700 900123"
 // comes back "+447700900123" and "Account holder" comes back "Accountholder".
 //

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 )
 
@@ -137,6 +138,17 @@ type Result struct {
 	// which are still Valid.
 	FullStrength bool
 
+	// Unrecognised names the fields carrying vocabulary this build does not
+	// know, in receipt order. Non-empty means the receipt was issued by a
+	// newer build: the signature is good and the bytes are unaltered, but
+	// this verifier cannot say what part of it means.
+	//
+	// It is separate from FullStrength, which it also clears, because the
+	// two have different remedies. A degraded receipt is as good as it will
+	// ever get; this one reads completely under a newer verifier, and a
+	// caller that cannot tell them apart tells the reader the wrong thing.
+	Unrecognised []string
+
 	// Mode is the governance mode the receipt attests.
 	Mode Mode
 
@@ -231,8 +243,29 @@ func verify(r *Receipt, raw []byte, keys KeyResolver, opts VerifyOptions) (*Resu
 			ErrKeyMismatch, sig.KeyID, r.Issuer.KeyID)
 	}
 
+	// A receipt newer than this build is not a forged one.
+	//
+	// When the schema gains a value — a surface, an actor type, an identity
+	// source — every verifier already installed would otherwise report the
+	// receipt as invalid, and "NOT VERIFIED" reads as "tampered". The
+	// signature is what says whether the bytes were altered, and it is
+	// checked below regardless. So a failure consisting only of vocabulary
+	// this build does not know is carried forward as a warning, and the
+	// receipt cannot be full strength: a verifier that cannot name what it
+	// read must not vouch for the whole of it.
+	//
+	// The honesty fields are deliberately excluded from this tolerance.
+	// governance.mode, governance.decision and evidence.provenance still
+	// fail hard when unrecognised, because a verifier that cannot read how
+	// strong a claim is has no business reporting on it at all.
+	var unknownVocabulary FieldErrors
 	if err := r.Validate(); err != nil {
-		return nil, err
+		var fe FieldErrors
+		if errors.As(err, &fe) && fe.OnlyUnrecognised() {
+			unknownVocabulary = fe
+		} else {
+			return nil, err
+		}
 	}
 
 	issuedAt, err := ParseTime(r.IssuedAt)
@@ -352,6 +385,14 @@ func verify(r *Receipt, raw []byte, keys KeyResolver, opts VerifyOptions) (*Resu
 	}
 
 	res.Warnings = collectWarnings(r)
+	for _, e := range unknownVocabulary {
+		res.FullStrength = false
+		res.Unrecognised = append(res.Unrecognised, e.Field)
+		res.Warnings = append(res.Warnings,
+			e.Field+" is "+quoteField(r, e.Field)+", which this build does not recognise: "+
+				"the signature is valid and the bytes are unaltered, but this verifier cannot say what that value means. "+
+				"A newer build may.")
+	}
 
 	if opts.RequireFullStrength && !res.FullStrength {
 		return res, fmt.Errorf("receipt: governance mode is %s but full strength was required",
@@ -417,4 +458,19 @@ func vantageOf(r *Receipt) string {
 		return ""
 	}
 	return r.Evidence.Vantage
+}
+
+// quoteField renders the offending value for a warning. Only the fields
+// that can be unrecognised are handled; anything else is reported without
+// a value rather than with a wrong one.
+func quoteField(r *Receipt, field string) string {
+	switch field {
+	case "action.surface":
+		return strconv.Quote(string(r.Action.Surface))
+	case "actor.type":
+		return strconv.Quote(string(r.Actor.Type))
+	case "actor.source":
+		return strconv.Quote(string(r.Actor.Source))
+	}
+	return "an unknown value"
 }

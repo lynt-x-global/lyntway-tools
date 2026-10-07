@@ -98,3 +98,27 @@ func TestIndianLookalikesAreNotReported(t *testing.T) {
 		t.Errorf("%q gave phone findings %q, want the whole international number once", c, phones)
 	}
 }
+
+// The fourth letter of a PAN is the holder type and takes one of ten values.
+// A string with any other letter there is a product code, not a PAN — and
+// that check is what lets the rule claim high confidence.
+func TestPANHolderTypeLetterIsChecked(t *testing.T) {
+	rs := Default()
+	for _, ok := range []string{"ABCPE1234F", "AAACZ1234C", "XYZHT9876K", "abcpe1234f"} {
+		if n := len(rs.Scan([]byte("PAN " + ok))); n != 1 {
+			t.Errorf("%q: %d findings, want 1", ok, n)
+		}
+	}
+	for _, bad := range []string{"ABCDE1234F", "ABCXE1234F", "ABCZE1234F"} {
+		for _, sp := range rs.Scan([]byte("code " + bad)) {
+			if sp.Class == ClassINPAN {
+				t.Errorf("%q was called a PAN; its fourth letter is not a holder type", bad)
+			}
+		}
+	}
+	for _, r := range rs.Rules() {
+		if r.ID == "india-pan" && r.Confidence != ConfidenceHigh {
+			t.Errorf("india-pan confidence = %v, want high: the default policy substitutes personal data only at high confidence", r.Confidence)
+		}
+	}
+}

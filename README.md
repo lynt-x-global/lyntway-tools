@@ -8,7 +8,7 @@ tool that checks receipts can be read in an afternoon.
 |---|---|---|
 | `lyntway-verify` | Checks a receipt. No network calls, ever. | No |
 | `lyntway-mcp` | Runs between an agent and an MCP server, and governs tool results on the machine they land on. | No |
-| `lyntway` | Points a machine's AI tools at a Lyntway service. | Yes |
+| `lyntway` | Reports what AI software is on a machine, and can point it at a Lyntway service. | Only to record |
 
 ## Install
 
@@ -19,6 +19,70 @@ brew install lynt-x-global/lyntway/lyntway
 Or download a build for your platform from
 [releases](https://github.com/lynt-x-global/lyntway-tools/releases) and put
 the three binaries on your `PATH`.
+
+## Start here
+
+```bash
+lyntway
+```
+
+No account, no sign-up, no network call. It reads this machine's own
+configuration files and process list and tells you what is there:
+
+```
+lyntway — what is on this machine
+
+  mb-air.local · macos 26.5 · someone
+
+AI tools (9)
+  Claude                                   running    2.37337.1
+  Claude Code                              running    2.1.300
+  Cline in VS Code                         running    4.1.25
+  Codex in VS Code                         running    26.1007.21434
+  llama.cpp server                         installed  version unknown
+
+MCP servers your agents are configured to reach (3)
+  Claude Code            heyreach                 mcp.heyreach.io
+  Claude Code            atlassian                api.atlassian.com        credential in config
+  Claude Code            internal-crm             local process            credential in config
+
+  2 of these have a credential written into the config file beside
+  them. Anything that can read that file can read the credential.
+
+Provider keys in this directory (1)
+  server/.env:12	OpenAI key	…4f9a
+
+Nothing left this machine. Everything above was read from this
+computer's own configuration files and its process list: no traffic was
+watched, no value was copied out of any file, and no account was needed.
+
+Nothing here is being recorded yet.
+```
+
+That last line is the honest one. This screen is a list of what is
+**configured** — not of what anything did. It is read from files on disk,
+so an agent that was installed somewhere this does not look is not in it,
+and `lyntway agent --explain` says exactly where it looks and what it never
+collects.
+
+Recording what those tools actually send is a different job, and that is
+what the rest of this is for.
+
+## Connecting what it found
+
+```bash
+lyntway connect
+```
+
+The same discovery, with one question at the end. It names the keys using
+the 385-entry provider catalog in [`catalog/`](catalog/) — the same table
+the console's picker uses — so a Stripe key in a .env is called a Stripe
+key rather than counted. Naming is not moving: only the seven providers
+`keys migrate` can hold are offered to be moved, and the rest are listed
+and labelled as not moved from here.
+
+Every change it makes is `lyntway keys migrate` or `lyntway init`, so
+`lyntway undo` reverses all of it.
 
 ## Checking a receipt
 

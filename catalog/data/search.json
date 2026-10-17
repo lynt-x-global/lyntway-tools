@@ -1,0 +1,371 @@
+[
+  {
+    "name": "exa",
+    "url": "https://api.exa.ai",
+    "vertical": "search",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/websets/v0/websets",
+    "label": "Exa",
+    "note": "Exa's search and contents API, the whole of it behind one bearer key.",
+    "doc": "https://exa.ai/docs/reference/getting-started"
+  },
+  {
+    "name": "firecrawl",
+    "url": "https://api.firecrawl.dev",
+    "vertical": "search",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "fc-"
+    ],
+    "probe_path": "/v1/team/credit-usage",
+    "label": "Firecrawl",
+    "note": "Firecrawl's scrape and crawl API. Pages it fetches are governed the same as any other reply, so what a crawl brings back is inspected before your application sees it.",
+    "doc": "https://docs.firecrawl.dev/api-reference/introduction"
+  },
+  {
+    "name": "tavily",
+    "url": "https://api.tavily.com",
+    "vertical": "search",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "tvly-"
+    ],
+    "probe_path": "/usage",
+    "label": "Tavily",
+    "note": "Tavily's search and extract API, which is where an agent's web results come from.",
+    "doc": "https://docs.tavily.com/documentation/api-reference/endpoint/search"
+  },
+  {
+    "name": "youcom",
+    "url": "https://api.you.com",
+    "vertical": "search",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "x-api-key",
+    "probe_path": "/v1/search",
+    "label": "You.com",
+    "note": "You.com's Search, Answer and Research API. Every endpoint is a POST, so both the query going out and the pages coming back cross this address. The older ydc-index.io host is a second address and is not this entry.",
+    "doc": "https://you.com/docs/using-the-api/authentication"
+  },
+  {
+    "name": "jina-reader",
+    "url": "https://r.jina.ai",
+    "vertical": "search",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/https://example.com",
+    "label": "Jina Reader",
+    "note": "Jina's Reader, which turns a URL into text a model can read; the page being fetched is the path, so the request itself names it. Reader answers without a key at a lower rate limit, so an unauthenticated call here is not an error.",
+    "doc": "https://docs.jina.ai/"
+  },
+  {
+    "name": "jina-search",
+    "url": "https://s.jina.ai",
+    "vertical": "search",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/?q=test",
+    "label": "Jina Search",
+    "note": "Jina's search endpoint, which returns whole pages rather than links. Same key as Reader but a separate host, so it is stored as its own upstream.",
+    "doc": "https://docs.jina.ai/"
+  },
+  {
+    "name": "linkup",
+    "url": "https://api.linkup.so",
+    "vertical": "search",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v1/credits/balance",
+    "label": "Linkup",
+    "note": "Linkup's search API. Linkup also accepts payment per request over x402 with no account at all; that path carries no API key and nothing here recognises it.",
+    "doc": "https://docs.linkup.so/pages/documentation/api-reference/endpoint/get-balance"
+  },
+  {
+    "name": "parallel",
+    "url": "https://api.parallel.ai",
+    "vertical": "search",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "x-api-key",
+    "probe_path": "/v1/tasks/runs/probe",
+    "label": "Parallel",
+    "note": "Parallel's Task and Search APIs for web research. A task runs asynchronously, so what an agent sends and what it collects later are two separate calls and two separate receipts.",
+    "doc": "https://docs.parallel.ai/public-openapi.json"
+  },
+  {
+    "name": "searchapi",
+    "url": "https://www.searchapi.io",
+    "vertical": "search",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/api/v1/me",
+    "label": "SearchApi",
+    "note": "SearchApi's SERP endpoints for Google and other engines. Its api_key query parameter is the other documented placement; we send the bearer header so the key stays out of the URL and out of logs.",
+    "doc": "https://www.searchapi.io/docs/account-api"
+  },
+  {
+    "name": "search1api",
+    "url": "https://api.search1api.com",
+    "vertical": "search",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/usage",
+    "label": "Search1API",
+    "note": "Search1API's search, news and crawl endpoints behind one bearer key.",
+    "doc": "https://s1.dev/docs"
+  },
+  {
+    "name": "perplexity",
+    "url": "https://api.perplexity.ai",
+    "vertical": "search",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v1/async/sonar",
+    "label": "Perplexity Sonar",
+    "note": "Perplexity's Sonar API, which answers from a live web search rather than from a fixed corpus. Receipts record it as an ordinary HTTP call, so a Sonar answer is governed as a reply body and not as a model's token stream.",
+    "doc": "https://docs.perplexity.ai/api-reference/async-chat-completions-get"
+  },
+  {
+    "name": "perigon",
+    "url": "https://api.perigon.io",
+    "vertical": "search",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "x-api-key",
+    "probe_path": "/v1/articles/all",
+    "label": "Perigon",
+    "note": "Perigon's news and company search API. It also reads an apiKey query parameter, which we never set: a key in a URL is a key in every proxy log between here and there.",
+    "doc": "https://www.perigon.io/docs/api/authentication"
+  },
+  {
+    "name": "apitube",
+    "url": "https://api.apitube.io",
+    "vertical": "search",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "x-api-key",
+    "key_prefixes": [
+      "api_live_",
+      "api_test_"
+    ],
+    "probe_path": "/v1/news/everything?q=test",
+    "label": "APITube",
+    "note": "APITube's news search. A test key answers with the real response shape and spends no quota, and both key shapes are recognised here, so a receipt from a test key is still a receipt of a real request.",
+    "doc": "https://docs.apitube.io/platform/news-api/authentication"
+  },
+  {
+    "name": "newsapi",
+    "url": "https://newsapi.org",
+    "vertical": "search",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "x-api-key",
+    "probe_path": "/v2/top-headlines?country=us",
+    "label": "NewsAPI",
+    "note": "NewsAPI's headline and article search. Its developer plan refuses requests from a server rather than a browser, so a key on that plan will be rejected at the provider whatever we send.",
+    "doc": "https://newsapi.org/docs/authentication"
+  },
+  {
+    "name": "semanticscholar",
+    "url": "https://api.semanticscholar.org",
+    "vertical": "search",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "x-api-key",
+    "probe_path": "/graph/v1/paper/search?query=test",
+    "label": "Semantic Scholar",
+    "note": "Semantic Scholar's Graph API for academic search. The API answers without a key from a shared pool, so storing one here buys a rate limit rather than access.",
+    "doc": "https://www.semanticscholar.org/product/api/tutorial"
+  },
+  {
+    "name": "ahrefs",
+    "url": "https://api.ahrefs.com",
+    "vertical": "search",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v3/subscription-info/limits-and-usage",
+    "label": "Ahrefs",
+    "note": "Ahrefs' v3 API for search-ranking and backlink data. It is read-only data about other people's sites, so what matters in a receipt here is the query, not the reply.",
+    "doc": "https://docs.ahrefs.com/api/docs/introduction"
+  },
+  {
+    "name": "apify",
+    "url": "https://api.apify.com",
+    "vertical": "search",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v2/users/me",
+    "label": "Apify",
+    "note": "Apify's REST API: running an actor, and reading the dataset it produced. Apify also accepts the token as a ?token= parameter and its own documentation calls that the less secure of the two; we send the header. The Apify MCP server is a separate entry.",
+    "doc": "https://docs.apify.com/api/v2"
+  },
+  {
+    "name": "brightdata",
+    "url": "https://api.brightdata.com",
+    "vertical": "search",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/customer/balance",
+    "label": "Bright Data",
+    "note": "Bright Data's API for its SERP, Unlocker and dataset products. Bright Data's acceptable-use policy forbids reselling its proxies without written approval, so this covers a customer's own key carrying their own traffic and nothing else.",
+    "doc": "https://docs.brightdata.com/api-reference/account-management-api/Get_total_balance_through_API"
+  },
+  {
+    "name": "spider",
+    "url": "https://api.spider.cloud",
+    "vertical": "search",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/data/credits",
+    "label": "Spider",
+    "note": "Spider's crawl, scrape and search API. Spider answers unauthenticated requests at 25 a day, so a missing key here fails as a rate limit rather than as a refusal.",
+    "doc": "https://spider.cloud/docs/api"
+  },
+  {
+    "name": "scrapingbee",
+    "url": "https://app.scrapingbee.com",
+    "vertical": "search",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/api/v1/usage",
+    "label": "ScrapingBee",
+    "note": "ScrapingBee's HTML API, which renders a page and returns it. The api_key query parameter still works and is the older shape; we send the bearer header ScrapingBee now documents, so the key never appears in a URL.",
+    "doc": "https://www.scrapingbee.com/documentation/"
+  },
+  {
+    "name": "scrapingant",
+    "url": "https://api.scrapingant.com",
+    "vertical": "search",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "x-api-key",
+    "probe_path": "/v2/general?url=https%3A%2F%2Fexample.com",
+    "label": "ScrapingAnt",
+    "note": "ScrapingAnt's browser-rendered scrape endpoint. The same name works as a query parameter and as a header; the header is what we set.",
+    "doc": "https://docs.scrapingant.com/request-response-format"
+  },
+  {
+    "name": "hasdata",
+    "url": "https://api.hasdata.com",
+    "vertical": "search",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "x-api-key",
+    "probe_path": "/scrape/google?q=test",
+    "label": "HasData",
+    "note": "HasData's SERP and web-scraping endpoints. Each call fetches a page live, so the reply is somebody else's content arriving in your application and is governed as such.",
+    "doc": "https://docs.hasdata.com/apis/google-serp-api"
+  },
+  {
+    "name": "browseai",
+    "url": "https://api.browse.ai",
+    "vertical": "search",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v2/robots",
+    "label": "Browse AI",
+    "note": "Browse AI's v2 API, which runs a recorded robot against a site and returns what it captured.",
+    "doc": "https://www.browse.ai/docs/api/v2"
+  },
+  {
+    "name": "browserbase",
+    "url": "https://api.browserbase.com",
+    "vertical": "search",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "x-bb-api-key",
+    "probe_path": "/v1/sessions",
+    "label": "Browserbase",
+    "note": "Browserbase's REST API for creating and reading cloud browser sessions. What the browser itself does travels over a separate CDP WebSocket that never crosses this address, so a receipt here covers the session's control plane and not the pages it visited.",
+    "doc": "https://docs.browserbase.com/reference/api/list-all-sessions"
+  },
+  {
+    "name": "hyperbrowser",
+    "url": "https://api.hyperbrowser.ai",
+    "vertical": "search",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "x-api-key",
+    "probe_path": "/api/sessions",
+    "label": "Hyperbrowser",
+    "note": "Hyperbrowser's REST API for sessions, scrape and crawl. As with any cloud browser, the browser's own traffic is a WebSocket we never see; this covers what your application asks for and what it is handed back.",
+    "doc": "https://hyperbrowser.ai/docs/reference/api-reference"
+  },
+  {
+    "name": "airtop",
+    "url": "https://api.airtop.ai",
+    "vertical": "search",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/api/v1/sessions",
+    "label": "Airtop",
+    "note": "Airtop's cloud browser API: sessions, windows and the page content it extracts. The extracted content comes back through this address, so it is inspected before it reaches an agent.",
+    "doc": "https://docs.airtop.ai/api-reference/airtop-api/sessions/list"
+  },
+  {
+    "name": "notte",
+    "url": "https://api.notte.cc",
+    "vertical": "search",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/sessions",
+    "label": "Notte",
+    "note": "Notte's browser-agent API for sessions and web actions. Notte echoes a prefix of the token back in its own error messages, so a failed call's body will carry the first characters of whatever was sent.",
+    "doc": "https://docs.notte.cc/api-reference/authentication"
+  },
+  {
+    "name": "kernel",
+    "url": "https://api.onkernel.com",
+    "vertical": "search",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/deployments",
+    "label": "Kernel",
+    "note": "Kernel's API for hosted browsers and the agents deployed onto them. The company now brands itself kernel.sh; the API address is unchanged.",
+    "doc": "https://www.kernel.sh/docs/api-reference/deployments/list-deployments"
+  },
+  {
+    "name": "browser-use",
+    "url": "https://api.browser-use.com",
+    "vertical": "search",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "x-browser-use-api-key",
+    "key_prefixes": [
+      "bu_"
+    ],
+    "probe_path": "/api/v4/sessions",
+    "label": "Browser Use Cloud",
+    "note": "Browser Use's hosted API for running its browser agent. The self-hosted library talks to a model provider directly and never touches this address, so only the cloud product is covered here.",
+    "doc": "https://docs.browser-use.com/cloud/quickstart"
+  },
+  {
+    "name": "skyvern",
+    "url": "https://api.skyvern.com",
+    "vertical": "search",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "x-api-key",
+    "probe_path": "/v1/runs/probe",
+    "label": "Skyvern",
+    "note": "Skyvern's cloud API for browser workflows: starting a run, and polling it for status and output. A self-hosted Skyvern is the customer's own address and needs an upstream of its own.",
+    "doc": "https://www.skyvern.com/docs/introduction"
+  },
+  {
+    "name": "azure-ai-search",
+    "url_template": "https://{service}.search.windows.net",
+    "template_field": "service",
+    "template_hint": "your search service name, the first label of https://<this>.search.windows.net",
+    "vertical": "search",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "api-key",
+    "probe_path": "/indexes?api-version=2026-04-01",
+    "label": "Azure AI Search",
+    "note": "One Azure AI Search service: queries and index definitions, with an admin or query key in the api-key header. Microsoft's own guidance is to move to Entra roles instead, and a service with key authentication disabled will refuse this whatever we send. The address holds the customer's own service name, so it is never probed from here.",
+    "doc": "https://learn.microsoft.com/en-us/azure/search/search-security-api-keys"
+  }
+]

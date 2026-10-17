@@ -1,0 +1,220 @@
+[
+  {
+    "name": "easypost",
+    "url": "https://api.easypost.com",
+    "vertical": "commerce",
+    "surface": "http",
+    "auth_scheme": "basic",
+    "probe_path": "/v2/addresses",
+    "label": "EasyPost",
+    "note": "EasyPost's shipping API for rates, labels and tracking, which reads the key as the HTTP Basic username with an empty password, which is what we send. A test key and a production key are the same address and are told apart by the key alone.",
+    "doc": "https://docs.easypost.com/docs/authentication"
+  },
+  {
+    "name": "easyship",
+    "url": "https://public-api.easyship.com",
+    "vertical": "commerce",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "prod_",
+      "sand_"
+    ],
+    "probe_path": "/2024-09/shipments",
+    "label": "Easyship",
+    "note": "Easyship's 2024-09 API for rates, shipments and labels behind one bearer token. Tokens carry scopes, so a token without the scope an endpoint needs is refused for that reason rather than for being invalid.",
+    "doc": "https://developers.easyship.com/reference/authentication"
+  },
+  {
+    "name": "ecwid",
+    "url_template": "https://app.ecwid.com/api/v3/{store_id}",
+    "template_field": "store_id",
+    "template_hint": "your Ecwid store ID, the number shown in your control panel",
+    "vertical": "commerce",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "secret_",
+      "public_"
+    ],
+    "probe_path": "/profile",
+    "label": "Ecwid by Lightspeed",
+    "note": "Ecwid's v3 store API, whose address carries your own store ID, so it cannot be checked by us before you supply it. Only a secret_ token reaches store data; a public_ token is the storefront one and returns far less, and the token's app scopes limit it further.",
+    "doc": "https://docs.ecwid.com/get-started/make-your-first-api-request"
+  },
+  {
+    "name": "katana",
+    "url": "https://api.katanamrp.com",
+    "vertical": "commerce",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v1/sales_orders",
+    "label": "Katana",
+    "note": "Katana's manufacturing and inventory API — products, materials, sales orders — behind one API key sent as a bearer token.",
+    "doc": "https://developer.katanamrp.com/reference/api-authentication"
+  },
+  {
+    "name": "loyverse",
+    "url": "https://api.loyverse.com",
+    "vertical": "commerce",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v1.0/stores",
+    "label": "Loyverse",
+    "note": "Loyverse's point-of-sale API for stores, items, receipts and inventory, with a personal access token as a bearer credential. That token is unscoped and reaches the whole account; scoped access needs Loyverse's OAuth flow instead.",
+    "doc": "https://developer.loyverse.com/docs/API-Reference__v1.0.yaml"
+  },
+  {
+    "name": "malomo",
+    "url": "https://api.gomalomo.com",
+    "vertical": "commerce",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "sk_"
+    ],
+    "probe_path": "/orders",
+    "label": "Malomo",
+    "note": "Malomo's post-purchase tracking API for orders and shipments, with the secret key as a bearer token. Malomo's publishable key is for its browser script and does not reach this API.",
+    "doc": "https://docs.gomalomo.com/authentication"
+  },
+  {
+    "name": "onfleet",
+    "url": "https://onfleet.com",
+    "vertical": "commerce",
+    "surface": "http",
+    "auth_scheme": "basic",
+    "probe_path": "/api/v2/organization",
+    "label": "Onfleet",
+    "note": "Onfleet's last-mile delivery API, which reads the key as the HTTP Basic username with a blank password, which is what we send. Onfleet has no sandbox, so a key here is a live organisation, and route optimisation and task templates are Enterprise-only whatever the key.",
+    "doc": "https://docs.onfleet.com/reference/authentication"
+  },
+  {
+    "name": "printful",
+    "url": "https://api.printful.com",
+    "vertical": "commerce",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v2/stores",
+    "label": "Printful",
+    "note": "Printful's print-on-demand API with a store-level private token as a bearer credential. An account-level token addresses a store only with an X-PF-Store-Id header, which this entry does not send, so store-level tokens are the ones that work here.",
+    "doc": "https://developers.printful.com/docs/"
+  },
+  {
+    "name": "printify",
+    "url": "https://api.printify.com",
+    "vertical": "commerce",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v1/shops.json",
+    "label": "Printify",
+    "note": "Printify's v1 API for shops, products and orders with a personal access token. Printify also requires a User-Agent naming the caller, which is your application's to send, and a personal token expires a year after it is issued.",
+    "doc": "https://developers.printify.com/"
+  },
+  {
+    "name": "prodigi",
+    "url": "https://api.prodigi.com",
+    "vertical": "commerce",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "x-api-key",
+    "probe_path": "/v4.0/orders",
+    "label": "Prodigi",
+    "note": "Prodigi's Print API v4, which reads the key from X-API-Key. Prodigi's sandbox is a separate host with its own key and is not reachable at this address.",
+    "doc": "https://www.prodigi.com/print-api/docs/reference/"
+  },
+  {
+    "name": "ship24",
+    "url": "https://api.ship24.com",
+    "vertical": "commerce",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "apik_"
+    ],
+    "probe_path": "/public/v1/trackers",
+    "label": "Ship24",
+    "note": "Ship24's parcel tracking API behind one bearer key. Ship24's terms restrict reselling or sublicensing access, and say those restrictions apply equally when the service is reached through an AI platform, so read them before routing a customer's tracking traffic on their behalf.",
+    "doc": "https://docs.ship24.com/getting-started/"
+  },
+  {
+    "name": "shipbob",
+    "url": "https://api.shipbob.com",
+    "vertical": "commerce",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/2026-07/channel",
+    "label": "ShipBob",
+    "note": "ShipBob's fulfilment API on the 2026-07 version, with a personal access token as a bearer credential. Most endpoints also need a shipbob_channel_id header, which your application supplies; the 1.0 and 2.0 versions are retired and answer 410.",
+    "doc": "https://developer.shipbob.com/auth/"
+  },
+  {
+    "name": "shipengine",
+    "url": "https://api.shipengine.com",
+    "vertical": "commerce",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "api-key",
+    "probe_path": "/v1/carriers",
+    "label": "ShipEngine",
+    "note": "ShipEngine's v1 API for rates, labels and tracking, which reads the credential from the API-Key header. Sandbox keys work at the same address and produce labels that are not real.",
+    "doc": "https://www.shipengine.com/docs/auth/"
+  },
+  {
+    "name": "shipstation",
+    "url": "https://api.shipstation.com",
+    "vertical": "commerce",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "api-key",
+    "probe_path": "/v2/carriers",
+    "label": "ShipStation",
+    "note": "ShipStation's v2 API, which reads the credential from the API-Key header and is served by the same platform as ShipEngine. The older v1 API used HTTP Basic with a key and secret pair and is not this address.",
+    "doc": "https://docs.shipstation.com/authentication"
+  },
+  {
+    "name": "smile",
+    "url": "https://api.smile.io",
+    "vertical": "commerce",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v1/customers",
+    "label": "Smile.io",
+    "note": "Smile.io's loyalty API for customers, points and rewards, with a merchant API key as a bearer credential. Smile now describes merchant keys as legacy and publishes a migration to OAuth, so expect this credential to be retired.",
+    "doc": "https://dev.smile.io/api/authentication"
+  },
+  {
+    "name": "snipcart",
+    "url": "https://app.snipcart.com",
+    "vertical": "commerce",
+    "surface": "http",
+    "auth_scheme": "basic",
+    "probe_path": "/api/orders",
+    "label": "Snipcart",
+    "note": "Snipcart's merchant API for orders, products and customers, which reads the secret key as the HTTP Basic username with no password, which is what we send. A test-mode key reaches test data only.",
+    "doc": "https://docs.snipcart.com/v3/api-reference/authentication"
+  },
+  {
+    "name": "spoke",
+    "url": "https://api.spoke.com",
+    "vertical": "commerce",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/public/v0.2b/plans",
+    "label": "Spoke (Circuit for Teams)",
+    "note": "Spoke's delivery routing API, which was Circuit for Teams before the rename; the documentation accepts the key either as a bearer token or as the HTTP Basic username, and we send the bearer form. The old api.getcircuit.com host still answers but is no longer the documented one.",
+    "doc": "https://developer.dispatch.spoke.com/api/v0.2b"
+  },
+  {
+    "name": "veeqo",
+    "url": "https://api.veeqo.com",
+    "vertical": "commerce",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "x-api-key",
+    "probe_path": "/current_user",
+    "label": "Veeqo",
+    "note": "Veeqo's inventory and order management API, which reads the key from x-api-key.",
+    "doc": "https://developers.veeqo.com/getting-started/authentication"
+  }
+]

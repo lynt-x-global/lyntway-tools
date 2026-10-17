@@ -1,0 +1,344 @@
+[
+  {
+    "name": "airtable",
+    "url": "https://api.airtable.com",
+    "vertical": "data",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v0/meta/whoami",
+    "label": "Airtable",
+    "note": "Airtable's Web API with a personal access token. The base id is part of the path you call, so one upstream covers every base the token can reach.",
+    "doc": "https://airtable.com/developers/web/api/authentication"
+  },
+  {
+    "name": "supabase",
+    "url_template": "https://{project_ref}.supabase.co",
+    "template_field": "project_ref",
+    "template_hint": "the reference in your project's address, https://<this>.supabase.co — Project Settings, General",
+    "vertical": "data",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "apikey",
+    "key_prefixes": [
+      "sb_secret_"
+    ],
+    "probe_path": "/rest/v1/",
+    "label": "Supabase",
+    "note": "One Supabase project: its REST tables under /rest/v1, storage and the auth admin API, with a secret key read from the apikey header. Supabase's own documentation says a secret key must not be sent as a bearer token, because it is not a JWT and the check fails. A legacy JWT-shaped key still works but is not recognised from its shape, so name supabase yourself for one. Row-level security still applies at the project; nothing here widens it.",
+    "doc": "https://supabase.com/docs/guides/api/api-keys"
+  },
+  {
+    "name": "neon",
+    "url": "https://console.neon.tech",
+    "vertical": "data",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "napi_",
+      "neon_org_key_",
+      "neon_project_key_"
+    ],
+    "probe_path": "/api/v2/users/me",
+    "label": "Neon",
+    "note": "Neon's control plane: projects, branches, endpoints and roles under /api/v2, with an API key sent as a bearer token. It manages a Neon account and never carries query traffic — SQL reaches a *.neon.tech host over the Postgres wire protocol, which this does not see.",
+    "doc": "https://neon.com/docs/reference/api-reference"
+  },
+  {
+    "name": "turso",
+    "url": "https://api.turso.tech",
+    "vertical": "data",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v1/auth/validate",
+    "label": "Turso",
+    "note": "Turso's Platform API: organisations, groups, databases and tokens, with a platform token sent as a bearer token. A platform token administers the account; database reads and writes use a separate database auth token over the libSQL protocol and do not pass here.",
+    "doc": "https://docs.turso.tech/api-reference/authentication"
+  },
+  {
+    "name": "planetscale",
+    "url": "https://api.planetscale.com",
+    "vertical": "data",
+    "surface": "http",
+    "auth_scheme": "raw",
+    "probe_path": "/v1/organizations",
+    "label": "PlanetScale",
+    "note": "PlanetScale's API, which is the one provider here whose Authorization header carries no scheme word: the value is the service token id, a colon, then the token, so paste both joined as <token_id>:<token>. Control plane only — MySQL traffic uses database passwords over the MySQL protocol and never reaches this host.",
+    "doc": "https://planetscale.com/docs/concepts/service-tokens"
+  },
+  {
+    "name": "cockroachdb",
+    "url": "https://cockroachlabs.cloud",
+    "vertical": "data",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/api/v1/clusters",
+    "label": "CockroachDB Cloud",
+    "note": "CockroachDB Cloud's Cloud API: clusters, backups and SQL users, with a service-account secret key sent as a bearer token. Cluster SQL runs over its own connection with SQL users and certificates, so no customer row ever crosses this address.",
+    "doc": "https://docs.cockroachlabs.com/docs/cockroachcloud/cloud-api"
+  },
+  {
+    "name": "supabase-management",
+    "url": "https://api.supabase.com",
+    "vertical": "data",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "sbp_"
+    ],
+    "probe_path": "/v1/projects",
+    "label": "Supabase Management API",
+    "note": "The Supabase Management API, which administers projects, branches and organisations for a whole account with a personal access token. It is not a project's data API: PostgREST, storage and auth live on https://<ref>.supabase.co behind a different key, which is the separate supabase entry.",
+    "doc": "https://supabase.com/docs/reference/api/introduction"
+  },
+  {
+    "name": "prisma",
+    "url": "https://api.prisma.io",
+    "vertical": "data",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v1/projects",
+    "label": "Prisma",
+    "note": "Prisma's REST API for Prisma Postgres: workspaces, projects and databases, with a service token sent as a bearer token. Queries do not come here — an application reaches its database through the Prisma Accelerate connection string instead.",
+    "doc": "https://www.prisma.io/docs/rest-api/authentication"
+  },
+  {
+    "name": "couchbase-capella",
+    "url": "https://cloudapi.cloud.couchbase.com",
+    "vertical": "data",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v4/organizations",
+    "label": "Couchbase Capella",
+    "note": "Capella's Management API: organisations, projects and clusters, with the token half of an API key pair sent as a bearer token — the key's id is not part of the credential. A Capella key expires after 180 days unless it was created with none, and may be bound to an IP allowlist, which rejects calls made from a proxy's egress address.",
+    "doc": "https://docs.couchbase.com/cloud/management-api-reference/index.html"
+  },
+  {
+    "name": "singlestore",
+    "url": "https://api.singlestore.com",
+    "vertical": "data",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v1/organizations/current",
+    "label": "SingleStore",
+    "note": "SingleStore's Management API: organisations, workspaces and workspace groups, with an API key sent as a bearer token. Every SingleStore key is created with an expiry date, and SQL runs over the MySQL protocol elsewhere, so this covers administration only.",
+    "doc": "https://docs.singlestore.com/cloud/reference/management-api/"
+  },
+  {
+    "name": "astra",
+    "url": "https://api.astra.datastax.com",
+    "vertical": "data",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "AstraCS:"
+    ],
+    "probe_path": "/v2/databases",
+    "label": "DataStax Astra DB",
+    "note": "Astra's DevOps API: databases, keyspaces and access lists for an organisation, with an application token sent as a bearer token. Per-database reads and writes go to a <id>-<region>.apps.astra.datastax.com host under an X-Cassandra-Token header, which is a different address and a different credential.",
+    "doc": "https://docs.datastax.com/en/astra-db-serverless/administration/manage-application-tokens.html"
+  },
+  {
+    "name": "motherduck",
+    "url": "https://api.motherduck.com",
+    "vertical": "data",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v1/active_accounts",
+    "label": "MotherDuck",
+    "note": "MotherDuck's Admin REST API — accounts, instances and token management — with a service-account token sent as a bearer token. Ordinary MotherDuck use is DuckDB speaking its own protocol with a motherduck_token, so a proxy in front of this host sees administration and almost none of a customer's query traffic.",
+    "doc": "https://motherduck.com/docs/openapi.json"
+  },
+  {
+    "name": "dremio",
+    "url": "https://api.dremio.cloud",
+    "vertical": "data",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v0/projects",
+    "label": "Dremio Cloud",
+    "note": "Dremio Cloud's API for projects, catalogs and jobs, with a personal access token sent as a bearer token. A Dremio PAT is issued with an expiry, and query results stream over Arrow Flight to the project's engine rather than through this host. EU tenants use the separate dremio-eu entry.",
+    "doc": "https://docs.dremio.com/cloud/reference/api/"
+  },
+  {
+    "name": "dremio-eu",
+    "url": "https://api.eu.dremio.cloud",
+    "vertical": "data",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v0/projects",
+    "label": "Dremio Cloud (EU)",
+    "note": "The EU control plane for Dremio Cloud, identical to dremio but on api.eu.dremio.cloud. A token issued in one region is refused by the other, so pick the region the workspace was created in.",
+    "doc": "https://docs.dremio.com/cloud/reference/api/"
+  },
+  {
+    "name": "pinecone",
+    "url": "https://api.pinecone.io",
+    "vertical": "data",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "api-key",
+    "probe_path": "/indexes",
+    "label": "Pinecone",
+    "note": "Pinecone's control plane at api.pinecone.io — indexes, collections and assistants — with the key in the Api-Key header, which is where Pinecone reads it and not the Authorization header. Vector upserts and queries go to a per-index *.pinecone.io host that this address does not cover.",
+    "doc": "https://docs.pinecone.io/reference/api/authentication"
+  },
+  {
+    "name": "zilliz",
+    "url": "https://api.cloud.zilliz.com",
+    "vertical": "data",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v2/clusters",
+    "label": "Zilliz Cloud",
+    "note": "Zilliz Cloud's control plane for managed Milvus: clusters, users and backups under /v2, with an API key sent as a bearer token. Vector search itself runs against the cluster's own endpoint, so what crosses here is administration.",
+    "doc": "https://docs.zilliz.com/reference/restful/list-clusters-v2"
+  },
+  {
+    "name": "vectara",
+    "url": "https://api.vectara.io",
+    "vertical": "data",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "x-api-key",
+    "probe_path": "/v2/corpora",
+    "label": "Vectara",
+    "note": "Vectara's v2 REST API — corpora, documents, upload and query — with the key in the x-api-key header. Vectara also accepts an OAuth bearer token, but those expire after thirty minutes and are not a credential anybody can store here.",
+    "doc": "https://docs.vectara.com/docs/rest-api/"
+  },
+  {
+    "name": "typesense-cloud",
+    "url": "https://cloud.typesense.org",
+    "vertical": "data",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "x-typesense-cloud-management-api-key",
+    "probe_path": "/api/v1/clusters",
+    "label": "Typesense Cloud",
+    "note": "Typesense Cloud's Cluster Management API: listing clusters, nodes and their configuration, with the key in the X-TYPESENSE-CLOUD-MANAGEMENT-API-KEY header. It manages clusters and cannot search them — a cluster's own search API lives on that cluster's *.typesense.net hosts under a different key.",
+    "doc": "https://typesense.org/docs/cloud-management-api/v1/authentication.html"
+  },
+  {
+    "name": "tinybird",
+    "url": "https://api.tinybird.co",
+    "vertical": "data",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v0/datasources",
+    "label": "Tinybird",
+    "note": "Tinybird's API at api.tinybird.co: data sources, pipes and the endpoints built from them, with a workspace token sent as a bearer token. A Tinybird token is scoped to one workspace, so an organisation with several needs one upstream for each.",
+    "doc": "https://www.tinybird.co/docs/forward/get-started/authentication"
+  },
+  {
+    "name": "stitch",
+    "url": "https://api.stitchdata.com",
+    "vertical": "data",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v4/sources",
+    "label": "Stitch",
+    "note": "Stitch's Connect API: sources, destinations and their extraction schedules, with an access token sent as a bearer token. It configures replication; the rows Stitch moves go straight from source to warehouse and never pass through this address.",
+    "doc": "https://www.stitchdata.com/docs/developers/stitch-connect/api"
+  },
+  {
+    "name": "hex",
+    "url": "https://app.hex.tech",
+    "vertical": "data",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/api/v1/projects",
+    "label": "Hex",
+    "note": "Hex's API for listing projects and running them, with a Hex API token sent as a bearer token. It starts and inspects project runs — the SQL those runs issue goes from Hex to the warehouse directly, so query text is not visible here.",
+    "doc": "https://learn.hex.tech/docs/api/api-reference"
+  },
+  {
+    "name": "deepnote",
+    "url": "https://api.deepnote.com",
+    "vertical": "data",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v1/projects",
+    "label": "Deepnote",
+    "note": "Deepnote's API for projects and notebook executions, with an API key sent as a bearer token. It reaches Deepnote's control plane only; a notebook's own connections to a customer's databases are made from Deepnote's machines and are not seen here.",
+    "doc": "https://deepnote.com/docs/deepnote-api"
+  },
+  {
+    "name": "dune",
+    "url": "https://api.dune.com",
+    "vertical": "data",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "x-dune-api-key",
+    "probe_path": "/api/v1/execution/01000000000000000000000000/status",
+    "label": "Dune",
+    "note": "Dune's API for running saved queries and reading their results, with the key in the X-DUNE-API-KEY header. Dune also accepts the same key as an api_key query parameter, which would put a live credential in a URL; this upstream sends the header, and a caller that appends the parameter is not covered by that choice.",
+    "doc": "https://docs.dune.com/api-reference/overview/authentication"
+  },
+  {
+    "name": "teable",
+    "url": "https://app.teable.ai",
+    "vertical": "data",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/api/space",
+    "label": "Teable",
+    "note": "Teable's API for bases, tables and records, with a personal access token sent as a bearer token. The table id is part of the path a caller builds, so one upstream reaches every base the token was scoped to and no more.",
+    "doc": "https://help.teable.io/en/api-doc"
+  },
+  {
+    "name": "grist",
+    "url": "https://docs.getgrist.com",
+    "vertical": "data",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/api/orgs",
+    "label": "Grist",
+    "note": "Grist's REST API on the hosted docs.getgrist.com site: orgs, workspaces, documents and their records, with an API key sent as a bearer token. A Grist API key carries the full access of the person who made it, and a team on its own <team>.getgrist.com site is a different host that this entry does not reach.",
+    "doc": "https://support.getgrist.com/rest-api/"
+  },
+  {
+    "name": "imagekit",
+    "url": "https://api.imagekit.io",
+    "vertical": "data",
+    "surface": "http",
+    "auth_scheme": "basic",
+    "auth_user": "",
+    "probe_path": "/v1/files",
+    "label": "ImageKit",
+    "note": "ImageKit's media API for listing, searching and managing files, with the private API key sent as the HTTP Basic username and an empty password, exactly as ImageKit documents it. Image delivery and transformation happen on the ik.imagekit.io URL endpoint, which needs no key and is not covered here.",
+    "doc": "https://docs.imagekit.io/api-reference/api-introduction"
+  },
+  {
+    "name": "pinata",
+    "url": "https://api.pinata.cloud",
+    "vertical": "data",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/data/testAuthentication",
+    "label": "Pinata",
+    "note": "Pinata's API for pinning and listing files on IPFS, with the account JWT sent as a bearer token. Content served through a gateway is fetched from a *.mypinata.cloud address instead, so this covers the account's own calls and not public retrieval.",
+    "doc": "https://docs.pinata.cloud/api-reference/introduction"
+  },
+  {
+    "name": "gumlet",
+    "url": "https://api.gumlet.com",
+    "vertical": "data",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v1/video/sources",
+    "label": "Gumlet",
+    "note": "Gumlet's API for video and image sources, assets and analytics under /v1, with an API key sent as a bearer token. A Gumlet key carries the role it was created with, and playback and image delivery run on Gumlet's CDN hostnames rather than here.",
+    "doc": "https://docs.gumlet.com/reference/"
+  },
+  {
+    "name": "uploadthing",
+    "url": "https://api.uploadthing.com",
+    "vertical": "data",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "x-uploadthing-api-key",
+    "probe_path": "/v6/listFiles",
+    "label": "UploadThing",
+    "note": "UploadThing's REST API for listing files and reading usage, with the key in the x-uploadthing-api-key header. UploadThing's own documentation for this surface renders in the browser rather than as text, so the header was confirmed against the live service instead: with it the answer is \"Invalid API key\", without it \"Missing API Key\". Browser uploads go to UploadThing's ingest hosts and are not covered.",
+    "doc": "https://docs.uploadthing.com/api-reference/openapi-spec"
+  }
+]

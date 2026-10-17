@@ -1,0 +1,433 @@
+[
+  {
+    "name": "alertops",
+    "url": "https://api.alertops.com",
+    "vertical": "observability",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "api-key",
+    "probe_path": "/api/v2/alerts",
+    "label": "AlertOps",
+    "note": "AlertOps' v2 API, which reads the key from a header. Version 1 of the same API takes the key as a query parameter instead, and this entry deliberately does not reach it: a credential in a URL is a credential in everybody's logs.",
+    "doc": "https://api.alertops.com/swagger/v2/swagger.json"
+  },
+  {
+    "name": "axiom",
+    "url": "https://api.axiom.co",
+    "vertical": "observability",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v2/datasets",
+    "label": "Axiom",
+    "note": "Axiom's management and query API with an API token. Axiom documents api.axiom.co as the address of every endpoint except ingest and query, which go to a region edge host this entry does not cover.",
+    "doc": "https://axiom.co/docs/restapi/introduction"
+  },
+  {
+    "name": "betterstack-telemetry",
+    "url": "https://telemetry.betterstack.com/api/v1",
+    "vertical": "observability",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/sources",
+    "label": "Better Stack Telemetry",
+    "note": "Better Stack's Telemetry API, which is where logs and metrics sources live. Its token is a different one from the Uptime API's, so a key stored here will not reach uptime.betterstack.com.",
+    "doc": "https://betterstack.com/docs/logs/api/getting-started/"
+  },
+  {
+    "name": "betterstack-uptime",
+    "url": "https://uptime.betterstack.com/api/v2",
+    "vertical": "observability",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/monitors",
+    "label": "Better Stack Uptime",
+    "note": "Better Stack's Uptime API — monitors, heartbeats, on-call and status pages. The Telemetry side of Better Stack is a separate host and a separate token.",
+    "doc": "https://betterstack.com/docs/uptime/api/getting-started-with-uptime-api/"
+  },
+  {
+    "name": "checkly",
+    "url": "https://api.checklyhq.com",
+    "vertical": "observability",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v1/checks",
+    "label": "Checkly",
+    "note": "Checkly's public API for synthetic checks and their results. Checkly also documents an X-Checkly-Account header naming the account; this service will not set it, so a key that needs one — a key belonging to somebody in several Checkly accounts — will be refused.",
+    "doc": "https://www.checklyhq.com/docs/api-reference/overview/"
+  },
+  {
+    "name": "cronitor",
+    "url": "https://cronitor.io/api",
+    "vertical": "observability",
+    "surface": "http",
+    "auth_scheme": "basic",
+    "probe_path": "/monitors",
+    "label": "Cronitor",
+    "note": "Cronitor's monitor API. The key goes in as the HTTP Basic username with no password, which is what Cronitor documents; the telemetry pings a job sends are a different, keyless address and do not pass here.",
+    "doc": "https://cronitor.io/docs/api"
+  },
+  {
+    "name": "dash0-eu-central-1",
+    "url": "https://api.eu-central-1.aws.dash0.com",
+    "vertical": "observability",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "auth_"
+    ],
+    "probe_path": "/api/dashboards",
+    "label": "Dash0 (eu-central-1)",
+    "note": "Dash0's API in its AWS eu-central-1 deployment. A Dash0 token belongs to one organisation in one region, so a token minted elsewhere will be refused here rather than routed.",
+    "doc": "https://www.dash0.com/docs/dash0/api"
+  },
+  {
+    "name": "dash0-eu-west-1",
+    "url": "https://api.eu-west-1.aws.dash0.com",
+    "vertical": "observability",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "auth_"
+    ],
+    "probe_path": "/api/dashboards",
+    "label": "Dash0 (eu-west-1)",
+    "note": "Dash0's API in its AWS eu-west-1 deployment. Pick the region your organisation was created in; a token restricted to particular datasets also needs the dataset named on the call, which the caller supplies.",
+    "doc": "https://www.dash0.com/docs/dash0/api"
+  },
+  {
+    "name": "dash0-europe-west4",
+    "url": "https://api.europe-west4.gcp.dash0.com",
+    "vertical": "observability",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "auth_"
+    ],
+    "probe_path": "/api/dashboards",
+    "label": "Dash0 (europe-west4)",
+    "note": "Dash0's API in its Google Cloud europe-west4 deployment, which is a different host from the AWS ones and takes only tokens issued there.",
+    "doc": "https://www.dash0.com/docs/dash0/api"
+  },
+  {
+    "name": "dash0-us-west-2",
+    "url": "https://api.us-west-2.aws.dash0.com",
+    "vertical": "observability",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "auth_"
+    ],
+    "probe_path": "/api/dashboards",
+    "label": "Dash0 (us-west-2)",
+    "note": "Dash0's API in its AWS us-west-2 deployment. Dash0 also accepts the same token as an HTTP Basic password under any username; we send the bearer form its documentation leads with.",
+    "doc": "https://www.dash0.com/docs/dash0/api"
+  },
+  {
+    "name": "debugbear",
+    "url": "https://www.debugbear.com/api/v1",
+    "vertical": "observability",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "x-api-key",
+    "probe_path": "/projects",
+    "label": "DebugBear",
+    "note": "DebugBear's page-speed monitoring API. A project key reaches one project's results; the project and page endpoints under /projects need the admin key instead, and DebugBear decides which by the key, not by the address.",
+    "doc": "https://www.debugbear.com/docs/projects-api"
+  },
+  {
+    "name": "firehydrant",
+    "url": "https://api.firehydrant.io/v1",
+    "vertical": "observability",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/environments",
+    "label": "FireHydrant",
+    "note": "FireHydrant's incident API with a bot token. FireHydrant documents the token with the Bearer word, which is what we send; the older bare-Authorization form is not what this entry uses.",
+    "doc": "https://docs.firehydrant.com/reference/firehydrant-api"
+  },
+  {
+    "name": "grafana-cloud",
+    "url": "https://grafana.com/api",
+    "vertical": "observability",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/instances",
+    "label": "Grafana Cloud (account API)",
+    "note": "The Grafana Cloud account API at grafana.com, with an access policy token: stacks, plugins and access policies. The dashboards and datasources inside a stack are a different host — use the Grafana Cloud stack entry for those.",
+    "doc": "https://grafana.com/docs/grafana-cloud/account-management/authentication-and-permissions/access-policies/authorize-services/"
+  },
+  {
+    "name": "grafana-stack",
+    "url_template": "https://{stack}.grafana.net",
+    "template_field": "stack",
+    "template_hint": "the slug in your stack's address, https://<this>.grafana.net",
+    "vertical": "observability",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "glsa_"
+    ],
+    "probe_path": "/api/access-control/user/permissions",
+    "label": "Grafana Cloud (stack)",
+    "note": "One Grafana Cloud stack's own HTTP API with a service account token — dashboards, datasources, alert rules. The address contains your stack slug, so this entry cannot be probed on our side the way a fixed one can; it was read off Grafana's own service-account page.",
+    "doc": "https://grafana.com/docs/grafana-cloud/account-management/authentication-and-permissions/service-accounts/"
+  },
+  {
+    "name": "healthchecks",
+    "url": "https://healthchecks.io/api/v3",
+    "vertical": "observability",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "x-api-key",
+    "probe_path": "/checks/",
+    "label": "Healthchecks.io",
+    "note": "The hosted Healthchecks.io management API. Every key is scoped to one project — Healthchecks issues no account-wide key — so one upstream covers one project. A self-hosted instance is a different address entirely.",
+    "doc": "https://healthchecks.io/docs/api/"
+  },
+  {
+    "name": "hund",
+    "url": "https://api.hund.io/api/v1",
+    "vertical": "observability",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/users/current",
+    "label": "Hund",
+    "note": "Hund's status page API on its shared host. A key with global permissions works as it stands; one scoped to a single status page needs a Hund-Context header naming that page, which this service will not set.",
+    "doc": "https://hund.io/help/api"
+  },
+  {
+    "name": "ilert",
+    "url": "https://api.ilert.com/api",
+    "vertical": "observability",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/users/current",
+    "label": "ilert",
+    "note": "ilert's REST API for alerts, on-call schedules and status pages. The inbound events API that monitoring tools post to is a different, per-source address and does not pass through here.",
+    "doc": "https://docs.ilert.com/developer-docs/rest-api/api-reference/introduction/authentication"
+  },
+  {
+    "name": "incident-io",
+    "url": "https://api.incident.io",
+    "vertical": "observability",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v1/identity",
+    "label": "incident.io",
+    "note": "incident.io's API for incidents, catalog and on-call. One global host: incident.io documents no region-specific address, so there is no EU variant of this entry to choose.",
+    "doc": "https://docs.incident.io/api-reference/introduction"
+  },
+  {
+    "name": "instatus",
+    "url": "https://api.instatus.com",
+    "vertical": "observability",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v1/pages",
+    "label": "Instatus",
+    "note": "Instatus's API for status pages, components and incidents, behind one bearer key.",
+    "doc": "https://instatus.com/help/api"
+  },
+  {
+    "name": "netdata",
+    "url": "https://app.netdata.cloud",
+    "vertical": "observability",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/api/v2/spaces",
+    "label": "Netdata Cloud",
+    "note": "Netdata Cloud's v2 API with a bearer token. Netdata answers these paths to an anonymous caller too, with nothing in them, so a 200 here is not proof the token was accepted — only a token it can read shows real spaces. A token needs scope:all to reach the whole API.",
+    "doc": "https://learn.netdata.cloud/docs/netdata-cloud/authentication-&-authorization/api-tokens"
+  },
+  {
+    "name": "newrelic",
+    "url": "https://api.newrelic.com",
+    "vertical": "observability",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "api-key",
+    "probe_path": "/v2/applications.json",
+    "label": "New Relic (US)",
+    "note": "New Relic's US endpoint — the REST API v2 and NerdGraph — reading a user API key from the Api-Key header. An EU account answers on a different host; use the New Relic (EU) entry for one. A licence or ingest key is not a user key and will be refused.",
+    "doc": "https://docs.newrelic.com/docs/apis/rest-api-v2/get-started/introduction-new-relic-rest-api-v2/"
+  },
+  {
+    "name": "newrelic-eu",
+    "url": "https://api.eu.newrelic.com",
+    "vertical": "observability",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "api-key",
+    "probe_path": "/v2/applications.json",
+    "label": "New Relic (EU)",
+    "note": "New Relic's EU endpoint, for an account whose data is held in the EU region. A US account's key does not resolve here; the two hosts are separate and New Relic names both.",
+    "doc": "https://docs.newrelic.com/docs/apis/rest-api-v2/get-started/introduction-new-relic-rest-api-v2/"
+  },
+  {
+    "name": "nodeping",
+    "url": "https://api.nodeping.com/api/1",
+    "vertical": "observability",
+    "surface": "http",
+    "auth_scheme": "basic",
+    "probe_path": "/checks",
+    "label": "NodePing",
+    "note": "NodePing's uptime API. The token goes in as the HTTP Basic username with the password ignored, which NodePing documents; its other two ways of passing it put the token in the URL or the body and are not what we send.",
+    "doc": "https://nodeping.com/docs-api-overview.html"
+  },
+  {
+    "name": "ohdear",
+    "url": "https://ohdear.app/api",
+    "vertical": "observability",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/monitors",
+    "label": "Oh Dear",
+    "note": "Oh Dear's API for monitors, uptime, broken links and certificate checks, behind one bearer token.",
+    "doc": "https://ohdear.app/docs/integrations/the-oh-dear-api"
+  },
+  {
+    "name": "pingdom",
+    "url": "https://api.pingdom.com/api/3.1",
+    "vertical": "observability",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/checks",
+    "label": "Pingdom",
+    "note": "Pingdom's API 3.1 for uptime and transaction checks. A read-only Pingdom token is enough for everything this reads and is the safer one to store.",
+    "doc": "https://docs.pingdom.com/API_3.1.yaml"
+  },
+  {
+    "name": "rootly",
+    "url": "https://api.rootly.com/v1",
+    "vertical": "observability",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/incidents",
+    "label": "Rootly",
+    "note": "Rootly's incident management API with an API key. Rootly's endpoints expect the JSON:API content type on writes; nothing here sets it for you.",
+    "doc": "https://docs.rootly.com/api-reference/overview"
+  },
+  {
+    "name": "sentry",
+    "url": "https://sentry.io/api/0",
+    "vertical": "observability",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/projects/",
+    "label": "Sentry",
+    "note": "Sentry's web API with an auth token. This is the region-neutral address; an organisation pinned to a data storage location should use the Sentry (US) or Sentry (EU) entry so requests stay in that region.",
+    "doc": "https://docs.sentry.io/api/auth/"
+  },
+  {
+    "name": "sentry-de",
+    "url": "https://de.sentry.io/api/0",
+    "vertical": "observability",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/projects/",
+    "label": "Sentry (EU)",
+    "note": "Sentry's EU region address, which is de.sentry.io — the host Sentry names for an organisation whose data storage location is the European Union. A US organisation's token does not belong here.",
+    "doc": "https://docs.sentry.io/product/accounts/choose-your-data-center/"
+  },
+  {
+    "name": "sentry-us",
+    "url": "https://us.sentry.io/api/0",
+    "vertical": "observability",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/projects/",
+    "label": "Sentry (US)",
+    "note": "Sentry's US region address, for an organisation whose data storage location is the United States and which needs its API calls processed there rather than at the region-neutral host.",
+    "doc": "https://docs.sentry.io/product/accounts/choose-your-data-center/"
+  },
+  {
+    "name": "solarwinds-ap01",
+    "url": "https://api.ap-01.cloud.solarwinds.com/v1",
+    "vertical": "observability",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/entities",
+    "label": "SolarWinds Observability (ap-01)",
+    "note": "SolarWinds Observability SaaS in its ap-01 data centre. A SolarWinds API token belongs to one data centre, so the wrong entry here sends a live token to a region that will never accept it.",
+    "doc": "https://documentation.solarwinds.com/en/success_center/observability/content/api/api.htm"
+  },
+  {
+    "name": "solarwinds-eu01",
+    "url": "https://api.eu-01.cloud.solarwinds.com/v1",
+    "vertical": "observability",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/entities",
+    "label": "SolarWinds Observability (eu-01)",
+    "note": "SolarWinds Observability SaaS in its eu-01 data centre, for an organisation whose data is held in Europe.",
+    "doc": "https://documentation.solarwinds.com/en/success_center/observability/content/api/api.htm"
+  },
+  {
+    "name": "solarwinds-na01",
+    "url": "https://api.na-01.cloud.solarwinds.com/v1",
+    "vertical": "observability",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/entities",
+    "label": "SolarWinds Observability (na-01)",
+    "note": "SolarWinds Observability SaaS in its na-01 data centre, which is the North American AWS one and the default for most accounts.",
+    "doc": "https://documentation.solarwinds.com/en/success_center/observability/content/api/api.htm"
+  },
+  {
+    "name": "solarwinds-na02",
+    "url": "https://api.na-02.cloud.solarwinds.com/v1",
+    "vertical": "observability",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/entities",
+    "label": "SolarWinds Observability (na-02)",
+    "note": "SolarWinds Observability SaaS in its na-02 data centre, which is the North American Azure one. It is a separate tenancy from na-01 and takes only tokens issued there.",
+    "doc": "https://documentation.solarwinds.com/en/success_center/observability/content/api/api.htm"
+  },
+  {
+    "name": "speedcurve",
+    "url": "https://api.speedcurve.com/v1",
+    "vertical": "observability",
+    "surface": "http",
+    "auth_scheme": "basic",
+    "probe_path": "/sites",
+    "label": "SpeedCurve",
+    "note": "SpeedCurve's API for sites, tests and page-speed results. The key is the HTTP Basic username and SpeedCurve ignores the password, so we send none.",
+    "doc": "https://support.speedcurve.com/reference/"
+  },
+  {
+    "name": "spike",
+    "url": "https://api.spike.sh",
+    "vertical": "observability",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "x-api-key",
+    "probe_path": "/teams",
+    "label": "Spike.sh",
+    "note": "Spike.sh's incident and on-call API. Only /teams and /users answer on the key alone; the rest of the API also wants an x-team-id header naming the team, which this service will not set.",
+    "doc": "https://docs.spike.sh/spike-api-docs/getting-started.md"
+  },
+  {
+    "name": "updown",
+    "url": "https://updown.io/api",
+    "vertical": "observability",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "x-api-key",
+    "probe_path": "/checks",
+    "label": "updown.io",
+    "note": "updown.io's uptime API. The key goes in the header rather than updown's other option of an api-key query parameter, because a credential in a URL ends up in logs we do not control.",
+    "doc": "https://updown.io/api"
+  },
+  {
+    "name": "uptimerobot",
+    "url": "https://api.uptimerobot.com/v3",
+    "vertical": "observability",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/monitors",
+    "label": "UptimeRobot",
+    "note": "UptimeRobot's v3 API, which takes the token as a bearer. The v2 API is a different shape — the key went in the form body and GET was refused — and is not what this entry reaches.",
+    "doc": "https://uptimerobot.com/api/v3/"
+  }
+]

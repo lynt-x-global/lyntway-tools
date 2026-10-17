@@ -72,6 +72,18 @@ func main() {
 
 	args := flag.Args()
 	if len(args) == 0 {
+		// A machine that has never signed in is shown what is on it
+		// before it is asked for anything. See firstrun.go for why the
+		// ordering matters.
+		if firstRunWanted() {
+			cliCommand = "first-run"
+			dir, _ := os.Getwd()
+			if err := firstRun(dir); err != nil {
+				fmt.Fprintf(os.Stderr, "lyntway: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
 		cliCommand = "setup"
 		if err := setup(nil); err != nil {
 			fmt.Fprintf(os.Stderr, "lyntway: %v\n", err)
@@ -89,6 +101,8 @@ func main() {
 		err = login(args[1:])
 	case "init":
 		err = initialise(args[1:])
+	case "connect":
+		err = connectCommand(args[1:])
 	case "keys":
 		cliCommand = "keys"
 		if len(args) > 1 {
@@ -138,6 +152,7 @@ func usage() {
 Usage:
   lyntway setup          sign in, scan, migrate keys, route tools — all in one
   lyntway login          connect this machine to an account
+  lyntway connect        find the keys and tools that are here, and route them
   lyntway init           find what is installed and route it through us
   lyntway keys migrate   move provider keys out of a project's .env files
   lyntway keys sign      give this key a signing keypair
@@ -151,10 +166,15 @@ Usage:
   lyntway readiness      ask the endpoints your AI reached what they answer with no key,
                          and (--mcp) whether an MCP server is safe for an agent to use
   lyntway status         what is configured, and what is not covered
+                         (before you sign in: what AI software is on this
+                         machine, what your agents can reach, and which of
+                         those have a credential sitting in the config)
   lyntway undo           put everything back
   lyntway version        which build this is
 
-Running lyntway with no arguments is the same as lyntway setup.
+Running lyntway with no arguments reports what is on this machine, and
+once you are signed in is the same as lyntway setup. Nothing is sent
+anywhere to produce that report and no account is needed for it.
 
 Nothing is changed until you have seen the list and agreed, and every file
 that is changed is backed up beside itself first.
@@ -454,6 +474,15 @@ func printManual(c config, targets []target) {
 func status() error {
 	c, err := loadConfig()
 	if err != nil {
+		// Not signed in is not an error to report back at somebody: the
+		// question `status` answers — what is on this machine — can be
+		// answered in full without an account, and refusing to answer it
+		// was how this command used to behave. Settings that exist and
+		// are unreadable are still an error, and still said out loud.
+		if firstRunWanted() {
+			dir, _ := os.Getwd()
+			return firstRun(dir)
+		}
 		return err
 	}
 	line, raw := signedInLineWithBody(c, statusClient)

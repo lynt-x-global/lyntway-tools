@@ -1,0 +1,187 @@
+[
+  {
+    "name": "ahasend",
+    "url": "https://api.ahasend.com",
+    "vertical": "email",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "aha-sk-"
+    ],
+    "probe_path": "/v2/accounts/me",
+    "label": "AhaSend",
+    "note": "AhaSend's v2 transactional email API behind one bearer key. The v1 API used a different credential and is not this address.",
+    "doc": "https://ahasend.com/docs/api-reference/authentication"
+  },
+  {
+    "name": "brevo",
+    "url": "https://api.brevo.com",
+    "vertical": "email",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "api-key",
+    "probe_path": "/v3/account",
+    "label": "Brevo",
+    "note": "Brevo's v3 API, which reads the key from its own api-key header rather than Authorization, and covers transactional email, contacts and campaigns with one key. Brevo's SMTP relay is a separate credential and does not pass this address.",
+    "doc": "https://developers.brevo.com/docs/getting-started"
+  },
+  {
+    "name": "customerio",
+    "url": "https://api.customer.io",
+    "vertical": "email",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v1/campaigns",
+    "label": "Customer.io",
+    "note": "Customer.io's App API on the US region, which reads campaigns, transactional messages and metrics. The Track API that receives events is a different host and authenticates with a site ID and key pair, so it is not reachable here; an EU account is the customerio-eu entry.",
+    "doc": "https://docs.customer.io/api/app/"
+  },
+  {
+    "name": "customerio-eu",
+    "url": "https://api-eu.customer.io",
+    "vertical": "email",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v1/campaigns",
+    "label": "Customer.io (EU)",
+    "note": "Customer.io's App API on the EU region. A key issued in a US workspace does not resolve here, and the Track API remains a separate host and credential.",
+    "doc": "https://docs.customer.io/api/app/"
+  },
+  {
+    "name": "forwardemail",
+    "url": "https://api.forwardemail.net",
+    "vertical": "email",
+    "surface": "http",
+    "auth_scheme": "basic",
+    "probe_path": "/v1/account",
+    "label": "Forward Email",
+    "note": "Forward Email's API, which reads the token as the HTTP Basic username with an empty password, which is what we send. Mail relayed through its SMTP and IMAP servers uses a mailbox password rather than this key and does not pass here.",
+    "doc": "https://forwardemail.net/en/email-api"
+  },
+  {
+    "name": "loops",
+    "url": "https://app.loops.so",
+    "vertical": "email",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/api/v1/api-key",
+    "label": "Loops",
+    "note": "Loops' API for contacts, transactional email and events; call it as /gw/loops/api/v1/transactional. One bearer key covers the whole API.",
+    "doc": "https://loops.so/docs/api-reference/intro"
+  },
+  {
+    "name": "mailersend",
+    "url": "https://api.mailersend.com",
+    "vertical": "email",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v1/domains",
+    "label": "MailerSend",
+    "note": "MailerSend's v1 API for email, SMS and templates behind one bearer token. Mail sent through MailerSend's SMTP relay uses a separate username and password and never passes this address.",
+    "doc": "https://developers.mailersend.com/general.html"
+  },
+  {
+    "name": "mailgun",
+    "url": "https://api.mailgun.net",
+    "vertical": "email",
+    "surface": "http",
+    "auth_scheme": "basic",
+    "auth_user": "api",
+    "key_prefixes": [
+      "key-"
+    ],
+    "probe_path": "/v3/domains",
+    "label": "Mailgun",
+    "note": "Mailgun's US region. It authenticates as HTTP Basic with the username api and the key as the password, which is what we send. A domain created in Mailgun's EU region answers at api.eu.mailgun.net and is the mailgun-eu entry.",
+    "doc": "https://documentation.mailgun.com/docs/mailgun/api-reference/mg-auth"
+  },
+  {
+    "name": "mailgun-eu",
+    "url": "https://api.eu.mailgun.net",
+    "vertical": "email",
+    "surface": "http",
+    "auth_scheme": "basic",
+    "auth_user": "api",
+    "key_prefixes": [
+      "key-"
+    ],
+    "probe_path": "/v3/domains",
+    "label": "Mailgun (EU)",
+    "note": "Mailgun's EU region, which is where a domain created under EU data residency lives. A domain created in the US region is not visible here and is the mailgun entry.",
+    "doc": "https://documentation.mailgun.com/docs/mailgun/api-reference/mg-auth"
+  },
+  {
+    "name": "postmark",
+    "url": "https://api.postmarkapp.com",
+    "vertical": "email",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "x-postmark-server-token",
+    "probe_path": "/server",
+    "label": "Postmark",
+    "note": "Postmark's transactional email API with a server token, which Postmark reads from X-Postmark-Server-Token. An account-level token is read from a different header and is the postmark-account entry.",
+    "doc": "https://postmarkapp.com/developer/api/overview"
+  },
+  {
+    "name": "postmark-account",
+    "url": "https://api.postmarkapp.com",
+    "vertical": "email",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "x-postmark-account-token",
+    "probe_path": "/servers",
+    "label": "Postmark (account token)",
+    "note": "Postmark's account-level endpoints — servers, domains, sender signatures — which read X-Postmark-Account-Token. Sending a message needs a server token instead and is the postmark entry.",
+    "doc": "https://postmarkapp.com/developer/api/overview"
+  },
+  {
+    "name": "resend",
+    "url": "https://api.resend.com",
+    "vertical": "email",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "re_"
+    ],
+    "probe_path": "/domains",
+    "label": "Resend",
+    "note": "Resend's email API. One bearer key covers sending, domains and audiences.",
+    "doc": "https://resend.com/docs/api-reference/introduction"
+  },
+  {
+    "name": "sendgrid",
+    "url": "https://api.sendgrid.com",
+    "vertical": "email",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "SG."
+    ],
+    "probe_path": "/v3/scopes",
+    "label": "SendGrid",
+    "note": "SendGrid's v3 API; call it as /gw/sendgrid/v3/mail/send. SendGrid's EU data residency uses a different host and needs an upstream naming it.",
+    "doc": "https://www.twilio.com/docs/sendgrid/api-reference/how-to-use-the-sendgrid-v3-api/authentication"
+  },
+  {
+    "name": "sparkpost",
+    "url": "https://api.sparkpost.com",
+    "vertical": "email",
+    "surface": "http",
+    "auth_scheme": "raw",
+    "probe_path": "/api/v1/account",
+    "label": "SparkPost",
+    "note": "SparkPost's US API, which reads the key as the whole Authorization header with no scheme word in front of it. An EU account answers at api.eu.sparkpost.com and is the sparkpost-eu entry.",
+    "doc": "https://developers.sparkpost.com/api/index.html"
+  },
+  {
+    "name": "sparkpost-eu",
+    "url": "https://api.eu.sparkpost.com",
+    "vertical": "email",
+    "surface": "http",
+    "auth_scheme": "raw",
+    "probe_path": "/api/v1/account",
+    "label": "SparkPost (EU)",
+    "note": "SparkPost's EU API. A key issued on the US account does not resolve here.",
+    "doc": "https://developers.sparkpost.com/api/index.html"
+  }
+]

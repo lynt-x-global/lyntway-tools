@@ -1,0 +1,236 @@
+[
+  {
+    "name": "beehiiv",
+    "url": "https://api.beehiiv.com",
+    "vertical": "marketing",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v2/publications",
+    "label": "beehiiv",
+    "note": "beehiiv's v2 API for publications, posts and subscribers behind one bearer key. The v1 API is retired and is not this address.",
+    "doc": "https://developers.beehiiv.com/api-reference/publications/index"
+  },
+  {
+    "name": "braze",
+    "url_template": "https://rest.{cluster}.braze.com",
+    "template_field": "cluster",
+    "template_hint": "the cluster in your Braze REST endpoint, such as iad-01 or us-10",
+    "vertical": "marketing",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/campaigns/list",
+    "label": "Braze",
+    "note": "Braze's REST API, whose host carries the cluster your workspace was provisioned on. Braze's European clusters end in .braze.eu and are the braze-eu entry instead; the SDK endpoints that receive events from a customer's own app are a different host and are not covered.",
+    "doc": "https://www.braze.com/docs/api/basics/"
+  },
+  {
+    "name": "braze-eu",
+    "url_template": "https://rest.{cluster}.braze.eu",
+    "template_field": "cluster",
+    "template_hint": "the European cluster in your Braze REST endpoint, such as fra-01",
+    "vertical": "marketing",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/campaigns/list",
+    "label": "Braze (EU)",
+    "note": "Braze's European clusters, which answer on the .braze.eu domain rather than .braze.com. A US or APAC workspace is the braze entry.",
+    "doc": "https://www.braze.com/docs/api/basics/"
+  },
+  {
+    "name": "drip",
+    "url": "https://api.getdrip.com",
+    "vertical": "marketing",
+    "surface": "http",
+    "auth_scheme": "basic",
+    "probe_path": "/v2/accounts",
+    "label": "Drip",
+    "note": "Drip's REST API, which reads the API token as the HTTP Basic username with an empty password, which is what we send. Drip's browser tracking snippet reports to a different host and never passes this address.",
+    "doc": "https://developer.drip.com/"
+  },
+  {
+    "name": "emailoctopus",
+    "url": "https://api.emailoctopus.com",
+    "vertical": "marketing",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/lists",
+    "label": "EmailOctopus",
+    "note": "EmailOctopus's v2 API. The legacy 1.6 API lives at emailoctopus.com and carries the key as a query parameter, so a key pasted here reaches v2 only.",
+    "doc": "https://emailoctopus.com/api-documentation/v2"
+  },
+  {
+    "name": "fathom",
+    "url": "https://api.usefathom.com",
+    "vertical": "marketing",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v1/account",
+    "label": "Fathom Analytics",
+    "note": "Fathom Analytics' reporting API. The tracking script reports to Fathom's collector straight from a visitor's browser, so nothing a site records passes this address.",
+    "doc": "https://usefathom.com/api/v1/authentication"
+  },
+  {
+    "name": "kit",
+    "url": "https://api.kit.com",
+    "vertical": "marketing",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "x-kit-api-key",
+    "probe_path": "/v4/account",
+    "label": "Kit (ConvertKit)",
+    "note": "Kit's v4 API, which the company shipped under the ConvertKit name. The v3 API carries the key as a query parameter rather than a header and is not reachable through this entry.",
+    "doc": "https://developers.kit.com/api-reference/authentication"
+  },
+  {
+    "name": "launchdarkly",
+    "url": "https://app.launchdarkly.com",
+    "vertical": "marketing",
+    "surface": "http",
+    "auth_scheme": "raw",
+    "probe_path": "/api/v2/projects",
+    "label": "LaunchDarkly",
+    "note": "LaunchDarkly's REST API, which reads the access token as the whole Authorization header with no scheme word in front of it. Flag evaluation runs against LaunchDarkly's streaming and events hosts with an SDK key and is not this address; an EU account is the launchdarkly-eu entry.",
+    "doc": "https://launchdarkly.com/docs/api"
+  },
+  {
+    "name": "launchdarkly-eu",
+    "url": "https://app.eu.launchdarkly.com",
+    "vertical": "marketing",
+    "surface": "http",
+    "auth_scheme": "raw",
+    "probe_path": "/api/v2/projects",
+    "label": "LaunchDarkly (EU)",
+    "note": "LaunchDarkly's EU-resident instance, which is a separate account from the commercial one and does not accept its tokens. The US federal instance is a third host and has no entry.",
+    "doc": "https://launchdarkly.com/docs/api"
+  },
+  {
+    "name": "mailchimp",
+    "url_template": "https://{datacenter}.api.mailchimp.com",
+    "template_field": "datacenter",
+    "template_hint": "the data centre after the dash in your API key, such as us14",
+    "vertical": "marketing",
+    "surface": "http",
+    "auth_scheme": "basic",
+    "auth_user": "anystring",
+    "probe_path": "/3.0/ping",
+    "label": "Mailchimp Marketing",
+    "note": "Mailchimp's Marketing API, whose host carries your account's data centre — the code after the dash in your own key. Mailchimp reads the key as the HTTP Basic password and ignores the username. Mandrill, its transactional side, takes the key in the request body instead and cannot be reached through this entry.",
+    "doc": "https://mailchimp.com/developer/marketing/docs/fundamentals/"
+  },
+  {
+    "name": "plausible",
+    "url": "https://plausible.io",
+    "vertical": "marketing",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/api/v1/sites",
+    "label": "Plausible",
+    "note": "Plausible's hosted Sites and Stats APIs. A self-hosted Plausible serves the same API from the customer's own host and needs an upstream naming that address.",
+    "doc": "https://plausible.io/docs/sites-api"
+  },
+  {
+    "name": "posthog",
+    "url": "https://us.posthog.com",
+    "vertical": "marketing",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "phx_"
+    ],
+    "probe_path": "/api/users/@me/",
+    "label": "PostHog",
+    "note": "PostHog's US cloud, read with a personal API key. Event capture goes to us.i.posthog.com with a project key and is neither this address nor this credential; an EU project is the posthog-eu entry and a self-hosted instance needs an upstream naming its own host.",
+    "doc": "https://posthog.com/docs/api/personal-api-keys"
+  },
+  {
+    "name": "posthog-eu",
+    "url": "https://eu.posthog.com",
+    "vertical": "marketing",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/api/users/@me/",
+    "label": "PostHog (EU)",
+    "note": "PostHog's EU cloud. A key issued in a US project does not resolve here, and event capture still goes to eu.i.posthog.com rather than this address.",
+    "doc": "https://posthog.com/docs/api/personal-api-keys"
+  },
+  {
+    "name": "postscript",
+    "url": "https://api.postscript.io",
+    "vertical": "marketing",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/api/v2/shops",
+    "label": "Postscript",
+    "note": "Postscript's SMS marketing API with a shop or partner secret key. Postscript's older publishable-key scheme was HTTP Basic and is not what this entry sends.",
+    "doc": "https://developers.postscript.io/docs/api-authentication"
+  },
+  {
+    "name": "segment",
+    "url": "https://api.segmentapis.com",
+    "vertical": "marketing",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/me",
+    "label": "Segment",
+    "note": "Segment's Public API, which manages sources, destinations and workspaces. Tracking calls go to api.segment.io with a write key and are not this address; an EU workspace is the segment-eu entry.",
+    "doc": "https://docs.segmentapis.com/tag/Getting-Started"
+  },
+  {
+    "name": "segment-eu",
+    "url": "https://eu1.api.segmentapis.com",
+    "vertical": "marketing",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/me",
+    "label": "Segment (EU)",
+    "note": "Segment's Public API for EU-resident workspaces. A token issued in a US workspace does not resolve here.",
+    "doc": "https://docs.segmentapis.com/tag/Getting-Started"
+  },
+  {
+    "name": "tally",
+    "url": "https://api.tally.so",
+    "vertical": "marketing",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/forms",
+    "label": "Tally",
+    "note": "Tally's API for forms, submissions and webhooks behind one bearer key. A respondent filling in a form never passes this address.",
+    "doc": "https://developers.tally.so/api-reference/introduction"
+  },
+  {
+    "name": "typeform",
+    "url": "https://api.typeform.com",
+    "vertical": "marketing",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "tfp_"
+    ],
+    "probe_path": "/me",
+    "label": "Typeform",
+    "note": "Typeform's Create, Responses and Webhooks APIs behind one personal access token. Responses submitted by respondents reach Typeform directly and never pass this address.",
+    "doc": "https://www.typeform.com/developers/get-started/personal-access-token/"
+  },
+  {
+    "name": "umami",
+    "url": "https://api.umami.is",
+    "vertical": "marketing",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v1/websites",
+    "label": "Umami Cloud",
+    "note": "Umami Cloud's API. A self-hosted Umami serves the same API from the customer's own host under a session token rather than an API key, so it needs an upstream of its own.",
+    "doc": "https://docs.umami.is/docs/cloud/api-key"
+  },
+  {
+    "name": "webflow",
+    "url": "https://api.webflow.com",
+    "vertical": "marketing",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v2/token/authorized_by",
+    "label": "Webflow",
+    "note": "Webflow's Data API v2 with a site token or an app token. The Designer API runs inside the Webflow canvas in a browser and is not reachable through this address.",
+    "doc": "https://developers.webflow.com/data/reference/authentication"
+  }
+]

@@ -1,0 +1,172 @@
+[
+  {
+    "name": "stripe",
+    "url": "https://api.stripe.com",
+    "vertical": "payments",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "sk_test_",
+      "sk_live_",
+      "rk_test_",
+      "rk_live_"
+    ],
+    "env_prefixes": {
+      "test": [
+        "sk_test_",
+        "rk_test_"
+      ],
+      "live": [
+        "sk_live_",
+        "rk_live_"
+      ]
+    },
+    "payload_policy": "observe",
+    "probe_path": "/v1/balance",
+    "label": "Stripe",
+    "note": "Stripe's REST API. Its documentation shows HTTP Basic with the key as the username, and names Authorization: Bearer as the equivalent — bearer is what we send, because this service's basic scheme puts the key in the password position and Stripe reads the username. Test and live share this host and are told apart by the key alone. A restricted key answers 403 outside its own scopes, and an account with Stripe's access policies pinned to an IP range will refuse requests once they arrive from ours.",
+    "doc": "https://docs.stripe.com/api/authentication"
+  },
+  {
+    "name": "adyen",
+    "url": "https://management-live.adyen.com",
+    "vertical": "payments",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "x-api-key",
+    "payload_policy": "observe",
+    "probe_path": "/v3/merchants",
+    "label": "Adyen Management (live)",
+    "note": "Adyen's Management API, which is the only Adyen surface with a fixed live host. It reaches account, store and terminal configuration and nothing else: Checkout and Classic Payments answer at a host carrying the merchant's own prefix — <prefix>-checkout-live.adyenpayments.com — which is not this entry and is not in the catalog. Use adyen-test for a test key; the two hosts are separate and a test key sent here is refused.",
+    "doc": "https://docs.adyen.com/development-resources/api-authentication/"
+  },
+  {
+    "name": "adyen-test",
+    "url": "https://management-test.adyen.com",
+    "vertical": "payments",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "x-api-key",
+    "payload_policy": "observe",
+    "probe_path": "/v3/merchants",
+    "label": "Adyen Management (test)",
+    "note": "Adyen's test Management API. A separate host from live rather than a mode of the same one, which is why it is a separate route: sending a test key to the live host authenticates as nobody. Reaches configuration only, as the live entry does.",
+    "doc": "https://docs.adyen.com/development-resources/api-authentication/"
+  },
+  {
+    "name": "square",
+    "url": "https://connect.squareup.com",
+    "vertical": "payments",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "payload_policy": "observe",
+    "probe_path": "/v2/locations",
+    "label": "Square",
+    "note": "Square's production API with a personal access token. Square's sandbox is a different host and is here as square-sandbox; a sandbox token sent to this one is refused. Square's own developer terms restrict disclosing card information to a third party, which is worth reading before routing anything carrying a card number through us.",
+    "doc": "https://developer.squareup.com/docs/build-basics/access-tokens"
+  },
+  {
+    "name": "square-sandbox",
+    "url": "https://connect.squareupsandbox.com",
+    "vertical": "payments",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "payload_policy": "observe",
+    "probe_path": "/v2/locations",
+    "label": "Square (sandbox)",
+    "note": "Square's sandbox API. A separate host from production, so a sandbox token belongs here and nowhere else. Nothing on it moves money.",
+    "doc": "https://developer.squareup.com/docs/devtools/sandbox/overview"
+  },
+  {
+    "name": "paddle",
+    "url": "https://api.paddle.com",
+    "vertical": "payments",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "pdl_live_apikey_",
+      "pdl_sdbx_apikey_"
+    ],
+    "env_prefixes": {
+      "test": [
+        "pdl_sdbx_apikey_"
+      ],
+      "live": [
+        "pdl_live_apikey_"
+      ]
+    },
+    "payload_policy": "observe",
+    "probe_path": "/products",
+    "label": "Paddle",
+    "note": "Paddle's live billing API. Paddle's sandbox is a different host and is here as paddle-sandbox, so a pdl_sdbx_apikey_ key stored against this route reaches the live host and is refused — which is why the environment read off the key is shown beside it.",
+    "doc": "https://developer.paddle.com/api-reference/about/authentication"
+  },
+  {
+    "name": "paddle-sandbox",
+    "url": "https://sandbox-api.paddle.com",
+    "vertical": "payments",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "pdl_sdbx_apikey_"
+    ],
+    "env_prefixes": {
+      "test": [
+        "pdl_sdbx_apikey_"
+      ]
+    },
+    "payload_policy": "observe",
+    "probe_path": "/products",
+    "label": "Paddle (sandbox)",
+    "note": "Paddle's sandbox billing API, on its own host. Only a pdl_sdbx_apikey_ key works here; a live key sent to it is refused.",
+    "doc": "https://developer.paddle.com/sdks/sandbox"
+  },
+  {
+    "name": "lemonsqueezy",
+    "url": "https://api.lemonsqueezy.com",
+    "vertical": "payments",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "payload_policy": "observe",
+    "probe_path": "/v1/stores",
+    "label": "Lemon Squeezy",
+    "note": "Lemon Squeezy's API. One key reaches the whole account — every store, order, subscription and licence key, read and write — because there is no scoped or read-only key. Every request must carry Accept and Content-Type of application/vnd.api+json; we forward the ones your client sends and add none, so a client that omits them fails here exactly as it would directly. Keys are valid for one year, so set an expiry when you store one.",
+    "doc": "https://docs.lemonsqueezy.com/api/getting-started/requests"
+  },
+  {
+    "name": "brex",
+    "url": "https://api.brex.com",
+    "vertical": "payments",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "payload_policy": "observe",
+    "probe_path": "/v2/users/me",
+    "label": "Brex",
+    "note": "Brex's API with a user token from the dashboard. Brex documents no sandbox — its staging host is stated not to accept customer tokens — so anything sent here is production. A token goes stale after ninety days without use.",
+    "doc": "https://developer.brex.com/guides/authentication"
+  },
+  {
+    "name": "wise",
+    "url": "https://api.wise.com",
+    "vertical": "payments",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "payload_policy": "observe",
+    "probe_path": "/v2/profiles",
+    "label": "Wise",
+    "note": "Wise's production API with a personal API token, which only business accounts can issue. Wise's partner access is OAuth over mutual TLS on a different host and cannot be routed through us at all, because the client certificate is the customer's. Its sandbox is api.wise-sandbox.com and is here as wise-sandbox.",
+    "doc": "https://docs.wise.com/guides/developer/auth-and-security/personal-api-token"
+  },
+  {
+    "name": "wise-sandbox",
+    "url": "https://api.wise-sandbox.com",
+    "vertical": "payments",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "payload_policy": "observe",
+    "probe_path": "/v2/profiles",
+    "label": "Wise (sandbox)",
+    "note": "Wise's sandbox API, on its own host — not api.sandbox.transferwise.tech, which several third-party guides still name and which no longer answers. Nothing on it moves money.",
+    "doc": "https://docs.wise.com/guides/developer/environments"
+  }
+]

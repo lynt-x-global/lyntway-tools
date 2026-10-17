@@ -1,0 +1,339 @@
+[
+  {
+    "name": "slack",
+    "url": "https://slack.com/api",
+    "vertical": "messaging",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "xoxb-",
+      "xoxp-",
+      "xoxe.xoxp-",
+      "xapp-"
+    ],
+    "probe_path": "/auth.test",
+    "label": "Slack",
+    "note": "Slack's Web API \u2014 /gw/slack/chat.postMessage and the rest \u2014 with a bot or user token. Events and Socket Mode arrive at your own server rather than leaving it, so nothing here sees them.",
+    "doc": "https://docs.slack.dev/apis/web-api/"
+  },
+  {
+    "name": "discord",
+    "url": "https://discord.com/api/v10",
+    "vertical": "messaging",
+    "surface": "http",
+    "auth_scheme": "raw",
+    "probe_path": "/users/@me",
+    "label": "Discord",
+    "note": "Discord's REST API. Discord reads the credential as \"Bot <token>\", and we send the key exactly as it is stored, so paste the token with the word Bot in front of it; the gateway websocket a bot holds open is a separate connection this never sees.",
+    "doc": "https://docs.discord.com/developers/reference"
+  },
+  {
+    "name": "whatsapp-cloud",
+    "url": "https://graph.facebook.com",
+    "vertical": "messaging",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v23.0/me",
+    "label": "WhatsApp Cloud API (Meta Graph)",
+    "note": "Meta's Graph API, which is where WhatsApp Cloud, Messenger and Instagram messaging all send from, with a system user access token. Inbound messages arrive as webhooks at your own server, so only what you send crosses this.",
+    "doc": "https://developers.facebook.com/docs/whatsapp/cloud-api/get-started"
+  },
+  {
+    "name": "line",
+    "url": "https://api.line.me",
+    "vertical": "messaging",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v2/bot/info",
+    "label": "LINE Messaging API",
+    "note": "The LINE Messaging API with a channel access token. Message content \u2014 images, video, audio a user sent \u2014 is fetched from api-data.line.me, a different host that this entry does not cover.",
+    "doc": "https://developers.line.biz/en/reference/messaging-api/"
+  },
+  {
+    "name": "webex",
+    "url": "https://webexapis.com",
+    "vertical": "messaging",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v1/people/me",
+    "label": "Cisco Webex",
+    "note": "The Webex REST API with a bot or integration access token. A personal access token taken from the developer portal works too but expires within the day, so it is not what an integration should carry.",
+    "doc": "https://developer.webex.com/docs/authentication"
+  },
+  {
+    "name": "telnyx",
+    "url": "https://api.telnyx.com",
+    "vertical": "messaging",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v2/balance",
+    "label": "Telnyx",
+    "note": "Telnyx's v2 REST API \u2014 messaging, voice and numbers \u2014 with an API key from Mission Control. Inbound messages and call control events are webhooks to your own server and do not pass this way.",
+    "doc": "https://developers.telnyx.com/docs/development/authentication"
+  },
+  {
+    "name": "bird-us1",
+    "url": "https://us1.platform.bird.com",
+    "vertical": "messaging",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "bk_us1_"
+    ],
+    "probe_path": "/v1/sms/messages",
+    "label": "Bird (US region)",
+    "note": "Bird's platform API on its US host, with a workspace API key. A key is bound to the region encoded in its own prefix, so a bk_eu1_ key belongs on the EU entry and fails here.",
+    "doc": "https://bird.com/docs/api/authentication"
+  },
+  {
+    "name": "bird-eu1",
+    "url": "https://eu1.platform.bird.com",
+    "vertical": "messaging",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "bk_eu1_"
+    ],
+    "probe_path": "/v1/sms/messages",
+    "label": "Bird (EU region)",
+    "note": "Bird's platform API on its EU host, with a workspace API key. Same API as the US entry; the region in the key's prefix decides which of the two a given key can reach.",
+    "doc": "https://bird.com/docs/api/authentication"
+  },
+  {
+    "name": "d7networks",
+    "url": "https://api.d7networks.com",
+    "vertical": "messaging",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/messages/v1/balance",
+    "label": "D7 Networks",
+    "note": "D7's SMS API with the API access token from its dashboard. Delivery reports are webhooks to your own server and never come back through here.",
+    "doc": "https://d7networks.com/docs/Messages/Send_Message/"
+  },
+  {
+    "name": "smsapi",
+    "url": "https://api.smsapi.com",
+    "vertical": "messaging",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/profile",
+    "label": "SMSAPI",
+    "note": "SMSAPI's REST API with an OAuth token generated in its customer portal, which is a long-lived string a person pastes rather than a flow. The older key-and-password header form is not what this sends.",
+    "doc": "https://www.smsapi.com/docs/"
+  },
+  {
+    "name": "knock",
+    "url": "https://api.knock.app",
+    "vertical": "messaging",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "sk_test_",
+      "sk_live_"
+    ],
+    "probe_path": "/v1/users",
+    "label": "Knock",
+    "note": "Knock's notification API with a secret key. The public pk_ key belongs in a browser and cannot reach these endpoints, so only the sk_ one is worth storing.",
+    "doc": "https://docs.knock.app/api-reference/overview/authentication"
+  },
+  {
+    "name": "courier",
+    "url": "https://api.courier.com",
+    "vertical": "messaging",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/profiles",
+    "label": "Courier",
+    "note": "Courier's notification API with the workspace API key. Courier answers an unrecognised key with 403 rather than 401, which is why the probe reads that way.",
+    "doc": "https://www.courier.com/docs/reference/authorization/"
+  },
+  {
+    "name": "novu",
+    "url": "https://api.novu.co",
+    "vertical": "messaging",
+    "surface": "http",
+    "auth_scheme": "raw",
+    "probe_path": "/v1/subscribers",
+    "label": "Novu (US)",
+    "note": "Novu's US cloud. It reads the credential as \"ApiKey <secret>\" and we send the stored key verbatim, so paste it with the word ApiKey in front; an EU workspace belongs on the separate EU entry.",
+    "doc": "https://docs.novu.co/api-reference/authentication"
+  },
+  {
+    "name": "novu-eu",
+    "url": "https://eu.api.novu.co",
+    "vertical": "messaging",
+    "surface": "http",
+    "auth_scheme": "raw",
+    "probe_path": "/v1/subscribers",
+    "label": "Novu (EU)",
+    "note": "Novu's EU cloud, the same API on a separate host for workspaces created in that region. Like the US entry, the key must carry its own \"ApiKey \" word because we send it as stored.",
+    "doc": "https://docs.novu.co/api-reference/authentication"
+  },
+  {
+    "name": "svix",
+    "url": "https://api.svix.com",
+    "vertical": "messaging",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/api/v1/app",
+    "label": "Svix",
+    "note": "Svix's webhook-sending API with an environment API key. Svix also documents regional hosts; a key issued in one region is refused by the others, so this entry is the one its docs name first.",
+    "doc": "https://docs.svix.com/quickstart"
+  },
+  {
+    "name": "hookdeck",
+    "url": "https://api.hookdeck.com",
+    "vertical": "messaging",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/2025-07-01/events",
+    "label": "Hookdeck",
+    "note": "Hookdeck's API with a project API key. The version lives in the path, so a caller pinned to an older date sends it themselves and this entry does not rewrite it.",
+    "doc": "https://hookdeck.com/docs/api"
+  },
+  {
+    "name": "expo-push",
+    "url": "https://exp.host",
+    "vertical": "messaging",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/--/api/v2/push/getReceipts",
+    "label": "Expo Push Notifications",
+    "note": "Expo's push service with an access token. Expo only requires the token once push security is switched on for the account; with it off the same endpoints accept an unauthenticated call, and nothing here can tell which state an account is in.",
+    "doc": "https://docs.expo.dev/push-notifications/sending-notifications/"
+  },
+  {
+    "name": "daily",
+    "url": "https://api.daily.co",
+    "vertical": "messaging",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v1/rooms",
+    "label": "Daily",
+    "note": "Daily's REST API for rooms, meeting tokens and recordings, with the domain's API key. The video and audio itself is WebRTC between the participants and Daily, so only this control plane crosses.",
+    "doc": "https://docs.daily.co/docs/rest-api/authentication"
+  },
+  {
+    "name": "whereby",
+    "url": "https://api.whereby.dev",
+    "vertical": "messaging",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v1/meetings",
+    "label": "Whereby",
+    "note": "Whereby Embedded's REST API for creating meetings and reading recordings, with the API key from its dashboard. The meeting media never touches this path.",
+    "doc": "https://docs.whereby.com/reference/whereby-rest-api-reference"
+  },
+  {
+    "name": "recall-us-west-2",
+    "url": "https://us-west-2.recall.ai",
+    "vertical": "messaging",
+    "surface": "http",
+    "auth_scheme": "raw",
+    "probe_path": "/api/v1/bot",
+    "label": "Recall.ai (us-west-2)",
+    "note": "Recall's meeting-bot API on its us-west-2 host, with the API key sent bare in the Authorization header. An account belongs to one region and a key from another is refused here.",
+    "doc": "https://docs.recall.ai/docs/authentication"
+  },
+  {
+    "name": "recall-us-east-1",
+    "url": "https://us-east-1.recall.ai",
+    "vertical": "messaging",
+    "surface": "http",
+    "auth_scheme": "raw",
+    "probe_path": "/api/v1/bot",
+    "label": "Recall.ai (us-east-1)",
+    "note": "Recall's meeting-bot API on its us-east-1 host. Same API as the other regions; the region an account was created in is the only thing that decides which entry its key works with.",
+    "doc": "https://docs.recall.ai/docs/authentication"
+  },
+  {
+    "name": "recall-eu-central-1",
+    "url": "https://eu-central-1.recall.ai",
+    "vertical": "messaging",
+    "surface": "http",
+    "auth_scheme": "raw",
+    "probe_path": "/api/v1/bot",
+    "label": "Recall.ai (eu-central-1)",
+    "note": "Recall's meeting-bot API on its EU host, for accounts whose recordings must stay in that region. A key from another region is refused rather than forwarded.",
+    "doc": "https://docs.recall.ai/docs/authentication"
+  },
+  {
+    "name": "recall-ap-northeast-1",
+    "url": "https://ap-northeast-1.recall.ai",
+    "vertical": "messaging",
+    "surface": "http",
+    "auth_scheme": "raw",
+    "probe_path": "/api/v1/bot",
+    "label": "Recall.ai (ap-northeast-1)",
+    "note": "Recall's meeting-bot API on its Japan host. Same API as the other regions, and a key belongs to exactly one of them.",
+    "doc": "https://docs.recall.ai/docs/authentication"
+  },
+  {
+    "name": "vapi",
+    "url": "https://api.vapi.ai",
+    "vertical": "messaging",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/assistant",
+    "label": "Vapi",
+    "note": "Vapi's voice-agent API with a private API key. The public key is for the browser SDK and is refused here, and the audio of a call goes to Vapi's media path rather than through this.",
+    "doc": "https://docs.vapi.ai/api-reference/assistants/list"
+  },
+  {
+    "name": "retell",
+    "url": "https://api.retellai.com",
+    "vertical": "messaging",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/get-concurrency",
+    "label": "Retell AI",
+    "note": "Retell's voice-agent API with the API key from its dashboard. Call audio runs over Retell's own websocket transport, so only the REST control plane crosses here.",
+    "doc": "https://docs.retellai.com/api-references/get-concurrency"
+  },
+  {
+    "name": "synthflow",
+    "url": "https://api.synthflow.ai",
+    "vertical": "messaging",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v2/assistants",
+    "label": "Synthflow",
+    "note": "Synthflow's voice-assistant API with a workspace API key. The live call itself does not pass through this address.",
+    "doc": "https://docs.synthflow.ai/authentication"
+  },
+  {
+    "name": "bland",
+    "url": "https://api.bland.ai",
+    "vertical": "messaging",
+    "surface": "http",
+    "auth_scheme": "raw",
+    "probe_path": "/v1/calls",
+    "label": "Bland",
+    "note": "Bland's phone-agent API, which takes the API key bare in the Authorization header with no scheme word in front of it. Call audio is on Bland's own path and is not seen here.",
+    "doc": "https://docs.bland.ai/api-v1/get/calls"
+  },
+  {
+    "name": "x-api",
+    "url": "https://api.x.com",
+    "vertical": "messaging",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/2/tweets/search/recent?query=lyntway",
+    "label": "X (Twitter) API v2",
+    "note": "The X v2 API with an app-only bearer token from the developer portal. App-only reads public data; anything acting as a specific user needs OAuth on the caller's side, which this cannot supply.",
+    "doc": "https://docs.x.com/x-api/getting-started/getting-access"
+  },
+  {
+    "name": "twilio",
+    "label": "Twilio",
+    "vertical": "messaging",
+    "surface": "http",
+    "url": "https://api.twilio.com",
+    "auth_scheme": "basic",
+    "auth_user_field": "account_sid",
+    "auth_user_hint": "your Account SID from the Twilio console, which begins AC",
+    "probe_path": "/2010-04-01/Accounts.json",
+    "doc": "https://www.twilio.com/docs/iam/api-tokens-and-keys",
+    "note": "Twilio authenticates as HTTP Basic with the Account SID as the username and the Auth Token as the password, so it needs the SID as well as the key. The SID is an identifier, not a secret \u2014 it appears in the Twilio console and in every request URL \u2014 and only the token is hidden here."
+  }
+]

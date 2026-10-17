@@ -1,0 +1,128 @@
+[
+  {
+    "name": "notion",
+    "url": "https://api.notion.com",
+    "vertical": "docs",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "ntn_",
+      "secret_"
+    ],
+    "probe_path": "/v1/users/me",
+    "label": "Notion",
+    "note": "Notion's API with an integration token. Notion also requires a Notion-Version header on every request; send it from your client and it is forwarded unchanged, because picking a version for you would change what your request means.",
+    "doc": "https://developers.notion.com/reference/intro"
+  },
+  {
+    "name": "coda",
+    "url": "https://coda.io",
+    "vertical": "docs",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/apis/v1/whoami",
+    "label": "Coda",
+    "note": "Coda's REST API with an API token from your Coda account settings. This entry is the whole API root: whatever docs Coda granted the token, it reaches, and nothing here narrows that.",
+    "doc": "https://coda.io/developers/apis/v1"
+  },
+  {
+    "name": "gitbook",
+    "url": "https://api.gitbook.com",
+    "vertical": "docs",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v1/user",
+    "label": "GitBook",
+    "note": "GitBook's API with an access token created in your GitBook developer settings. GitBook says plainly that the token has the same access as the account that made it, so there is no narrower scope to ask for.",
+    "doc": "https://gitbook.com/docs/developers/gitbook-api/authentication"
+  },
+  {
+    "name": "readme",
+    "url": "https://dash.readme.com",
+    "vertical": "docs",
+    "surface": "http",
+    "auth_scheme": "basic",
+    "probe_path": "/api/v1/",
+    "label": "ReadMe",
+    "note": "ReadMe's v1 API with a project API key sent as the basic-auth username and no password, which is the http basic scheme ReadMe's own API definition declares. Some of ReadMe's prose shows the key as a bearer token instead; sent that way ReadMe reads the literal word Bearer as the key and rejects it, so this entry follows the definition.",
+    "doc": "https://docs.readme.com/main/reference/authentication"
+  },
+  {
+    "name": "slite",
+    "url": "https://api.slite.com",
+    "vertical": "docs",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "x-slite-api-key",
+    "probe_path": "/v1/ask",
+    "label": "Slite",
+    "note": "Slite's public API with a personal API key generated in your Slite settings. Slite's machine-readable definition describes a bearer scheme while the authentication page a person is sent to shows the x-slite-api-key header; the two disagree, and this entry follows the page written for people.",
+    "doc": "https://developers.slite.com/docs"
+  },
+  {
+    "name": "quip",
+    "url": "https://platform.quip.com",
+    "vertical": "docs",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/1/users/current",
+    "label": "Quip",
+    "note": "Quip's Automation API with a personal access token, presented as a bearer token per RFC 6750. A Quip site on a virtual private cloud answers on its own host \u2014 customername.onquip.com or quip-customername.com \u2014 and needs an upstream naming that address instead.",
+    "doc": "https://quip.com/dev/automation/documentation/current"
+  },
+  {
+    "name": "capacities",
+    "url": "https://api.capacities.io",
+    "vertical": "docs",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/space-info",
+    "label": "Capacities",
+    "note": "Capacities' REST API with the access token generated in the desktop app under Settings. The token is the only credential Capacities issues, so it is revoked and reissued rather than narrowed.",
+    "doc": "https://docs.capacities.io/developer/api"
+  },
+  {
+    "name": "raindrop",
+    "url": "https://api.raindrop.io",
+    "vertical": "docs",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/rest/v1/user",
+    "label": "Raindrop.io",
+    "note": "Raindrop.io's API with a bearer token. Only the test token from Raindrop's App Management Console can be pasted here and go on working: Raindrop expires every other access token after two weeks, and nothing in this service performs the refresh.",
+    "doc": "https://developer.raindrop.io/v1/authentication/calls"
+  },
+  {
+    "name": "readthedocs",
+    "url": "https://readthedocs.org",
+    "vertical": "docs",
+    "surface": "http",
+    "auth_scheme": "raw",
+    "probe_path": "/api/v3/projects/",
+    "label": "Read the Docs",
+    "note": "Read the Docs' v3 API. The Authorization header is the literal word Token, a space, and then the access token, so the value stored here is that whole string \u2014 \"Token abc123\" and not the token on its own. Endpoints returning public information need no credential at all and answer whether or not the key is any good.",
+    "doc": "https://docs.readthedocs.com/platform/stable/api/v3.html"
+  },
+  {
+    "name": "zotero",
+    "url": "https://api.zotero.org",
+    "vertical": "docs",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/keys/current",
+    "label": "Zotero",
+    "note": "Zotero's Web API with a key from your Zotero account settings. Zotero accepts that key three ways and this entry uses the Authorization bearer form its own documentation prefers over the query parameter. The local API a running Zotero client exposes on localhost is a different service and is not reachable through this.",
+    "doc": "https://www.zotero.org/support/dev/web_api/v3/basics"
+  },
+  {
+    "name": "readwise",
+    "label": "Readwise",
+    "vertical": "docs",
+    "surface": "http",
+    "url": "https://readwise.io",
+    "auth_scheme": "raw",
+    "probe_path": "/api/v2/auth/",
+    "doc": "https://readwise.io/api_deets",
+    "note": "Readwise's API for highlights and Reader documents. Readwise reads the Authorization header as the literal word Token, a space, and then the access token, so the value stored here is that whole string \u2014 \"Token abc123\" and not the token on its own."
+  }
+]

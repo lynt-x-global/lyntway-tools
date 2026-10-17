@@ -1,0 +1,453 @@
+[
+  {
+    "name": "hubspot",
+    "url": "https://api.hubapi.com",
+    "vertical": "crm",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "pat-"
+    ],
+    "probe_path": "/account-info/v3/details",
+    "label": "HubSpot",
+    "note": "HubSpot's APIs with a private app access token. OAuth apps mint tokens that expire and are refreshed by the app itself; those are not what this stores.",
+    "doc": "https://developers.hubspot.com/docs/apps/legacy-apps/private-apps/overview"
+  },
+  {
+    "name": "close",
+    "url": "https://api.close.com/api/v1",
+    "vertical": "crm",
+    "surface": "http",
+    "auth_scheme": "basic",
+    "probe_path": "/me/",
+    "label": "Close",
+    "note": "The Close REST API with an API key from Settings, sent as the basic-auth username with no password. Close does not scope its keys, so the key carries everything the user who made it can reach.",
+    "doc": "https://developer.close.com/topics/authentication/"
+  },
+  {
+    "name": "attio",
+    "url": "https://api.attio.com/v2",
+    "vertical": "crm",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/objects",
+    "label": "Attio",
+    "note": "Attio's REST API with a single-workspace access token from Workspace settings. The token carries the scopes chosen when it was made, so a call outside those scopes fails even though the key is good.",
+    "doc": "https://docs.attio.com/rest-api/guides/authentication"
+  },
+  {
+    "name": "keap",
+    "url": "https://api.infusionsoft.com/crm/rest/v2",
+    "vertical": "crm",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/contacts",
+    "label": "Keap",
+    "note": "Keap's REST API with a personal access token or a service account key. A service account key is account-wide admin access and only an admin can mint one; a personal access token acts as one user and is the safer paste.",
+    "doc": "https://developer.infusionsoft.com/pat-and-sak/"
+  },
+  {
+    "name": "insightly",
+    "url_template": "https://api.{pod}.insightly.com/v3.1",
+    "template_field": "pod",
+    "template_hint": "the region in your Insightly API URL under User Settings, such as na1 or eu1",
+    "vertical": "crm",
+    "surface": "http",
+    "auth_scheme": "basic",
+    "probe_path": "/Users/Me",
+    "label": "Insightly",
+    "note": "Insightly's v3.1 API with the key sent as the basic-auth username and no password. The pod is Insightly's own region rather than your subdomain, so it is shared with other tenants and the key alone identifies the account.",
+    "doc": "https://api.insightly.com/v3.1/Help"
+  },
+  {
+    "name": "apollo",
+    "url": "https://api.apollo.io/api/v1",
+    "vertical": "crm",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "x-api-key",
+    "probe_path": "/labels",
+    "label": "Apollo.io",
+    "note": "Apollo's API with a workspace API key. One key reads and writes the whole workspace — contacts, accounts, sequences and email activity — and cannot be narrowed to read-only from here.",
+    "doc": "https://docs.apollo.io/reference/authentication"
+  },
+  {
+    "name": "streak",
+    "url": "https://api.streak.com/api/v1",
+    "vertical": "crm",
+    "surface": "http",
+    "auth_scheme": "basic",
+    "probe_path": "/pipelines",
+    "label": "Streak",
+    "note": "Streak's API with the key as the basic-auth username and no password. The key belongs to a person's Gmail account rather than a service account, so it reaches whatever that mailbox can see.",
+    "doc": "https://streak.readme.io/docs/authentication"
+  },
+  {
+    "name": "hunter",
+    "url": "https://api.hunter.io",
+    "vertical": "crm",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v2/account",
+    "label": "Hunter",
+    "note": "Hunter's email finder and verifier with an account API key as a bearer token. Hunter also accepts the same key as an api_key query parameter, which puts a live credential in URLs and logs; this route never does that.",
+    "doc": "https://hunter.io/api-documentation"
+  },
+  {
+    "name": "salesloft",
+    "url": "https://api.salesloft.com",
+    "vertical": "crm",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "ak_"
+    ],
+    "probe_path": "/v2/me",
+    "label": "Salesloft",
+    "note": "Salesloft's API with a long-lived API key carrying the scopes granted at creation. Salesloft will not approve a partner application authenticated this way, so it is for your own account only.",
+    "doc": "https://developers.salesloft.com/docs/platform/api-basics/api-key-authentication/"
+  },
+  {
+    "name": "chili-piper",
+    "url": "https://fire.chilipiper.com/api/fire-edge",
+    "vertical": "crm",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v1/org/tenant/get",
+    "label": "Chili Piper",
+    "note": "Chili Piper's Edge API with a token from Command Center, shown once and scoped to the permission set it was issued against. Their spec also allows the key as an apiKey query parameter; this route sends it as a header instead.",
+    "doc": "https://help.chilipiper.com/hc/en-us/articles/35576029581971-Edge-API-References"
+  },
+  {
+    "name": "dealfront",
+    "url": "https://api.leadfeeder.com",
+    "vertical": "crm",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "x-api-key",
+    "probe_path": "/v1/users/me",
+    "label": "Dealfront",
+    "note": "Dealfront's current Leadfeeder API with a personal API key. The key is not subject to OAuth scope checks, so it sees every account its owner sees; the older API at docs.leadfeeder.com uses a different header and is not what this reaches.",
+    "doc": "https://docs.leadfeeder.com/api/public"
+  },
+  {
+    "name": "reply-io",
+    "url": "https://api.reply.io",
+    "vertical": "crm",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v3/whoami",
+    "label": "Reply.io",
+    "note": "Reply.io's v3 API with the account key from Settings. It is one account-wide credential with no per-scope restriction, and the v1 x-api-key header it replaced is no longer accepted.",
+    "doc": "https://docs.reply.io/api-reference/introduction"
+  },
+  {
+    "name": "instantly",
+    "url": "https://api.instantly.ai",
+    "vertical": "crm",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/api/v2/workspaces/current",
+    "label": "Instantly",
+    "note": "Instantly's v2 API with a key carrying the scopes chosen when it was created. A v1 key will not work here.",
+    "doc": "https://developer.instantly.ai/"
+  },
+  {
+    "name": "capsule-crm",
+    "url": "https://api.capsulecrm.com/api/v2",
+    "vertical": "crm",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/parties",
+    "label": "Capsule CRM",
+    "note": "Capsule's v2 API with a personal access token from My Preferences. The token carries the full access of the person who made it; Capsule offers no read-only personal token.",
+    "doc": "https://developer.capsulecrm.com/v2/overview/authentication"
+  },
+  {
+    "name": "affinity",
+    "url": "https://api.affinity.co/v2",
+    "vertical": "crm",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/auth/whoami",
+    "label": "Affinity",
+    "note": "Affinity's v2 API, which takes the key as a bearer token. v2 is not yet at parity with v1, and v1 authenticates a different way, so anything v1-only is out of reach through this route.",
+    "doc": "https://developer.affinity.co/pages/external-api-v2/authentication.md"
+  },
+  {
+    "name": "folk",
+    "url": "https://api.folk.app/v1",
+    "vertical": "crm",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "FOLK"
+    ],
+    "probe_path": "/users/me",
+    "label": "folk",
+    "note": "folk's API with a workspace API key. The key reaches the whole workspace — people, companies, deals, notes and tasks — with no narrower scope offered at creation.",
+    "doc": "https://developer.folk.app/api-reference/authentication"
+  },
+  {
+    "name": "twenty",
+    "url": "https://api.twenty.com",
+    "vertical": "crm",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/rest/people",
+    "label": "Twenty",
+    "note": "Twenty's hosted cloud API with a key from Settings. A self-hosted Twenty lives on your own domain and is not reachable through this entry; give us that address instead.",
+    "doc": "https://docs.twenty.com/developers/extend/api"
+  },
+  {
+    "name": "follow-up-boss",
+    "url": "https://api.followupboss.com/v1",
+    "vertical": "crm",
+    "surface": "http",
+    "auth_scheme": "basic",
+    "probe_path": "/people",
+    "label": "Follow Up Boss",
+    "note": "Follow Up Boss's API with the key as the basic-auth username and a blank password. The key inherits the access of the user who created it, so an admin's key reaches every contact in the account.",
+    "doc": "https://docs.followupboss.com/reference/authentication"
+  },
+  {
+    "name": "salesflare",
+    "url": "https://api.salesflare.com",
+    "vertical": "crm",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/me",
+    "label": "Salesflare",
+    "note": "Salesflare's API with a key from Settings. The key acts as the user who made it across accounts, contacts, opportunities and pipelines; Salesflare offers no per-key scoping.",
+    "doc": "https://api.salesflare.com/openapi.json"
+  },
+  {
+    "name": "people-data-labs",
+    "url": "https://api.peopledatalabs.com",
+    "vertical": "crm",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "x-api-key",
+    "probe_path": "/v5/autocomplete",
+    "label": "People Data Labs",
+    "note": "People Data Labs enrichment and search with the key in a header. PDL also accepts it as an api_key query parameter, which would put a live credential in URL logs; this route never does.",
+    "doc": "https://docs.peopledatalabs.com/docs/authentication"
+  },
+  {
+    "name": "rocketreach",
+    "url": "https://api.rocketreach.co",
+    "vertical": "crm",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "api-key",
+    "probe_path": "/api/v2/account/",
+    "label": "RocketReach",
+    "note": "RocketReach lookups with the key in the Api-Key header — not the more usual X-Api-Key, and the wrong one fails as a plain 401 with nothing to say why. Lookups spend credits; the account path used to check this route does not.",
+    "doc": "https://docs.rocketreach.co/reference/rocketreach-api-account.md"
+  },
+  {
+    "name": "findymail",
+    "url": "https://app.findymail.com",
+    "vertical": "crm",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/api/credits",
+    "label": "Findymail",
+    "note": "Findymail email finding and verification, served from the app host rather than an api. subdomain. Each found email spends a credit; reading the balance does not.",
+    "doc": "https://app.findymail.com/docs/"
+  },
+  {
+    "name": "anymailfinder",
+    "url": "https://api.anymailfinder.com",
+    "vertical": "crm",
+    "surface": "http",
+    "auth_scheme": "raw",
+    "probe_path": "/v5.1/account",
+    "label": "Anymail Finder",
+    "note": "Anymail Finder with the key sent bare in the Authorization header, with no Bearer word in front of it. Their error for a bad key cannot tell a wrong key from a client that added the word back.",
+    "doc": "https://anymailfinder.com/email-finder-api/docs/authentication"
+  },
+  {
+    "name": "leadmagic",
+    "url": "https://api.leadmagic.io",
+    "vertical": "crm",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "x-api-key",
+    "probe_path": "/v1/credits",
+    "label": "LeadMagic",
+    "note": "LeadMagic's REST API for email, mobile and B2B enrichment against one credit balance. Only the REST surface takes a static key: their CLI signs in through a browser and their hosted MCP server uses OAuth, and neither will accept a key stored here.",
+    "doc": "https://leadmagic.io/docs/v1/authentication"
+  },
+  {
+    "name": "wiza",
+    "url": "https://wiza.co",
+    "vertical": "crm",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/api/meta/credits",
+    "label": "Wiza",
+    "note": "Wiza contact reveal and list export, served from the main site host rather than an api. subdomain. Reveals are asynchronous — you start a job and poll it — so this is not a single-call enrichment API.",
+    "doc": "https://docs.wiza.co/api-reference/credits/get-credits.md"
+  },
+  {
+    "name": "surfe",
+    "url": "https://api.surfe.com",
+    "vertical": "crm",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v2/credits",
+    "label": "Surfe",
+    "note": "Surfe people and company search and enrichment, with separate email, mobile and search credit pools. Bulk enrichment is start-a-job-then-poll rather than a single call.",
+    "doc": "https://developers.surfe.com/"
+  },
+  {
+    "name": "calendly",
+    "url": "https://api.calendly.com",
+    "vertical": "crm",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/users/me",
+    "label": "Calendly",
+    "note": "Calendly's REST API with a personal access token from the API and webhooks page. Calendly does not store or redisplay the token after it is generated, so a lost one has to be replaced rather than recovered.",
+    "doc": "https://developer.calendly.com/personal-access-tokens"
+  },
+  {
+    "name": "cal-com",
+    "url": "https://api.cal.com",
+    "vertical": "crm",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "cal_live_"
+    ],
+    "probe_path": "/v2/me",
+    "label": "Cal.com",
+    "note": "Cal.com's v2 API with a cal_live_ key as a bearer token. The v1 API took its key as a query parameter instead and is not what this reaches.",
+    "doc": "https://cal.com/docs/api-reference/v2/introduction"
+  },
+  {
+    "name": "savvycal",
+    "url": "https://api.savvycal.com",
+    "vertical": "crm",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v1/me",
+    "label": "SavvyCal",
+    "note": "SavvyCal's API with a private key created in developer settings. It reads and writes your own account only; SavvyCal's OAuth flow is what covers other people's accounts, and this does not perform it.",
+    "doc": "https://developers.savvycal.com/authentication"
+  },
+  {
+    "name": "common-room",
+    "url": "https://api.commonroom.io/community/v1",
+    "vertical": "crm",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/api-token-status",
+    "label": "Common Room",
+    "note": "Common Room's Core API with a token created by a room admin. The token is community-wide; there is no narrower scope to issue.",
+    "doc": "https://api.commonroom.io/docs/community.html"
+  },
+  {
+    "name": "coresignal",
+    "url": "https://api.coresignal.com",
+    "vertical": "crm",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "apikey",
+    "probe_path": "/cdapi/v2/company_base/collect/1",
+    "label": "Coresignal",
+    "note": "Coresignal's company and employee data API with the key in an apikey header. There is no free account endpoint — the balance is returned as a header on ordinary calls — so every read here spends a credit.",
+    "doc": "https://docs.coresignal.com/api-introduction/authorization.md"
+  },
+  {
+    "name": "woodpecker",
+    "url": "https://api.woodpecker.co/rest",
+    "vertical": "crm",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "x-api-key",
+    "probe_path": "/v1/me",
+    "label": "Woodpecker",
+    "note": "Woodpecker's REST API. Keys are per-user rather than per-workspace, so a key reaches only the campaigns and prospects of the person who made it and a colleague's sequences stay invisible.",
+    "doc": "https://developers.woodpecker.co/docs/getting-started/authentication/"
+  },
+  {
+    "name": "mailshake",
+    "url": "https://api.mailshake.com/2017-04-01",
+    "vertical": "crm",
+    "surface": "http",
+    "auth_scheme": "basic",
+    "probe_path": "/me",
+    "label": "Mailshake",
+    "note": "Mailshake's API with the key as the basic-auth username. The key never expires and cannot be scoped, and Mailshake echoes it back inside its own error bodies, so those responses are not safe to log.",
+    "doc": "https://api-docs.mailshake.com/"
+  },
+  {
+    "name": "overloop",
+    "url": "https://api.overloop.com/public/v1",
+    "vertical": "crm",
+    "surface": "http",
+    "auth_scheme": "raw",
+    "probe_path": "/prospects",
+    "label": "Overloop",
+    "note": "Overloop's public API with the key sent bare in the Authorization header, no scheme word in front. One account-wide credential covering prospects, organisations, deals and automations; there is no read-only variant.",
+    "doc": "https://apidoc.overloop.com/"
+  },
+  {
+    "name": "amplemarket",
+    "url": "https://api.amplemarket.com",
+    "vertical": "crm",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/sequences",
+    "label": "Amplemarket",
+    "note": "Amplemarket's API with an account-wide key. The people-search and enrichment endpoints it reaches are metered, so this key spends credits, and its rate limit is shared by everything using it.",
+    "doc": "https://docs.amplemarket.com/api-reference/introduction"
+  },
+  {
+    "name": "heyreach",
+    "url": "https://api.heyreach.io/api/public",
+    "vertical": "crm",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "x-api-key",
+    "probe_path": "/auth/CheckApiKey",
+    "label": "HeyReach",
+    "note": "HeyReach's public API for LinkedIn campaigns and inboxes. The key is account-wide; their separate hosted MCP server is a different surface and will not read a key stored here.",
+    "doc": "https://documenter.getpostman.com/view/23808049/2sA2xb5F75"
+  },
+  {
+    "name": "avoma",
+    "url": "https://api.avoma.com",
+    "vertical": "crm",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v1/meetings/",
+    "label": "Avoma",
+    "note": "Avoma's meeting, transcript and scorecard API. The token is not self-service — Avoma support issues it — and every path ends in a slash, so a request without one is redirected rather than answered.",
+    "doc": "https://dev.avoma.com/openapi.yml"
+  },
+  {
+    "name": "uplead",
+    "url": "https://api.uplead.com",
+    "vertical": "crm",
+    "surface": "http",
+    "auth_scheme": "raw",
+    "probe_path": "/v2/credits",
+    "label": "UpLead",
+    "note": "UpLead contact and company search with the key sent bare in the Authorization header, no scheme word. Lookups spend credits; reading the balance does not.",
+    "doc": "https://docs.uplead.com/"
+  },
+  {
+    "name": "breakcold",
+    "url": "https://rest.breakcold.com/api/v1",
+    "vertical": "crm",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/workspaces",
+    "label": "Breakcold",
+    "note": "Breakcold's public REST API with a scoped key from Settings, shown once at creation. The key carries the scopes chosen then, so a call outside them returns 403 even though the key is good.",
+    "doc": "https://docs.breakcold.com/api/authentication.md"
+  }
+]

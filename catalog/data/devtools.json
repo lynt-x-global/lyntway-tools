@@ -1,0 +1,689 @@
+[
+  {
+    "name": "asana",
+    "url": "https://app.asana.com/api/1.0",
+    "vertical": "devtools",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/users/me",
+    "label": "Asana",
+    "note": "Asana's REST API with a personal access token. Call it as /gw/asana/users/me; the /api/1.0 prefix is already in the address.",
+    "doc": "https://developers.asana.com/docs/personal-access-token"
+  },
+  {
+    "name": "cloudflare",
+    "url": "https://api.cloudflare.com/client/v4",
+    "vertical": "devtools",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/user/tokens/verify",
+    "label": "Cloudflare",
+    "note": "Cloudflare's v4 API with an API token, sent as a bearer token. The older Global API Key is a different pair of headers and is not what we send.",
+    "doc": "https://developers.cloudflare.com/fundamentals/api/get-started/create-token/"
+  },
+  {
+    "name": "github",
+    "url": "https://api.github.com",
+    "vertical": "devtools",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "github_pat_",
+      "ghp_",
+      "gho_",
+      "ghu_",
+      "ghs_",
+      "ghr_"
+    ],
+    "probe_path": "/user",
+    "label": "GitHub",
+    "note": "The GitHub REST API with a token you already hold. Nothing here performs GitHub's OAuth or App-installation flows, so store a token rather than expecting one to be minted.",
+    "doc": "https://docs.github.com/en/rest/authentication/authenticating-to-the-rest-api"
+  },
+  {
+    "name": "linear",
+    "url": "https://api.linear.app",
+    "vertical": "devtools",
+    "surface": "http",
+    "auth_scheme": "raw",
+    "key_prefixes": [
+      "lin_api_"
+    ],
+    "probe_path": "/graphql?query=%7Bviewer%7Bid%7D%7D",
+    "label": "Linear",
+    "note": "Linear's GraphQL API at /gw/linear/graphql. Linear reads a personal API key as the bare Authorization value with no Bearer word, which is what we send; an OAuth token is the other shape and would need an upstream of its own.",
+    "doc": "https://linear.app/developers/graphql"
+  },
+  {
+    "name": "gitlab",
+    "label": "GitLab",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://gitlab.com/api/v4",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "glpat-"
+    ],
+    "probe_path": "/user",
+    "doc": "https://docs.gitlab.com/api/rest/authentication/",
+    "note": "GitLab.com's REST API with a personal, project or group access token sent as a bearer token; a self-managed GitLab lives at the customer's own domain and needs an address of its own rather than this entry."
+  },
+  {
+    "name": "bitbucket",
+    "label": "Bitbucket Cloud",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://api.bitbucket.org/2.0",
+    "auth_scheme": "bearer",
+    "probe_path": "/user",
+    "doc": "https://support.atlassian.com/bitbucket-cloud/docs/using-api-tokens/",
+    "note": "Bitbucket Cloud's REST API with an Atlassian API token or an access token as a bearer token; the older app-password style needs the account email as a basic-auth username and is not what we send."
+  },
+  {
+    "name": "vercel",
+    "label": "Vercel",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://api.vercel.com",
+    "auth_scheme": "bearer",
+    "probe_path": "/v2/user",
+    "doc": "https://vercel.com/docs/rest-api/reference/welcome",
+    "note": "Vercel's REST API with an access token. A token scoped to a team needs the teamId query parameter on most paths, which the caller supplies; nothing here adds it."
+  },
+  {
+    "name": "netlify",
+    "label": "Netlify",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://api.netlify.com/api/v1",
+    "auth_scheme": "bearer",
+    "probe_path": "/user",
+    "doc": "https://docs.netlify.com/api/get-started/",
+    "note": "Netlify's API with a personal access token. File uploads to a deploy use a different content type but the same address and token."
+  },
+  {
+    "name": "render",
+    "label": "Render",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://api.render.com/v1",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "rnd_"
+    ],
+    "probe_path": "/owners",
+    "doc": "https://api-docs.render.com/reference/introduction",
+    "note": "Render's REST API with an API key created in the dashboard; Render has no separate read-only key, so whatever is stored here can also change services."
+  },
+  {
+    "name": "fly",
+    "label": "Fly.io",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://api.machines.dev",
+    "auth_scheme": "bearer",
+    "probe_path": "/v1/apps?org_slug=personal",
+    "doc": "https://fly.io/docs/machines/api/working-with-machines-api/",
+    "note": "Fly's Machines API with a Fly access token. Fly's older GraphQL API at api.fly.io is a different address and is not covered by this entry."
+  },
+  {
+    "name": "digitalocean",
+    "label": "DigitalOcean",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://api.digitalocean.com",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "dop_v1_"
+    ],
+    "probe_path": "/v2/account",
+    "doc": "https://docs.digitalocean.com/reference/api/digitalocean/",
+    "note": "DigitalOcean's v2 API with a personal access token; Spaces uses S3-style request signing instead and cannot be reached through this."
+  },
+  {
+    "name": "linode",
+    "label": "Linode",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://api.linode.com/v4",
+    "auth_scheme": "bearer",
+    "probe_path": "/profile",
+    "doc": "https://techdocs.akamai.com/linode-api/reference/get-started",
+    "note": "The Linode (Akamai Cloud) v4 API with a personal access token. Akamai's other product APIs use EdgeGrid signing and are not this address."
+  },
+  {
+    "name": "hetzner",
+    "label": "Hetzner Cloud",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://api.hetzner.cloud/v1",
+    "auth_scheme": "bearer",
+    "probe_path": "/servers",
+    "doc": "https://docs.hetzner.cloud/reference/cloud",
+    "note": "Hetzner Cloud's API with a project API token. Hetzner's DNS and Robot APIs read different headers and are not covered here."
+  },
+  {
+    "name": "circleci",
+    "label": "CircleCI",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://circleci.com/api/v2",
+    "auth_scheme": "bearer",
+    "probe_path": "/me",
+    "doc": "https://circleci.com/docs/guides/toolkit/api-developers-guide/",
+    "note": "CircleCI's v2 API with a personal API token sent as a bearer token, which CircleCI documents as the recommended of its three placements; the Circle-Token header is the same credential in a header we do not set."
+  },
+  {
+    "name": "buildkite",
+    "label": "Buildkite",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://api.buildkite.com/v2",
+    "auth_scheme": "bearer",
+    "probe_path": "/user",
+    "doc": "https://buildkite.com/docs/apis/rest-api",
+    "note": "Buildkite's REST API with an API access token. Buildkite's GraphQL API is a separate address and its agent token is a different credential entirely."
+  },
+  {
+    "name": "codecov",
+    "label": "Codecov",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://api.codecov.io",
+    "auth_scheme": "bearer",
+    "probe_path": "/api/v2/github/codecov/repos",
+    "doc": "https://docs.codecov.com/reference/overview",
+    "note": "Codecov's v2 API with an API token. The upload token used by CI to post coverage is a different credential and goes to a different endpoint."
+  },
+  {
+    "name": "sonarcloud",
+    "label": "SonarQube Cloud",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://sonarcloud.io/api",
+    "auth_scheme": "bearer",
+    "probe_path": "/users/current",
+    "doc": "https://docs.sonarsource.com/sonarqube-cloud/appendices/web-api",
+    "note": "SonarQube Cloud's web API with a user token as a bearer token; the US instance at sonarqube.us and any self-managed SonarQube Server are separate addresses."
+  },
+  {
+    "name": "semgrep",
+    "label": "Semgrep",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://semgrep.dev/api/v1",
+    "auth_scheme": "bearer",
+    "probe_path": "/deployments",
+    "doc": "https://semgrep.dev/api/v1/docs/",
+    "note": "Semgrep AppSec Platform's API with an API token. Running the semgrep scanner itself is a local process and never touches this address."
+  },
+  {
+    "name": "npm",
+    "label": "npm registry",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://registry.npmjs.org",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "npm_"
+    ],
+    "probe_path": "/-/whoami",
+    "doc": "https://docs.npmjs.com/about-access-tokens",
+    "note": "The public npm registry with an access token. Package metadata and tarballs are readable without any token, so only writes and private packages need this stored."
+  },
+  {
+    "name": "jsr",
+    "label": "JSR",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://api.jsr.io",
+    "auth_scheme": "bearer",
+    "probe_path": "/user",
+    "doc": "https://jsr.io/docs/api",
+    "note": "The JSR registry's management API with a personal access token; the public package-metadata endpoints need no token at all."
+  },
+  {
+    "name": "cratesio",
+    "label": "crates.io",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://crates.io/api/v1",
+    "auth_scheme": "raw",
+    "probe_path": "/me",
+    "doc": "https://doc.rust-lang.org/cargo/reference/registry-web-api.html",
+    "note": "The crates.io registry API, which reads the API token as the bare Authorization value with no scheme word, exactly as Cargo sends it."
+  },
+  {
+    "name": "rubygems",
+    "label": "RubyGems.org",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://rubygems.org/api/v1",
+    "auth_scheme": "raw",
+    "probe_path": "/gems.json",
+    "doc": "https://guides.rubygems.org/rubygems-org-api/",
+    "note": "RubyGems.org's API, which reads the API key as the bare Authorization value; a key scoped by RubyGems' permission list can be refused per endpoint even though the address is right."
+  },
+  {
+    "name": "quay",
+    "label": "Quay.io",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://quay.io/api/v1",
+    "auth_scheme": "bearer",
+    "probe_path": "/user/",
+    "doc": "https://docs.quay.io/api/",
+    "note": "Quay.io's management API with an OAuth 2 access token generated in the UI; pulling and pushing images uses the registry protocol on the same host and is not this API."
+  },
+  {
+    "name": "clickup",
+    "label": "ClickUp",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://api.clickup.com/api/v2",
+    "auth_scheme": "raw",
+    "key_prefixes": [
+      "pk_"
+    ],
+    "probe_path": "/user",
+    "doc": "https://developer.clickup.com/docs/authentication",
+    "note": "ClickUp's API, which reads a personal token as the bare Authorization value with no Bearer word; an OAuth access token is the other shape and would need an upstream of its own."
+  },
+  {
+    "name": "monday",
+    "label": "monday.com",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://api.monday.com",
+    "auth_scheme": "raw",
+    "probe_path": "/v2",
+    "doc": "https://developer.monday.com/api-reference/docs/authentication",
+    "note": "monday.com's GraphQL API at /gw/monday/v2, which reads the API token as the bare Authorization value with no Bearer word; every real call is a POST of a GraphQL document."
+  },
+  {
+    "name": "plane",
+    "label": "Plane",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://api.plane.so/api/v1",
+    "auth_scheme": "header",
+    "auth_header": "x-api-key",
+    "probe_path": "/users/me/",
+    "doc": "https://developers.plane.so/api-reference/introduction",
+    "note": "Plane Cloud's API with a workspace API key in X-API-Key; a self-hosted Plane lives at the customer's own domain and needs an address of its own."
+  },
+  {
+    "name": "postman",
+    "label": "Postman",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://api.getpostman.com",
+    "auth_scheme": "header",
+    "auth_header": "x-api-key",
+    "probe_path": "/me",
+    "doc": "https://learning.postman.com/docs/reference/postman-api/authentication",
+    "note": "The Postman API with an API key in X-API-Key. Postman's EU data residency uses a different host and is not this entry."
+  },
+  {
+    "name": "raygun",
+    "label": "Raygun",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://api.raygun.com",
+    "auth_scheme": "bearer",
+    "probe_path": "/v3/applications",
+    "doc": "https://raygun.com/documentation/product-guides/api/",
+    "note": "Raygun's API with a personal access token; the API key an application uses to send crash reports is a different credential."
+  },
+  {
+    "name": "honeybadger",
+    "label": "Honeybadger",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://app.honeybadger.io/v2",
+    "auth_scheme": "basic",
+    "probe_path": "/projects",
+    "doc": "https://docs.honeybadger.io/api/getting-started/",
+    "note": "Honeybadger's data API, which takes the personal auth token as the HTTP basic username with no password; the project API key used to report errors is a different credential."
+  },
+  {
+    "name": "airbrake",
+    "label": "Airbrake",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://api.airbrake.io/api/v4",
+    "auth_scheme": "bearer",
+    "probe_path": "/projects",
+    "doc": "https://docs.airbrake.io/docs/devops-tools/api/",
+    "note": "Airbrake's v4 API with a user key; the project key that an SDK uses to report errors is a different credential and a different endpoint."
+  },
+  {
+    "name": "socketdev",
+    "label": "Socket",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://api.socket.dev/v0",
+    "auth_scheme": "basic",
+    "probe_path": "/quota",
+    "doc": "https://docs.socket.dev/reference/authentication",
+    "note": "Socket's API, which takes the API token as the HTTP basic username with an empty password, the form its own documentation gives."
+  },
+  {
+    "name": "fossa",
+    "label": "FOSSA",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://app.fossa.com/api",
+    "auth_scheme": "bearer",
+    "probe_path": "/users",
+    "doc": "https://docs.fossa.com/docs/api-reference",
+    "note": "FOSSA's API with an API token; a push-only token is refused on most read paths even though the address is correct."
+  },
+  {
+    "name": "terraform",
+    "label": "HCP Terraform",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://app.terraform.io/api/v2",
+    "auth_scheme": "bearer",
+    "probe_path": "/account/details",
+    "doc": "https://developer.hashicorp.com/terraform/cloud-docs/api-docs",
+    "note": "HCP Terraform's API with a user, team or organization token; a Terraform Enterprise install lives at the customer's own domain and needs an address of its own."
+  },
+  {
+    "name": "doppler",
+    "label": "Doppler",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://api.doppler.com/v3",
+    "auth_scheme": "bearer",
+    "probe_path": "/me",
+    "doc": "https://docs.doppler.com/reference/auth",
+    "note": "Doppler's API with a personal, service or service-account token. Everything it returns is secret material, so a receipt for this traffic is a record of secrets moving."
+  },
+  {
+    "name": "split",
+    "label": "Split",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://api.split.io/internal/api/v2",
+    "auth_scheme": "bearer",
+    "probe_path": "/workspaces",
+    "doc": "https://docs.split.io/reference/authentication",
+    "note": "Split's admin API with an admin API key; the SDK keys used by an application are different credentials and do not work here."
+  },
+  {
+    "name": "growthbook",
+    "label": "GrowthBook",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://api.growthbook.io/api/v1",
+    "auth_scheme": "bearer",
+    "probe_path": "/features",
+    "doc": "https://docs.growthbook.io/api",
+    "note": "GrowthBook Cloud's REST API with a secret API key; a self-hosted GrowthBook lives at the customer's own domain and needs an address of its own."
+  },
+  {
+    "name": "mergify",
+    "label": "Mergify",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://api.mergify.com/v1",
+    "auth_scheme": "bearer",
+    "probe_path": "/application",
+    "doc": "https://docs.mergify.com/api-usage/",
+    "note": "Mergify's API with an application API key, which is scoped to one organization or repository when it is created."
+  },
+  {
+    "name": "buddy",
+    "label": "Buddy",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://api.buddy.works",
+    "auth_scheme": "bearer",
+    "probe_path": "/user",
+    "doc": "https://buddy.works/docs/api/getting-started/overview",
+    "note": "Buddy's cloud API with a personal access token; a Buddy On-Premises install lives at the customer's own domain and needs an address of its own."
+  },
+  {
+    "name": "appveyor",
+    "label": "AppVeyor",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://ci.appveyor.com/api",
+    "auth_scheme": "bearer",
+    "probe_path": "/projects",
+    "doc": "https://www.appveyor.com/docs/api/",
+    "note": "AppVeyor's REST API with an account API token; an AppVeyor Server install is a different host."
+  },
+  {
+    "name": "bitrise",
+    "label": "Bitrise",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://api.bitrise.io/v0.1",
+    "auth_scheme": "raw",
+    "probe_path": "/me",
+    "doc": "https://docs.bitrise.io/en/bitrise-ci/api/authenticating-with-the-bitrise-api",
+    "note": "Bitrise's API, which reads a personal access token as the bare Authorization value with no scheme word."
+  },
+  {
+    "name": "runpod",
+    "label": "RunPod",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://rest.runpod.io/v1",
+    "auth_scheme": "bearer",
+    "probe_path": "/pods",
+    "doc": "https://docs.runpod.io/get-started/api-keys",
+    "note": "RunPod's REST API with an API key; a serverless endpoint's own invoke URL is a different host and would need an upstream of its own."
+  },
+  {
+    "name": "koyeb",
+    "label": "Koyeb",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://app.koyeb.com/v1",
+    "auth_scheme": "bearer",
+    "probe_path": "/account/profile",
+    "doc": "https://www.koyeb.com/docs/api",
+    "note": "Koyeb's control-plane API with a personal or organization API token."
+  },
+  {
+    "name": "northflank",
+    "label": "Northflank",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://api.northflank.com/v1",
+    "auth_scheme": "bearer",
+    "probe_path": "/projects",
+    "doc": "https://northflank.com/docs/v1/api/introduction",
+    "note": "Northflank's API with an API token, whose scope is fixed when the token is made; a self-hosted Northflank is a different address."
+  },
+  {
+    "name": "denodeploy",
+    "label": "Deno Deploy",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://api.deno.com/v1",
+    "auth_scheme": "bearer",
+    "probe_path": "/organizations",
+    "doc": "https://docs.deno.com/deploy/api/rest/",
+    "note": "Deno Deploy's REST API with an access token; the deployed applications themselves are on separate hosts and are not reached through this."
+  },
+  {
+    "name": "pipedream",
+    "label": "Pipedream",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://api.pipedream.com/v1",
+    "auth_scheme": "bearer",
+    "probe_path": "/users/me",
+    "doc": "https://pipedream.com/docs/rest-api/auth",
+    "note": "Pipedream's REST API with a user API key; a workflow's own HTTP trigger is a separate address and carries no key at all."
+  },
+  {
+    "name": "val",
+    "label": "Val Town",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://api.val.town/v1",
+    "auth_scheme": "bearer",
+    "probe_path": "/me",
+    "doc": "https://docs.val.town/openapi/",
+    "note": "Val Town's REST API with an API token; the HTTP vals a customer publishes run on their own subdomains and are not reached through this."
+  },
+  {
+    "name": "ngrok",
+    "label": "ngrok",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://api.ngrok.com",
+    "auth_scheme": "bearer",
+    "probe_path": "/endpoints",
+    "doc": "https://ngrok.com/docs/api/",
+    "note": "ngrok's management API with an API key; the agent authtoken that opens a tunnel is a different credential. Most paths also want an Ngrok-Version header, which the caller supplies."
+  },
+  {
+    "name": "tailscale",
+    "label": "Tailscale",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://api.tailscale.com/api/v2",
+    "auth_scheme": "basic",
+    "probe_path": "/tailnet/-/devices",
+    "doc": "https://tailscale.com/docs/reference/tailscale-api",
+    "note": "Tailscale's API, which takes the access token as the HTTP basic username with no password; an OAuth client must first exchange itself for a token and that flow is not performed here."
+  },
+  {
+    "name": "keycdn",
+    "label": "KeyCDN",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://api.keycdn.com",
+    "auth_scheme": "basic",
+    "probe_path": "/zones.json",
+    "doc": "https://www.keycdn.com/api",
+    "note": "KeyCDN's API, which takes the API key as the HTTP basic username with no password, the form its own documentation gives."
+  },
+  {
+    "name": "imgix",
+    "label": "imgix",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://api.imgix.com/api/v1",
+    "auth_scheme": "bearer",
+    "probe_path": "/sources",
+    "doc": "https://docs.imgix.com/apis/management",
+    "note": "imgix's management API with an API key; the image-rendering domains are separate hosts and their URLs are signed with a different secret."
+  },
+  {
+    "name": "ionos",
+    "label": "IONOS Cloud",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://api.ionos.com/cloudapi/v6",
+    "auth_scheme": "bearer",
+    "probe_path": "/datacenters",
+    "doc": "https://api.ionos.com/docs/cloud/v6/",
+    "note": "IONOS Cloud's v6 API with a token from the token manager; the older username-and-password basic form is a different credential and is not what we send."
+  },
+  {
+    "name": "latitudesh",
+    "label": "Latitude.sh",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://api.latitude.sh",
+    "auth_scheme": "bearer",
+    "probe_path": "/projects",
+    "doc": "https://docs.latitude.sh/reference/authentication",
+    "note": "Latitude.sh's API with an API key; some paths also want an API-Version header, which the caller supplies."
+  },
+  {
+    "name": "hostinger",
+    "label": "Hostinger",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://developers.hostinger.com/api",
+    "auth_scheme": "bearer",
+    "probe_path": "/vps/v1/virtual-machines",
+    "doc": "https://developers.hostinger.com/",
+    "note": "Hostinger's developer API with an API token; it covers VPS, domains and DNS only, not shared hosting or the control panel."
+  },
+  {
+    "name": "vultr",
+    "label": "Vultr",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://api.vultr.com/v2",
+    "auth_scheme": "bearer",
+    "probe_path": "/account",
+    "doc": "https://www.vultr.com/api/",
+    "note": "Vultr's v2 API with an API key; the key is refused unless the calling address is on the account's API access allowlist, so a correct entry can still be rejected from a new egress address."
+  },
+  {
+    "name": "youtrack",
+    "label": "YouTrack",
+    "vertical": "devtools",
+    "surface": "http",
+    "url_template": "https://{instance}.youtrack.cloud/api",
+    "template_field": "instance",
+    "template_hint": "the name in your YouTrack address, before .youtrack.cloud",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "perm:",
+      "perm-"
+    ],
+    "probe_path": "/users/me",
+    "doc": "https://www.jetbrains.com/help/youtrack/devportal/authentication-with-permanent-token.html",
+    "note": "YouTrack Cloud's REST API with a permanent token; a self-managed YouTrack or an older youtrack.jetbrains.com address is a different host, and this entry was read off JetBrains' own page rather than probed, because the address is not known until the customer names their instance."
+  },
+  {
+    "name": "gitea",
+    "label": "Gitea",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://gitea.com",
+    "auth_scheme": "prefix",
+    "auth_prefix": "token",
+    "probe_path": "/api/v1/user",
+    "doc": "https://docs.gitea.com/development/api-usage",
+    "note": "Gitea reads an access token as the literal word token, a space, then the key. A Bearer prefix is accepted only for OAuth2 tokens, so sending one for a personal access token fails with a JWT parse error rather than a credential error."
+  },
+  {
+    "name": "codeberg",
+    "label": "Codeberg",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://codeberg.org",
+    "auth_scheme": "prefix",
+    "auth_prefix": "token",
+    "probe_path": "/api/v1/user",
+    "doc": "https://docs.codeberg.org/advanced/api-usage/",
+    "note": "Codeberg runs Forgejo, a Gitea fork, and takes the same token word before the key. Its 401 body quotes the rejected token back verbatim, so a reply from this upstream can contain the customer's own key \u2014 worth knowing before turning stored content on for it."
+  },
+  {
+    "name": "sourcegraph",
+    "label": "Sourcegraph",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://sourcegraph.com",
+    "auth_scheme": "prefix",
+    "auth_prefix": "token",
+    "probe_path": "/.api/graphql",
+    "doc": "https://sourcegraph.com/docs/api/graphql",
+    "note": "Sourcegraph reads the word token before the access token. A bare token gets Invalid Authorization header, which reads like a bad key and is not."
+  },
+  {
+    "name": "snyk",
+    "label": "Snyk",
+    "vertical": "devtools",
+    "surface": "http",
+    "url": "https://api.snyk.io",
+    "auth_scheme": "prefix",
+    "auth_prefix": "token",
+    "probe_path": "/rest/self?version=2024-10-15",
+    "doc": "https://docs.snyk.io/snyk-api/authentication-for-api",
+    "note": "Snyk's API tokens are sent as the word token before the key."
+  }
+]

@@ -1,0 +1,167 @@
+[
+  {
+    "name": "intercom",
+    "url": "https://api.intercom.io",
+    "vertical": "support",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/me",
+    "label": "Intercom",
+    "note": "Intercom's REST API with an access token. This entry is the api.intercom.io host only; a workspace hosted on another regional host needs an upstream naming it.",
+    "doc": "https://developers.intercom.com/docs/build-an-integration/learn-more/authentication"
+  },
+  {
+    "name": "intercom-eu",
+    "url": "https://api.eu.intercom.io",
+    "vertical": "support",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/me",
+    "label": "Intercom (EU)",
+    "note": "Intercom for a workspace whose data Intercom hosts in the European Union. The token and its placement are identical to the intercom entry and only the host differs, so a workspace hosted in the United States belongs on that one instead.",
+    "doc": "https://developers.intercom.com/docs/references/rest-api/api.intercom.io/data-attributes"
+  },
+  {
+    "name": "front",
+    "url": "https://api2.frontapp.com",
+    "vertical": "support",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/me",
+    "label": "Front",
+    "note": "Front's Core API with an API token made under Settings, Developers. The token carries only the features, namespaces and permissions chosen when it was created, so a call outside them is refused by Front rather than by us.",
+    "doc": "https://dev.frontapp.com/docs/authentication"
+  },
+  {
+    "name": "pylon",
+    "url": "https://api.usepylon.com",
+    "vertical": "support",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/me",
+    "label": "Pylon",
+    "note": "Pylon's API with an API token. This is the United States region; Pylon runs a separate European one at api.eu.usepylon.com, and a token belongs to whichever of the two holds the workspace.",
+    "doc": "https://docs.usepylon.com/pylon-docs/developer/api/api-reference/me"
+  },
+  {
+    "name": "pylon-eu",
+    "url": "https://api.eu.usepylon.com",
+    "vertical": "support",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/me",
+    "label": "Pylon (EU)",
+    "note": "Pylon's European region, named as a server in Pylon's own API definition beside the United States one. Same token placement as the pylon entry; only the host differs.",
+    "doc": "https://docs.usepylon.com/pylon-docs/developer/api/api-reference/me"
+  },
+  {
+    "name": "plain",
+    "url": "https://core-api.uk.plain.com",
+    "vertical": "support",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "plainApiKey_"
+    ],
+    "probe_path": "/graphql/v1",
+    "label": "Plain",
+    "note": "Plain's API with a machine user's API key. The whole API is one GraphQL endpoint that accepts POST alone, so every operation arrives at the same path and what a request actually does is inside its body, not in its URL.",
+    "doc": "https://www.plain.com/docs/graphql/authentication"
+  },
+  {
+    "name": "unthread",
+    "url": "https://api.unthread.io",
+    "vertical": "support",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "x-api-key",
+    "probe_path": "/api/customers/me",
+    "label": "Unthread",
+    "note": "Unthread's API with a service account key sent as X-Api-Key. Unthread's own reference contradicts itself about the value — the authentication section says the key alone, one upload example writes \"Bearer \" in front of it — and this entry sends the key alone, which is what the authentication section says.",
+    "doc": "https://docs.unthread.io/docs/api-reference"
+  },
+  {
+    "name": "missive",
+    "url": "https://public.missiveapp.com",
+    "vertical": "support",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "missive_pat-"
+    ],
+    "probe_path": "/v1/users",
+    "label": "Missive",
+    "note": "Missive's REST API with an API token from your Missive preferences. Missive issues no organisation-level or shared-account token, so the key is one person's and reaches every account that person can reach, including shared ones.",
+    "doc": "https://missiveapp.com/docs/developers/rest-api"
+  },
+  {
+    "name": "trengo",
+    "url": "https://app.trengo.com",
+    "vertical": "support",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/api/v2/users",
+    "label": "Trengo",
+    "note": "Trengo's REST API with the access token found under Settings, Integrations, Rest API.",
+    "doc": "https://developers.trengo.com/reference/authentication"
+  },
+  {
+    "name": "kustomer",
+    "url": "https://api.kustomerapp.com",
+    "vertical": "support",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v1/users/current",
+    "label": "Kustomer",
+    "note": "Kustomer's API with a key from Settings, Security, API Keys. The key's roles are fixed when it is issued, so what it may read is Kustomer's decision and not one this service can narrow.",
+    "doc": "https://developer.kustomer.com/kustomer-api-docs/reference/authentication"
+  },
+  {
+    "name": "devrev",
+    "url": "https://api.devrev.ai",
+    "vertical": "support",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/dev-users.self",
+    "label": "DevRev",
+    "note": "DevRev's public API with a personal access token. DevRev names every endpoint as a flat verb rather than a resource tree, so the read that proves a token is dev-users.self.",
+    "doc": "https://developer.devrev.ai/public/api-reference/dev-users/self"
+  },
+  {
+    "name": "groove",
+    "url": "https://api.groovehq.com",
+    "vertical": "support",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v1/me",
+    "label": "Groove",
+    "note": "Groove's API with an access token. Groove also accepts the same token as an access_token query parameter; this entry sends it in the Authorization header instead, which keeps a live credential out of URLs and out of whatever logs them.",
+    "doc": "https://www.groovehq.com/docs"
+  },
+  {
+    "name": "freshdesk",
+    "url_template": "https://{subdomain}.freshdesk.com",
+    "template_field": "subdomain",
+    "template_hint": "the name in your Freshdesk address — acme in acme.freshdesk.com",
+    "vertical": "support",
+    "surface": "http",
+    "auth_scheme": "basic",
+    "probe_path": "/api/v2/tickets",
+    "label": "Freshdesk",
+    "note": "Freshdesk with an agent's API key, which Freshdesk reads as the basic-auth username and whose password it ignores — that is what the empty password here means. A helpdesk answering on its own vanity domain rather than a name under freshdesk.com needs an upstream giving that address in full.",
+    "doc": "https://developers.freshdesk.com/api/"
+  },
+  {
+    "name": "freshservice",
+    "url_template": "https://{subdomain}.freshservice.com",
+    "template_field": "subdomain",
+    "template_hint": "the name in your Freshservice address — acme in acme.freshservice.com",
+    "vertical": "support",
+    "surface": "http",
+    "auth_scheme": "basic",
+    "probe_path": "/api/v2/tickets",
+    "label": "Freshservice",
+    "note": "Freshservice with a personal API key as the basic-auth username; Freshservice's own documentation says any dummy password will do, so this entry sends none. Username-and-password basic authentication was withdrawn in 2023 and only the key works.",
+    "doc": "https://api.freshservice.com/"
+  }
+]

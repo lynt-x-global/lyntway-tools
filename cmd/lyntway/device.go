@@ -100,8 +100,13 @@ func deviceStart() error {
 	}
 	fmt.Println("  Starting Lyntway agent...")
 	if runtime.GOOS == "windows" {
-		// Use the scheduled task so the agent survives terminal close.
-		return exec.Command("schtasks", "/Run", "/TN", "LyntwayAgent").Run()
+		if exec.Command("schtasks", "/Run", "/TN", "LyntwayAgent").Run() == nil {
+			return nil
+		}
+		launcher := filepath.Join(home(), ".lyntway", "agent", "start-agent.vbs")
+		if exists(launcher) {
+			return exec.Command("wscript.exe", launcher).Run()
+		}
 	}
 	cmd := exec.Command(bin, "--daemon")
 	cmd.Stdout = os.Stdout
@@ -367,6 +372,16 @@ func deviceInstall(args []string) error {
 		fmt.Fprintln(stdout)
 	}
 
+	// Fallback: if the agent binary could not create the scheduled task
+	// (e.g. Windows blocked fork/exec of schtasks.exe for a downloaded
+	// binary), the CLI creates it directly — via schtasks if elevated,
+	// otherwise via the registry Run key.
+	if runtime.GOOS == "windows" {
+		if exec.Command("schtasks", "/Query", "/TN", "LyntwayAgent").Run() != nil {
+			ensureAgentAutostart(agentPath)
+		}
+	}
+
 	// Step 6: health check.
 	fmt.Fprintln(stdout, "Step 5/5: Health check")
 
@@ -387,9 +402,16 @@ func deviceInstall(args []string) error {
 		// Still not up — kill anything stale and start fresh.
 		killExistingAgent()
 		if runtime.GOOS == "windows" {
-			// Re-run the scheduled task so the agent is managed by the
-			// task scheduler and survives terminal close.
-			_ = exec.Command("schtasks", "/Run", "/TN", "LyntwayAgent").Run()
+			// Try the scheduled task first; if that doesn't exist (registry
+			// fallback was used), start via the VBS launcher or directly.
+			if exec.Command("schtasks", "/Run", "/TN", "LyntwayAgent").Run() != nil {
+				launcher := filepath.Join(home(), ".lyntway", "agent", "start-agent.vbs")
+				if exists(launcher) {
+					_ = exec.Command("wscript.exe", launcher).Run()
+				} else {
+					_ = startAgent(agentPath)
+				}
+			}
 		} else {
 			if err := startAgent(agentPath); err != nil {
 				fmt.Fprintf(stdout, "  Could not start agent: %v\n", err)
@@ -412,6 +434,8 @@ func deviceInstall(args []string) error {
 
 	fmt.Fprintln(stdout, "\nDone. This device is now governed by Lyntway.")
 	fmt.Fprintln(stdout, "View it in your console at "+origin+"/on-device")
+	fmt.Fprintln(stdout, "\nIf your browser was open during install, close it")
+	fmt.Fprintln(stdout, "completely and reopen it so it picks up the proxy.")
 	return nil
 }
 
@@ -800,6 +824,15 @@ func downloadAgent(origin string) (string, error) {
 		os.Remove(tmpPath)
 		return "", err
 	}
+
+	// On Windows, remove the Zone.Identifier alternate data stream that
+	// marks the binary as downloaded from the internet. Without this,
+	// Windows may block the binary from launching system tools like
+	// schtasks.exe ("Access is denied" from fork/exec).
+	if runtime.GOOS == "windows" {
+		_ = os.Remove(dest + ":Zone.Identifier")
+	}
+
 	return dest, nil
 }
 
@@ -926,6 +959,48 @@ func runAgentSetup(agentPath string, extraArgs []string) error {
 	return cmd.Run()
 }
 
+// ensureAgentAutostart registers the agent to start at logon.
+// It tries schtasks first (identical to what the agent binary does), and
+// falls back to the HKCU Run registry key when schtasks is denied — which
+// happens whenever the shell is not elevated.
+func ensureAgentAutostart(agentPath string) {
+	dir := filepath.Join(home(), ".lyntway", "agent")
+	launcher := filepath.Join(dir, "start-agent.vbs")
+	vbs := fmt.Sprintf(`Set s=CreateObject("WScript.Shell")
+s.RegWrite "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings\ProxyServer","127.0.0.1:9090","REG_SZ"
+s.RegWrite "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings\ProxyEnable",1,"REG_DWORD"
+s.Run """%s"" --daemon",0,False
+WScript.Sleep 5000
+Set wmi=GetObject("winmgmts:")
+Set ps=wmi.ExecQuery("SELECT ProcessId FROM Win32_Process WHERE Name='chrome.exe'")
+If ps.Count > 0 Then
+  s.Run "cmd /c taskkill /F /IM chrome.exe >nul 2>&1 & timeout /t 2 /nobreak >nul & start """" ""C:\Program Files\Google\Chrome\Application\chrome.exe"" --proxy-server=http://127.0.0.1:9090",0,False
+End If
+`, agentPath)
+	// VBScript on recent Windows builds rejects LF-only line endings.
+	vbs = strings.ReplaceAll(vbs, "\r\n", "\n")
+	vbs = strings.ReplaceAll(vbs, "\n", "\r\n")
+	_ = os.WriteFile(launcher, []byte(vbs), 0644)
+
+	tr := fmt.Sprintf(`wscript.exe "%s"`, launcher)
+	err := exec.Command("schtasks", "/Create", "/TN", "LyntwayAgent",
+		"/TR", tr, "/SC", "ONLOGON", "/RL", "LIMITED", "/F").Run()
+	if err == nil {
+		_ = exec.Command("schtasks", "/Run", "/TN", "LyntwayAgent").Run()
+		return
+	}
+
+	// schtasks /SC ONLOGON needs admin. Fall back to the registry Run key
+	// which works for any user without elevation.
+	_ = exec.Command("reg", "add",
+		`HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Run`,
+		"/v", "LyntwayAgent", "/t", "REG_SZ", "/d", tr, "/f").Run()
+
+	// The registry Run key only fires on the next login, so start the
+	// agent now via the VBS launcher.
+	_ = exec.Command("wscript.exe", launcher).Run()
+}
+
 // startAgent starts the agent binary in daemon mode.
 func startAgent(agentPath string) error {
 	cmd := exec.Command(agentPath, "--daemon")
@@ -942,6 +1017,9 @@ func removeAutoStart() {
 	switch runtime.GOOS {
 	case "windows":
 		_ = exec.Command("schtasks", "/delete", "/tn", "LyntwayAgent", "/f").Run()
+		_ = exec.Command("reg", "delete",
+			`HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Run`,
+			"/v", "LyntwayAgent", "/f").Run()
 	case "darwin":
 		plist := filepath.Join(home(), "Library", "LaunchAgents", "com.lyntway.agent.plist")
 		_ = exec.Command("launchctl", "unload", plist).Run()
@@ -962,10 +1040,15 @@ func removeSidecar() {
 	case "windows":
 		_ = exec.Command("schtasks", "/End", "/TN", "LyntwaySidecar").Run()
 		_ = exec.Command("schtasks", "/Delete", "/TN", "LyntwaySidecar", "/F").Run()
-		// The scheduled task stop is not synchronous on Windows — kill the
-		// Python process explicitly so file locks release before removal.
+		// Kill the sidecar by port — the process may be python, python3, or a
+		// venv wrapper, so matching by name misses it. Port 8092 is definitive.
 		_ = exec.Command("powershell", "-NoProfile", "-Command",
-			`Get-Process -Name python -ErrorAction SilentlyContinue | `+
+			`$c = Get-NetTCPConnection -LocalPort 8092 -State Listen -ErrorAction SilentlyContinue; `+
+				`if ($c) { Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue }`).Run()
+		// Also try by name as a fallback for older systems where
+		// Get-NetTCPConnection may not be available.
+		_ = exec.Command("powershell", "-NoProfile", "-Command",
+			`Get-Process -Name python,python3 -ErrorAction SilentlyContinue | `+
 				`Where-Object { $_.Path -match 'lyntway' } | Stop-Process -Force`).Run()
 	case "darwin":
 		_ = exec.Command("launchctl", "unload", "-w",
@@ -981,6 +1064,17 @@ func removeSidecar() {
 		_ = exec.Command("systemctl", "--user", "disable", "lyntway-sidecar").Run()
 		svc := filepath.Join(home(), ".config", "systemd", "user", "lyntway-sidecar.service")
 		_ = os.Remove(svc)
+	}
+	// Kill by port — the process may be python, python3, or a venv wrapper.
+	// Port 8092 is definitive regardless of process name.
+	if runtime.GOOS == "darwin" || runtime.GOOS == "linux" {
+		out, _ := exec.Command("lsof", "-ti", "tcp:8092").CombinedOutput()
+		pid := strings.TrimSpace(string(out))
+		if pid != "" {
+			_ = exec.Command("kill", "-9", pid).Run()
+		}
+		_ = exec.Command("pkill", "-9", "-f",
+			filepath.Join(home(), ".lyntway", "sidecar", "venv")).Run()
 	}
 	dir := filepath.Join(home(), ".lyntway", "sidecar")
 	_ = os.RemoveAll(dir)

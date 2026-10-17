@@ -1,0 +1,204 @@
+[
+  {
+    "name": "formbricks",
+    "url": "https://app.formbricks.com",
+    "vertical": "productivity",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "x-api-key",
+    "probe_path": "/api/v2/me",
+    "label": "Formbricks",
+    "note": "Formbricks Cloud's management API for surveys and responses, which reads an organisation API key from x-api-key. A self-hosted Formbricks answers at its own address and needs an upstream naming it.",
+    "doc": "https://formbricks.com/docs/api-v2-reference/api-key-authentication"
+  },
+  {
+    "name": "glide",
+    "url": "https://api.glideapps.com",
+    "vertical": "productivity",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/tables",
+    "label": "Glide",
+    "note": "Glide's v2 tables API behind one bearer token taken from the Data Editor. The token covers every app and table in the team it belongs to, so it is not scoped to one app.",
+    "doc": "https://apidocs.glideapps.com/api-reference/v2/general/authentication"
+  },
+  {
+    "name": "jotform",
+    "url": "https://api.jotform.com",
+    "vertical": "productivity",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "apikey",
+    "probe_path": "/user/forms",
+    "label": "Jotform",
+    "note": "Jotform's API for forms and submissions, which reads the key from an APIKEY header. Its documentation also accepts the key as an apiKey query parameter, which we never set, because a key in a URL is a key in every log between here and there; a European or HIPAA account answers at a different host and needs an upstream naming it.",
+    "doc": "https://api.jotform.com/docs/"
+  },
+  {
+    "name": "meistertask",
+    "url": "https://www.meistertask.com",
+    "vertical": "productivity",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/api/persons/current",
+    "label": "MeisterTask",
+    "note": "MeisterTask's API with a personal access token, which the documentation offers as an alternative to registering an OAuth application. MindMeister is a separate API and this token does not reach it.",
+    "doc": "https://developers.meistertask.com/"
+  },
+  {
+    "name": "motion",
+    "url": "https://api.usemotion.com",
+    "vertical": "productivity",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "x-api-key",
+    "probe_path": "/v1/users/me",
+    "label": "Motion",
+    "note": "Motion's v1 API for tasks, projects and schedules, which reads the key from X-API-Key. The key is shown once when it is made and covers the whole account.",
+    "doc": "https://docs.usemotion.com/cookbooks/getting-started/"
+  },
+  {
+    "name": "n8n",
+    "url_template": "https://{instance}.app.n8n.cloud",
+    "template_field": "instance",
+    "template_hint": "the name in your n8n Cloud address, before .app.n8n.cloud",
+    "vertical": "productivity",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "x-n8n-api-key",
+    "probe_path": "/api/v1/workflows",
+    "label": "n8n Cloud",
+    "note": "n8n Cloud's public API, which reads the key from X-N8N-API-KEY. The address carries your own instance name, so it cannot be checked by us before you supply it; a self-hosted n8n needs an upstream naming its own address.",
+    "doc": "https://docs.n8n.io/api/authentication/"
+  },
+  {
+    "name": "nocodb",
+    "url": "https://app.nocodb.com",
+    "vertical": "productivity",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "nc_pat_"
+    ],
+    "probe_path": "/api/v2/meta/bases",
+    "label": "NocoDB",
+    "note": "NocoDB Cloud's API. The documentation offers the token either as a bearer or in an xc-token header and calls them equivalent; we send the bearer form. A self-hosted NocoDB answers at its own address and needs an upstream naming it.",
+    "doc": "https://nocodb.com/docs/product-docs/account-settings/api-tokens/"
+  },
+  {
+    "name": "paperform",
+    "url": "https://api.paperform.co",
+    "vertical": "productivity",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v1/forms",
+    "label": "Paperform",
+    "note": "Paperform's v1 API for forms and submissions behind one bearer key. API access is a paid plan feature, and several endpoints are limited to the Business plan.",
+    "doc": "https://paperform.readme.io/reference/getting-started-1"
+  },
+  {
+    "name": "process-street",
+    "url": "https://public-api.process.st",
+    "vertical": "productivity",
+    "surface": "http",
+    "auth_scheme": "header",
+    "auth_header": "x-api-key",
+    "probe_path": "/api/v1.1/workflows",
+    "label": "Process Street",
+    "note": "Process Street's public API, whose OpenAPI document names X-API-KEY as the credential header. A bearer token is not the documented form and is ignored.",
+    "doc": "https://public-api.process.st/api/v1.1/docs/openapi.json"
+  },
+  {
+    "name": "retool",
+    "url_template": "https://{organization}.retool.com",
+    "template_field": "organization",
+    "template_hint": "the name in your Retool address, before .retool.com",
+    "vertical": "productivity",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/api/v2/spaces",
+    "label": "Retool",
+    "note": "Retool's v2 API for users, groups, apps and permissions, behind an access token made in Settings. The address carries your own organisation name, so it cannot be checked by us before you supply it; a self-hosted Retool needs an upstream naming its own address.",
+    "doc": "https://docs.retool.com/org-users/guides/retool-api/authentication"
+  },
+  {
+    "name": "surveymonkey",
+    "url": "https://api.surveymonkey.com",
+    "vertical": "productivity",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/v3/users/me",
+    "label": "SurveyMonkey",
+    "note": "SurveyMonkey's v3 API, which reads a private app's access token as a bearer credential. The token belongs to an app registered in SurveyMonkey's developer portal; there is no separate API key.",
+    "doc": "https://api.surveymonkey.com/v3/docs"
+  },
+  {
+    "name": "taskade",
+    "url": "https://www.taskade.com",
+    "vertical": "productivity",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "key_prefixes": [
+      "tskdp_"
+    ],
+    "probe_path": "/api/v1/workspaces",
+    "label": "Taskade",
+    "note": "Taskade's v1 REST API with a personal token, which grants the whole account rather than one workspace. Taskade's newer Action API lives under /api/v2 at the same address and is reached with the same key.",
+    "doc": "https://docs.taskade.com/developers/authentication"
+  },
+  {
+    "name": "timecamp",
+    "url": "https://app.timecamp.com",
+    "vertical": "productivity",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/third_party/api/me",
+    "label": "TimeCamp",
+    "note": "TimeCamp's third-party API for time entries, tasks and users, with the account API token as a bearer credential. The older form that carried the token in the path is gone from TimeCamp's current specification, and the v4.api.timecamp.com host its specification also lists did not answer when this entry was checked.",
+    "doc": "https://developer.timecamp.com/reference/dist/api-prod.yaml"
+  },
+  {
+    "name": "todoist",
+    "url": "https://api.todoist.com",
+    "vertical": "productivity",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/api/v1/projects",
+    "label": "Todoist",
+    "note": "Todoist's unified v1 API with the personal API token from account settings. The older /rest/v2 endpoints answer 410 and are not this address.",
+    "doc": "https://developer.todoist.com/api/v1/"
+  },
+  {
+    "name": "windmill",
+    "url": "https://app.windmill.dev",
+    "vertical": "productivity",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/api/users/whoami",
+    "label": "Windmill",
+    "note": "Windmill Cloud's API for scripts, flows and jobs, with a token from the user settings presented as a bearer credential. A self-hosted Windmill answers at its own address and needs an upstream naming it.",
+    "doc": "https://www.windmill.dev/docs/core_concepts/webhooks"
+  },
+  {
+    "name": "wrike",
+    "url": "https://www.wrike.com",
+    "vertical": "productivity",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/api/v4/contacts",
+    "label": "Wrike",
+    "note": "Wrike's v4 API with a permanent access token from the App Console. Wrike hosts an account in one data centre, and a token issued on a European or second US account answers at app-eu.wrike.com or app-us2.wrike.com instead, which needs an upstream naming that address.",
+    "doc": "https://developers.wrike.com/oauth-20-authorization/"
+  },
+  {
+    "name": "zapsign",
+    "url": "https://api.zapsign.com.br",
+    "vertical": "productivity",
+    "surface": "http",
+    "auth_scheme": "bearer",
+    "probe_path": "/api/v1/docs/",
+    "label": "ZapSign",
+    "note": "ZapSign's e-signature API with the account's static API token as a bearer credential. Sandbox documents use a separate token issued in the sandbox account, and the JWT scheme documented alongside the static token is not what we send.",
+    "doc": "https://docs.zapsign.com.br/english/authentication/autenticacao"
+  }
+]

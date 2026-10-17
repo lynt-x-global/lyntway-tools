@@ -51,6 +51,12 @@ type keyHit struct {
 	// token or a private key is reported and cannot be migrated, and the
 	// advice printed beside it must not say otherwise.
 	Upstream string
+
+	// Catalog is the catalog entry this key's prefix belongs to, when the
+	// catalog recognised it and the seven migratable shapes did not. It
+	// names a provider; it never means the key can be moved, which is why
+	// it is separate from Upstream rather than folded into it.
+	Catalog string
 }
 
 // allowMarker on a line means the author has looked and this is not a
@@ -193,6 +199,30 @@ func findKeys(text string, firstLine int) []keyHit {
 		}
 		upstream, skip, ok := classify(key, value, nil, "")
 		if !ok || skip != "" || upstream == "" {
+			// The seven migratable shapes did not recognise it. The
+			// catalog knows 51 more by prefix, and naming one is the
+			// difference between "2 keys found" and "a Stripe key and a
+			// Linear key". It cannot be migrated — nothing here holds a
+			// Stripe key for anybody — so Upstream stays empty and the
+			// advice printed beside it must not offer to move it.
+			if n := nameFromCatalog(key, value); n.Entry != "" || n.Ambiguous > 0 {
+				from := strings.LastIndex(l, value)
+				if from >= 0 && overlaps(i, from, from+len(value)) {
+					continue
+				}
+				label, class := n.Label+" key", "provider."+n.Entry
+				if n.Ambiguous > 0 {
+					label = fmt.Sprintf("a key matching %d providers", n.Ambiguous)
+					class = "provider.ambiguous"
+				}
+				hits = append(hits, keyHit{
+					Line:    firstLine + i,
+					Label:   label,
+					Class:   class,
+					Last4:   last4(value),
+					Catalog: n.Entry,
+				})
+			}
 			continue
 		}
 		from := strings.LastIndex(l, value)

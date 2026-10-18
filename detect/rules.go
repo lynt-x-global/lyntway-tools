@@ -11,7 +11,7 @@ import (
 // Bump it on ANY change to rule content. The digest will change regardless
 // and would expose an unbumped edit, but a stale version string makes a
 // receipt harder to interpret for anyone reading it later.
-const RulesetVersion = "core-2026.10.18b"
+const RulesetVersion = "core-2026.10.19a"
 
 // Classes detected by the default ruleset.
 const (
@@ -239,9 +239,26 @@ func defaultRules() []Rule {
 			Priority:   100,
 		},
 		{
+			// The length floor is 32, not 20, because OpenAI has never
+			// issued a key shorter than sk- plus 48 characters, and a
+			// floor of 20 matched things that cannot be keys.
+			//
+			// On 19 October 2026 this rule blocked Claude Code's own
+			// startup request inside this repository. CLAUDE.md documents
+			// a development key as sk-local-test-0123456789; Claude Code
+			// loads CLAUDE.md into its context and sends it, so the agent
+			// received a 403 from `lyntway guard`, read it as an auth
+			// failure, and asked the user to sign in again. The product's
+			// headline command made the agent unusable, in the one
+			// repository guaranteed to contain that line: ours.
+			//
+			// That is the failure this project is least allowed to have.
+			// Nobody may be stopped from working by our rules; a developer
+			// whose agent breaks does not file a bug, they uninstall.
 			ID:         "openai-key",
 			Class:      ClassOpenAIKey,
-			Pattern:    regexp.MustCompile(`\b(sk-(?:proj-)?[A-Za-z0-9_-]{20,})\b`),
+			Pattern:    regexp.MustCompile(`\b(sk-(?:proj-)?[A-Za-z0-9_-]{32,})\b`),
+			Validate:   notAPlaceholderKey,
 			Confidence: ConfidenceHigh,
 			Prefilter:  []string{"sk-"},
 			Priority:   95,
@@ -1417,6 +1434,43 @@ func realURLPassword(pw string) bool {
 		"notareal", "not-a-real", "changeme", "placeholder", "redacted",
 	} {
 		if strings.Contains(lower, marker) {
+			return false
+		}
+	}
+	return true
+}
+
+// notAPlaceholderKey rejects a vendor-prefixed key whose body spells out
+// that it is an example.
+//
+// The length floor on the rules above removes short placeholders, and that
+// is where most of the safety comes from. This removes the rest: a
+// documented example long enough to look real, of the kind every README
+// and CLAUDE.md on earth contains.
+//
+// # Why segments rather than substrings
+//
+// A real key is random, and a random forty-eight characters contains the
+// letters t-e-s-t often enough to matter when the cost is a key going out
+// unflagged. So the word has to appear as a hyphen- or underscore-
+// delimited segment — "sk-local-test-0123456789" has the segments "local"
+// and "test"; a random body does not produce those as whole segments.
+//
+// The asymmetry here runs the other way from most of this package. A
+// missed key is a leak, so the list stays short and every entry has to be
+// a word somebody typed on purpose.
+func notAPlaceholderKey(match string) bool {
+	body := match
+	if i := strings.Index(body, "-"); i >= 0 {
+		body = body[i+1:]
+	}
+	for _, segment := range strings.FieldsFunc(strings.ToLower(body), func(r rune) bool {
+		return r == '-' || r == '_'
+	}) {
+		switch segment {
+		case "test", "testing", "example", "sample", "dummy", "fake",
+			"placeholder", "redacted", "notareal", "changeme", "local",
+			"localhost", "dev", "development", "xxxx", "yourkey", "mykey":
 			return false
 		}
 	}

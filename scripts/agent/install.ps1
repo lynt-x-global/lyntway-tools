@@ -20,7 +20,9 @@
 # to every user through the process list for as long as the process runs.
 #
 # The zip is checked against the SHA256SUMS the same release published, or
-# against LYNTWAY_SHA256 when set. The binary is not yet Authenticode-signed.
+# against LYNTWAY_SHA256 when set. Whether the binaries carry an
+# Authenticode signature is read from signing.json beside them and printed,
+# rather than asserted here where it would go stale the day one is bought.
 #
 # Environment (CLI mode):
 #   LYNTWAY_API_KEY     required
@@ -60,6 +62,32 @@ function Warn($msg) { Write-Host "  [warn]  $msg" -ForegroundColor Yellow }
 
 if (-not [Environment]::Is64BitOperatingSystem) { Fail 'lyntway is built for 64-bit Windows only' }
 
+# Which Windows this is. Until 18 October 2026 both of this script's modes
+# assumed amd64, so on a Copilot+ PC the x64 binary was fetched and run
+# under emulation, and the machine then reported amd64 to the console —
+# a fleet inventory that disagreed with the hardware it was describing.
+#
+# PROCESSOR_ARCHITECTURE describes *this process*, so a 32-bit PowerShell on
+# 64-bit Windows answers x86 and puts the truth in PROCESSOR_ARCHITEW6432.
+# OSArchitecture asks the operating system and is the one to believe when
+# the runtime is new enough to have it.
+function Get-LyntwayArch {
+  try {
+    switch ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()) {
+      'X64'   { return 'amd64' }
+      'Arm64' { return 'arm64' }
+    }
+  } catch { }
+  $raw = $env:PROCESSOR_ARCHITEW6432
+  if (-not $raw) { $raw = $env:PROCESSOR_ARCHITECTURE }
+  switch ($raw) {
+    'AMD64' { return 'amd64' }
+    'ARM64' { return 'arm64' }
+  }
+  Fail "no lyntway build for $raw"
+}
+$arch = Get-LyntwayArch
+
 # ── On-device agent mode ─────────────────────────────────────────────
 
 if ($Token) {
@@ -72,7 +100,7 @@ if ($Token) {
 
   # Detect RAM for sidecar profile decision.
   $ramGB = [math]::Floor((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
-  Info "detected $ramGB GB RAM on windows/amd64"
+  Info "detected $ramGB GB RAM on windows/$arch"
 
   $work = Join-Path ([IO.Path]::GetTempPath()) ("lyntway-od-" + [Guid]::NewGuid())
   New-Item -ItemType Directory -Path $work | Out-Null
@@ -83,9 +111,59 @@ if ($Token) {
     Step 1 "Download the on-device agent"
 
     $dlBase = "$ApiBase/dl/on-device"
-    $binaryName = "lyntway-agent_windows_amd64.exe"
+    $binaryName = "lyntway-agent_windows_$arch.exe"
     Invoke-WebRequest -UseBasicParsing -Uri "$dlBase/$binaryName" -OutFile "$work\lyntway-agent.exe"
-    Ok "downloaded lyntway-agent for windows/amd64"
+    Ok "downloaded lyntway-agent for windows/$arch"
+
+    # Integrity, before anything reaches Program Files.
+    #
+    # Same history as the Unix installer: this is the download that puts a
+    # certificate authority in the machine's trust store, and it was fetched
+    # and run unverified while the CLI path at the bottom of this same file
+    # checked a checksum. Refusing costs an install; at this point nothing
+    # has been copied, no certificate added and no proxy pointed anywhere.
+    try {
+      Invoke-WebRequest -UseBasicParsing -Uri "$dlBase/SHA256SUMS" -OutFile "$work\SHA256SUMS"
+    } catch {
+      Fail "$ApiBase published no SHA256SUMS beside $binaryName; refusing to install an agent we cannot verify"
+    }
+    $want = $null
+    foreach ($line in Get-Content "$work\SHA256SUMS") {
+      $parts = $line.Trim() -split '\s+'
+      # sha256sum writes a leading asterisk for an entry read in binary mode.
+      if ($parts.Count -ge 2 -and $parts[1].TrimStart('*') -eq $binaryName) { $want = $parts[0]; break }
+    }
+    if (-not $want) { Fail "SHA256SUMS names no entry for $binaryName; refusing to install" }
+    $actual = (Get-FileHash -Algorithm SHA256 "$work\lyntway-agent.exe").Hash
+    if ($want.ToLower() -ne $actual.ToLower()) {
+      Fail "checksum mismatch for $binaryName`n     published: $want`n    downloaded: $actual`n  Nothing has been changed on this machine."
+    }
+    Ok "checksum matches what $ApiBase published"
+
+    # What the signature says, said exactly. signing.json is published
+    # beside the binaries, so it describes this download rather than a
+    # claim made elsewhere — and where it says the set is unsigned, that is
+    # printed. An installer silent about signing reads as signed, which is
+    # the strongest reading of an absent value and so the wrong one.
+    $signed = $false
+    $signReason = ''
+    try {
+      Invoke-WebRequest -UseBasicParsing -Uri "$dlBase/signing.json" -OutFile "$work\signing.json"
+      $manifest = Get-Content -Raw "$work\signing.json" | ConvertFrom-Json
+      $signed = [bool]$manifest.signed
+      $signReason = [string]$manifest.reason
+    } catch { }
+    if ($signed) {
+      $sig = Get-AuthenticodeSignature "$work\lyntway-agent.exe"
+      if ($sig.Status -ne 'Valid') {
+        Fail "$ApiBase says this agent is signed and Windows reports its signature as $($sig.Status); refusing to install"
+      }
+      Ok "Authenticode signature verified: $($sig.SignerCertificate.Subject)"
+    } else {
+      if ($signReason) { Warn "this agent is NOT Authenticode-signed - $signReason" }
+      else { Warn 'this agent is NOT Authenticode-signed' }
+      Warn "the checksum above is the only thing that ties it to $ApiBase"
+    }
 
     # Step 2: Install to Program Files.
 
@@ -95,7 +173,12 @@ if ($Token) {
     New-Item -ItemType Directory -Force -Path $dest | Out-Null
     Copy-Item -Force "$work\lyntway-agent.exe" "$dest\lyntway-agent.exe"
 
-    # Remove SmartScreen Mark-of-Web.
+    # Remove the Mark-of-the-Web.
+    #
+    # This is what stops SmartScreen prompting on a file fetched over the
+    # network, and it is a workaround for the binary being unsigned rather
+    # than a fix: an Authenticode signature with reputation is the actual
+    # answer, and the manifest check above says which of the two is in play.
     $exe = Join-Path $dest 'lyntway-agent.exe'
     Remove-Item -Stream Zone.Identifier -Path $exe -ErrorAction SilentlyContinue
 
@@ -115,7 +198,7 @@ if ($Token) {
       token    = $Token
       hostname = $hostname
       os       = 'windows'
-      arch     = 'amd64'
+      arch     = $arch
     } | ConvertTo-Json
 
     try {
@@ -434,7 +517,24 @@ if ($version -eq 'latest') {
 $version = $version.TrimStart('v')
 if ($version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') { Fail "'$version' is not a release version" }
 
-$asset = "lyntway_${version}_windows_amd64.zip"
+# Windows on ARM runs x64 under emulation, and releases up to v0.7.0
+# published no arm64 archive. Fall back rather than refuse a machine that can
+# run the tool — but say which binary was taken, because somebody debugging
+# slow behaviour on a Copilot+ PC needs to know it is a translated one.
+$assetArch = $arch
+if ($arch -ne 'amd64') {
+  $probe = "$base/lyntway_${version}_windows_${arch}.zip"
+  $native = $false
+  try {
+    $null = Invoke-WebRequest -UseBasicParsing -Method Head -Uri $probe -TimeoutSec 20
+    $native = $true
+  } catch { }
+  if (-not $native) {
+    Warn "v$version publishes no windows/$arch archive; taking the x64 build, which runs under emulation"
+    $assetArch = 'amd64'
+  }
+}
+$asset = "lyntway_${version}_windows_${assetArch}.zip"
 $base = "$repo/download/v$version"
 $work = Join-Path ([IO.Path]::GetTempPath()) ("lyntway-" + [Guid]::NewGuid())
 New-Item -ItemType Directory -Path $work | Out-Null

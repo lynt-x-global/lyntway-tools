@@ -53,6 +53,9 @@ var classLabels = map[Class]string{
 	ClassAnthropicKey: "Anthropic key",
 	ClassPrivateKey:   "Private key",
 	ClassJWT:          "Session token (JWT)",
+	ClassSupabaseKey:  "Supabase secret key",
+	ClassLyntwayKey:   "Lyntway key",
+	ClassURLPassword:  "Password in a connection URL",
 
 	ClassInstructionOverride: "Attempt to override instructions",
 	ClassPromptExtraction:    "Attempt to extract the prompt",

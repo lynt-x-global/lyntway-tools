@@ -13,6 +13,8 @@
 //	lyntway keys sign      give this key a signing keypair
 //	lyntway hook install   refuse a prompt that carries a provider key
 //	lyntway scan           find provider keys in files or a diff
+//	lyntway guard -- CMD   run one command with its model traffic governed
+//	lyntway share          turn a receipt into a link anyone can check
 //	lyntway status         what is configured, and what is not covered
 //	lyntway undo           put everything back
 //
@@ -67,7 +69,7 @@ var (
 var version = "dev"
 
 func main() {
-	flag.Usage = usage
+	flag.Usage = printUsage
 	flag.Parse()
 
 	args := flag.Args()
@@ -113,6 +115,10 @@ func main() {
 		err = hook(args[1:])
 	case "scan":
 		err = scanCommand(args[1:])
+	case "guard":
+		err = guardCmd(args[1:])
+	case "share":
+		err = shareCmd(args[1:])
 	case "proxy":
 		err = proxyCmd(args[1:])
 	case "device":
@@ -133,10 +139,10 @@ func main() {
 	case "version", "-v", "--version":
 		fmt.Println(version)
 	case "help", "-h", "--help":
-		usage()
+		printUsage()
 	default:
 		fmt.Fprintf(os.Stderr, "lyntway: no command called %q\n\n", args[0])
-		usage()
+		printUsage()
 		os.Exit(2)
 	}
 
@@ -146,8 +152,14 @@ func main() {
 	}
 }
 
-func usage() {
-	fmt.Fprint(os.Stderr, `lyntway — point this machine's AI tools at Lyntway
+func printUsage() { usageTo(os.Stderr) }
+
+// usageTo exists so a test can read the list of commands. Five documents
+// outside this binary tell people and their agents what to run, and the
+// only thing that stops them naming a command this binary does not have is
+// a test that reads both.
+func usageTo(w io.Writer) {
+	fmt.Fprint(w, `lyntway — point this machine's AI tools at Lyntway
 
 Usage:
   lyntway setup          sign in, scan, migrate keys, route tools — all in one
@@ -158,6 +170,9 @@ Usage:
   lyntway keys sign      give this key a signing keypair
   lyntway hook install   have Claude Code or Cursor refuse a prompt that carries a key
   lyntway scan           find provider keys in files, or in a diff before it is pushed
+  lyntway guard -- CMD   run one command with its model traffic governed, and
+                         nothing on this machine changed
+  lyntway share          turn a receipt into a link anyone can check
   lyntway device         install the on-device governance agent
   lyntway device doctor  check the agent's health
   lyntway proxy          govern Ollama or LM Studio on this machine

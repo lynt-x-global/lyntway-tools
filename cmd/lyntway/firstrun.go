@@ -109,6 +109,14 @@ func printFirstRun(r firstRunReport) {
 		"watched, no value was copied out of any file, and no account was needed.\n")
 
 	fmt.Fprint(stdout, "\nNothing here is being recorded yet.\n\n")
+
+	// Free and account-free first. Everything above was read without one,
+	// and following that report with "sign in" as the only way forward
+	// would make the report look like a sales step.
+	fmt.Fprint(stdout, "  lyntway hook install      stop a prompt that carries a key, before it is sent\n")
+	if cmd := guardSuggestion(r.Apps); cmd != "" {
+		fmt.Fprintf(stdout, "  lyntway guard -- %-8s run it with its traffic governed, and nothing here changed\n", cmd)
+	}
 	if len(r.Keys) > 0 {
 		fmt.Fprint(stdout, "  lyntway keys migrate      move those keys out of the files\n")
 	}

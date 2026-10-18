@@ -29,6 +29,7 @@ import (
 	"github.com/lynt-x-global/lyntway-tools/govern"
 	"github.com/lynt-x-global/lyntway-tools/receipt"
 	"github.com/lynt-x-global/lyntway-tools/tokenize"
+	"github.com/lynt-x-global/lyntway-tools/usage"
 )
 
 // A local listener in front of a model server that never leaves the
@@ -115,6 +116,34 @@ type proxyOptions struct {
 	Name     string
 	Receipts string
 	Report   bool
+
+	// label is what this listener calls itself in the chain id, the
+	// vantage point and the receipt file name. Empty means "proxy".
+	// `lyntway guard` sets its own, so a wrapped session's receipts are
+	// never mistaken for a standalone proxy's and the two never append to
+	// one chain.
+	label string
+
+	// tool is the name reported to the account and printed as the source
+	// of a refusal. Empty means proxyTool.
+	tool string
+
+	// store replaces the chain store that would otherwise be opened on
+	// Receipts. guard runs one listener per provider over a single
+	// directory, and two stores on one file overwrite each other's
+	// positions — which reads afterwards as a broken chain, which is the
+	// one thing a receipt must never say when nothing was tampered with.
+	store govern.ChainStore
+
+	// onDecision, when set, is called for every governed message. guard
+	// uses it to put the refusal in front of the person at the terminal,
+	// who would otherwise see only whatever their tool makes of a 403.
+	onDecision func(*govern.Result, receipt.Direction)
+
+	// onUsage, when set, is called once per model reply with whatever the
+	// provider said the call cost. metered is false when it said nothing,
+	// which is a state and not a zero.
+	onUsage func(model string, u usage.TokenUsage, metered bool)
 }
 
 func proxyCmd(args []string) error {
@@ -208,8 +237,16 @@ type localProxy struct {
 	scope    *tokenize.Scope
 	upstream *url.URL
 	name     string
+	label    string
+	tool     string
 	chain    string
 	client   *http.Client
+
+	// onDecision is told about every governed message, in the order they
+	// were governed. Nil in the standalone proxy, which prints a summary
+	// at the end instead.
+	onDecision func(*govern.Result, receipt.Direction)
+	onUsage    func(model string, u usage.TokenUsage, metered bool)
 
 	receiptsPath string
 	sink         *os.File
@@ -223,6 +260,13 @@ type localProxy struct {
 	mu       sync.Mutex
 	requests int
 	findings map[detect.Class]int
+
+	// tokens is what providers reported, by the model that answered.
+	// unmetered counts model replies that reported nothing — kept apart
+	// from the totals, because folding them in as zero would read as
+	// calls that were free.
+	tokens    map[string]usage.TokenUsage
+	unmetered int
 }
 
 func newLocalProxy(opts proxyOptions) (*localProxy, error) {
@@ -243,6 +287,15 @@ func newLocalProxy(opts proxyOptions) (*localProxy, error) {
 		return nil, fmt.Errorf("--upstream %q is not an http(s) URL", opts.Upstream)
 	}
 	name := sanitiseName(orDefaultName(opts.Name, guessUpstreamName(upstream)))
+
+	label := opts.label
+	if label == "" {
+		label = "proxy"
+	}
+	tool := opts.tool
+	if tool == "" {
+		tool = proxyTool
+	}
 
 	c, signedIn := loadConfigQuietly()
 	signer, keyNote, err := loadProxySigner(c, signedIn)
@@ -266,8 +319,12 @@ func newLocalProxy(opts proxyOptions) (*localProxy, error) {
 		if err := publishProxyKey(filepath.Join(dir, "keys.json"), signer); err != nil {
 			return nil, fmt.Errorf("publishing the verifying key: %w", err)
 		}
-		store = &proxyChainStore{path: filepath.Join(dir, "chain.json")}
-		receiptsPath = filepath.Join(dir, "proxy-"+name+".jsonl")
+		if opts.store != nil {
+			store = opts.store
+		} else {
+			store = &proxyChainStore{path: filepath.Join(dir, "chain.json")}
+		}
+		receiptsPath = filepath.Join(dir, label+"-"+name+".jsonl")
 		sink, err = os.OpenFile(receiptsPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 		if err != nil {
 			return nil, fmt.Errorf("opening the receipt file: %w", err)
@@ -276,7 +333,7 @@ func newLocalProxy(opts proxyOptions) (*localProxy, error) {
 
 	engine, err := govern.New(govern.Config{
 		Signer:     signer,
-		Issuer:     "lyntway proxy (" + keyNote + ")",
+		Issuer:     "lyntway " + label + " (" + keyNote + ")",
 		ChainStore: store,
 	})
 	if err != nil {
@@ -310,7 +367,11 @@ func newLocalProxy(opts proxyOptions) (*localProxy, error) {
 		scope:        scope,
 		upstream:     upstream,
 		name:         name,
-		chain:        "proxy/" + name,
+		label:        label,
+		tool:         tool,
+		chain:        label + "/" + name,
+		onDecision:   opts.onDecision,
+		onUsage:      opts.onUsage,
 		client:       &http.Client{Transport: &http.Transport{Proxy: nil}},
 		receiptsPath: receiptsPath,
 		sink:         sink,
@@ -318,6 +379,7 @@ func newLocalProxy(opts proxyOptions) (*localProxy, error) {
 		keyNote:      keyNote,
 		reporter:     reporter,
 		findings:     make(map[detect.Class]int),
+		tokens:       make(map[string]usage.TokenUsage),
 	}, nil
 }
 
@@ -638,11 +700,11 @@ func (p *localProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxProxyBody+1))
 	if err != nil {
-		writeProxyError(w, http.StatusBadRequest, "lyntway_bad_request", "the request body could not be read", "")
+		p.writeProxyError(w, http.StatusBadRequest, "lyntway_bad_request", "the request body could not be read", "")
 		return
 	}
 	if len(body) > maxProxyBody {
-		writeProxyError(w, http.StatusRequestEntityTooLarge, "lyntway_too_large", "the request body is larger than this proxy governs", "")
+		p.writeProxyError(w, http.StatusRequestEntityTooLarge, "lyntway_too_large", "the request body is larger than this proxy governs", "")
 		return
 	}
 
@@ -651,12 +713,12 @@ func (p *localProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	evidence := &receipt.Evidence{
 		// This process handled the bytes, on the machine they came from.
 		Provenance: receipt.ProvenanceObserved,
-		Vantage:    "proxy/" + p.name,
+		Vantage:    p.label + "/" + p.name,
 	}
 
 	id, err := proxyReceiptID()
 	if err != nil {
-		writeProxyError(w, http.StatusInternalServerError, "lyntway_internal", err.Error(), "")
+		p.writeProxyError(w, http.StatusInternalServerError, "lyntway_internal", err.Error(), "")
 		return
 	}
 	outRes, err := p.engine.Govern(govern.Request{
@@ -675,7 +737,7 @@ func (p *localProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Evidence: evidence,
 	})
 	if err != nil {
-		writeProxyError(w, http.StatusInternalServerError, "lyntway_internal", "the request could not be governed: "+err.Error(), "")
+		p.writeProxyError(w, http.StatusInternalServerError, "lyntway_internal", "the request could not be governed: "+err.Error(), "")
 		return
 	}
 	p.record(outRes, requestLine, receipt.DirectionRequest)
@@ -686,8 +748,8 @@ func (p *localProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Refused before it reached the model. The client is told which
 		// receipt records the decision, in the error shape the SDKs raise
 		// as a readable exception.
-		writeProxyError(w, http.StatusForbidden, "lyntway_blocked",
-			"this request was withheld by policy ("+string(outRes.Decision)+")", outRes.Receipt.ID)
+		p.writeProxyError(w, http.StatusForbidden, "lyntway_blocked",
+			proxyRefusalMessage(outRes, "request", p.upstream.Host), outRes.Receipt.ID)
 		return
 	}
 
@@ -696,7 +758,7 @@ func (p *localProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	target.RawQuery = r.URL.RawQuery
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, target.String(), bytes.NewReader(outRes.Content))
 	if err != nil {
-		writeProxyError(w, http.StatusBadGateway, "lyntway_upstream", err.Error(), outRes.Receipt.ID)
+		p.writeProxyError(w, http.StatusBadGateway, "lyntway_upstream", err.Error(), outRes.Receipt.ID)
 		return
 	}
 	copyEndToEnd(req.Header, r.Header)
@@ -709,7 +771,7 @@ func (p *localProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		writeProxyError(w, http.StatusBadGateway, "lyntway_upstream", "the model server did not answer: "+err.Error(), outRes.Receipt.ID)
+		p.writeProxyError(w, http.StatusBadGateway, "lyntway_upstream", "the model server did not answer: "+err.Error(), outRes.Receipt.ID)
 		return
 	}
 	defer resp.Body.Close()
@@ -742,30 +804,34 @@ func (p *localProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxProxyBody))
 	if err != nil {
-		writeProxyError(w, http.StatusBadGateway, "lyntway_upstream", "the model server's reply could not be read", outRes.Receipt.ID)
+		p.writeProxyError(w, http.StatusBadGateway, "lyntway_upstream", "the model server's reply could not be read", outRes.Receipt.ID)
 		return
 	}
 	restored, err := p.scope.Restore(raw)
 	if err != nil {
-		writeProxyError(w, http.StatusInternalServerError, "lyntway_internal", "restoring tokens in the reply: "+err.Error(), outRes.Receipt.ID)
+		p.writeProxyError(w, http.StatusInternalServerError, "lyntway_internal", "restoring tokens in the reply: "+err.Error(), outRes.Receipt.ID)
 		return
 	}
 	inbound.Content = restored
 	if inbound.ReceiptID, err = proxyReceiptID(); err != nil {
-		writeProxyError(w, http.StatusInternalServerError, "lyntway_internal", err.Error(), outRes.Receipt.ID)
+		p.writeProxyError(w, http.StatusInternalServerError, "lyntway_internal", err.Error(), outRes.Receipt.ID)
 		return
 	}
 	inRes, err := p.engine.Govern(inbound)
 	if err != nil {
-		writeProxyError(w, http.StatusInternalServerError, "lyntway_internal", "the reply could not be governed: "+err.Error(), outRes.Receipt.ID)
+		p.writeProxyError(w, http.StatusInternalServerError, "lyntway_internal", "the reply could not be governed: "+err.Error(), outRes.Receipt.ID)
 		return
 	}
 	p.record(inRes, requestLine, receipt.DirectionResponse)
+	// Read from what the provider sent, not from the governed copy: the
+	// usage object is the provider's own bookkeeping and has nothing to
+	// do with what we did to the text around it.
+	p.noteUsage(raw)
 	w.Header().Set("X-Lyntway-Receipt", inRes.Receipt.ID)
 	w.Header().Set("X-Lyntway-Decision", string(inRes.Decision))
 	if inRes.Content == nil {
-		writeProxyError(w, http.StatusForbidden, "lyntway_blocked",
-			"the model's reply was withheld by policy ("+string(inRes.Decision)+")", inRes.Receipt.ID)
+		p.writeProxyError(w, http.StatusForbidden, "lyntway_blocked",
+			proxyRefusalMessage(inRes, "reply", p.upstream.Host), inRes.Receipt.ID)
 		return
 	}
 	w.Header().Set("Content-Length", fmt.Sprint(len(inRes.Content)))
@@ -785,15 +851,33 @@ func proxyActor(r *http.Request) receipt.Actor {
 }
 
 // writeProxyError answers in the shape the OpenAI SDKs decode, so a refusal
-// surfaces as a readable exception rather than a parse failure.
-func writeProxyError(w http.ResponseWriter, status int, kind, message, receiptID string) {
+// surfaces as a readable exception rather than a parse failure. It is a
+// method because the source has to name whichever command refused: a person
+// told "lyntway-proxy" blocked them while they were running `lyntway guard`
+// has been given a wrong fact to debug with.
+func (p *localProxy) writeProxyError(w http.ResponseWriter, status int, kind, message, receiptID string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	e := map[string]any{"type": kind, "message": message, "source": proxyTool}
+	e := map[string]any{"type": kind, "message": message, "source": p.tool}
 	if receiptID != "" {
 		e["receipt"] = receiptID
 	}
 	json.NewEncoder(w).Encode(map[string]any{"error": e})
+}
+
+// refusalMessage is what the tool prints, and for most people it is the
+// only part of this product they will ever read. "withheld by policy" is
+// accurate and useless: it names no cause, so the reader cannot tell a
+// detection from a bug, and has nothing to act on. So the classes are
+// named the way a person says them, with the identifier beside each one so
+// the line can be matched against the receipt that records it.
+func proxyRefusalMessage(res *govern.Result, what, destination string) string {
+	acted := withheldFindings(res.Findings)
+	if len(acted) == 0 {
+		return "lyntway withheld this " + what + " (" + string(res.Decision) + "); nothing was sent to " + destination
+	}
+	return "lyntway withheld this " + what + " — it carried " +
+		strings.Join(findingPhrases(acted), ", ") + ". Nothing was sent to " + destination + "."
 }
 
 // record keeps the receipt, the counts, and — when signed in — tells the
@@ -806,12 +890,17 @@ func (p *localProxy) record(res *govern.Result, requestLine string, dir receipt.
 	}
 	p.mu.Unlock()
 
+	if p.onDecision != nil {
+		p.onDecision(res, dir)
+	}
+
 	if p.reporter != nil {
 		classes := make(map[string]int, len(res.Findings))
 		for _, f := range res.Findings {
 			classes[f.Class] += f.Count
 		}
 		p.reporter.report(proxyAttestation{
+			Tool:  p.tool,
 			Chain: p.chain, Destination: p.upstream.Host, Target: p.name,
 			Method: requestLine, Direction: string(dir),
 			Decision: string(res.Decision), Findings: classes,
@@ -831,6 +920,36 @@ func (p *localProxy) record(res *govern.Result, requestLine string, dir receipt.
 	_, _ = p.sink.Write(append(encoded, '\n'))
 }
 
+// noteUsage keeps what a provider said one reply cost, by the model that
+// answered it.
+//
+// Nothing here counts anything: the figure is the provider's and is
+// labelled as theirs all the way to the screen. A reply that reported no
+// figure is counted as unmetered rather than as zero, because zero reads
+// as free and absent is the truth.
+func (p *localProxy) noteUsage(raw []byte) {
+	u, ok := usage.FromBody(raw, receipt.SurfaceModel)
+	p.noteParsedUsage(usage.Model(raw), u, ok)
+}
+
+func (p *localProxy) noteParsedUsage(model string, u usage.TokenUsage, metered bool) {
+	p.mu.Lock()
+	if !metered {
+		p.unmetered++
+	} else {
+		have := p.tokens[model]
+		have.Input += u.Input
+		have.Output += u.Output
+		have.ReportedBy = usage.ReportedByProvider
+		p.tokens[model] = have
+	}
+	p.mu.Unlock()
+
+	if p.onUsage != nil {
+		p.onUsage(model, u, metered)
+	}
+}
+
 func (p *localProxy) writeStatus(w http.ResponseWriter) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -840,7 +959,7 @@ func (p *localProxy) writeStatus(w http.ResponseWriter) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"tool":      proxyTool,
+		"tool":      p.tool,
 		"upstream":  p.upstream.String(),
 		"name":      p.name,
 		"receipts":  p.receiptsPath,
@@ -853,20 +972,38 @@ func (p *localProxy) writeStatus(w http.ResponseWriter) {
 
 func (p *localProxy) summary(out io.Writer) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.requests == 0 {
-		fmt.Fprintln(out, "lyntway proxy: stopped; nothing passed through")
-		return
-	}
+	requests, unmetered := p.requests, p.unmetered
 	var parts []string
 	for class, n := range p.findings {
 		parts = append(parts, fmt.Sprintf("%s ×%d", class, n))
 	}
-	if len(parts) == 0 {
-		fmt.Fprintf(out, "lyntway proxy: stopped; governed %d messages, nothing sensitive found\n", p.requests)
+	tokens := make(map[string]usage.TokenUsage, len(p.tokens))
+	for m, u := range p.tokens {
+		tokens[m] = u
+	}
+	p.mu.Unlock()
+
+	if requests == 0 {
+		fmt.Fprintln(out, "lyntway proxy: stopped; nothing passed through")
 		return
 	}
-	fmt.Fprintf(out, "lyntway proxy: stopped; governed %d messages; %s\n", p.requests, strings.Join(parts, ", "))
+	switch {
+	case len(parts) == 0:
+		fmt.Fprintf(out, "lyntway proxy: stopped; governed %d messages, nothing sensitive found\n", requests)
+	default:
+		fmt.Fprintf(out, "lyntway proxy: stopped; governed %d messages; %s\n", requests, strings.Join(parts, ", "))
+	}
+
+	// The same figures `guard` prints. A developer who runs the daemon
+	// rather than the wrapper has the same question about what it cost,
+	// and two different answers to it would be worse than one.
+	book, err := loadPriceBook()
+	if err != nil {
+		// A broken price file must not swallow the session's summary.
+		fmt.Fprintf(out, "  (prices not read: %v)\n", err)
+		book = priceBook{}
+	}
+	guardTokenLines(out, tokens, unmetered, book)
 }
 
 // Streamed replies.
@@ -966,7 +1103,13 @@ func (p *localProxy) relayStreamed(w http.ResponseWriter, resp *http.Response, i
 	w.Header().Set("Trailer", "X-Lyntway-Receipt, X-Lyntway-Decision")
 	w.WriteHeader(resp.StatusCode)
 
-	outcome := relayGovernedStream(w, resp.Body, p.engine.NewRestoringStreamGovernor(p.scope), frame)
+	// The sniffer sits on a tee beside the relay, never inside it: the
+	// governed path sees exactly the bytes it saw before, and accounting
+	// that went wrong could not corrupt a stream.
+	sniff := usage.NewSniffer()
+	outcome := relayGovernedStream(w, io.TeeReader(resp.Body, sniff), p.engine.NewRestoringStreamGovernor(p.scope), frame, p.tool)
+	u, metered := sniff.Result()
+	p.noteParsedUsage(sniff.Model(), u, metered)
 
 	inbound.Content = outcome.released
 	// The bytes are gone. A block decided now can only be recorded, and
@@ -1019,7 +1162,7 @@ func withheldFindings(all []receipt.Finding) []receipt.Finding {
 // supposed to follow, and a client that treats done as the end renders
 // nothing. So once any text is outstanding, everything after it waits, and
 // the stream reaches the client in the order the server sent it.
-func relayGovernedStream(w http.ResponseWriter, upstream io.Reader, g *govern.StreamGovernor, frame streamFrame) *streamOutcome {
+func relayGovernedStream(w http.ResponseWriter, upstream io.Reader, g *govern.StreamGovernor, frame streamFrame, tool string) *streamOutcome {
 	flusher, _ := w.(http.Flusher)
 	flush := func() {
 		if flusher != nil {
@@ -1091,7 +1234,7 @@ func relayGovernedStream(w http.ResponseWriter, upstream io.Reader, g *govern.St
 		out.truncated, out.reason = true, reason
 		held = nil
 		if frame == frameSSE {
-			fmt.Fprintf(w, "event: error\ndata: {\"type\":\"lyntway_blocked\",\"message\":%q,\"source\":%q}\n\n", message, proxyTool)
+			fmt.Fprintf(w, "event: error\ndata: {\"type\":\"lyntway_blocked\",\"message\":%q,\"source\":%q}\n\n", message, tool)
 		} else {
 			fmt.Fprintf(w, "{\"error\":%q}\n", "lyntway: "+message)
 		}
@@ -1269,6 +1412,11 @@ type proxyReporter struct {
 
 // proxyAttestation is one governed message, reduced to what may leave.
 type proxyAttestation struct {
+	// Tool names the command that observed this. Empty means the
+	// standalone proxy; `lyntway guard` sets its own, because a console
+	// row that says which command was running is the difference between
+	// a usable record and a shrug.
+	Tool        string
 	Chain       string
 	Destination string
 	Target      string
@@ -1311,7 +1459,7 @@ func (r *proxyReporter) run() {
 	defer r.wg.Done()
 	for a := range r.queue {
 		if err := r.send(a); err != nil {
-			fmt.Fprintf(os.Stderr, "lyntway proxy: a summary was not reported: %v\n", err)
+			fmt.Fprintf(os.Stderr, "lyntway: a summary was not reported: %v\n", err)
 		}
 	}
 }
@@ -1321,9 +1469,13 @@ func (r *proxyReporter) send(a proxyAttestation) error {
 	for class, count := range a.Findings {
 		findings = append(findings, map[string]any{"class": class, "count": count})
 	}
+	tool := a.Tool
+	if tool == "" {
+		tool = proxyTool
+	}
 	body, err := json.Marshal(map[string]any{
 		"chain_id": a.Chain,
-		"tool":     proxyTool,
+		"tool":     tool,
 		"action": map[string]any{
 			"surface":     "model",
 			"direction":   a.Direction,
@@ -1331,7 +1483,7 @@ func (r *proxyReporter) send(a proxyAttestation) error {
 			"target":      a.Target,
 			"destination": a.Destination,
 		},
-		"actor":     map[string]any{"type": "agent", "id": proxyTool},
+		"actor":     map[string]any{"type": "agent", "id": tool},
 		"decision":  a.Decision,
 		"findings":  findings,
 		"bytes":     a.Bytes,

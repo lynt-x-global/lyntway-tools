@@ -11,7 +11,7 @@ import (
 // Bump it on ANY change to rule content. The digest will change regardless
 // and would expose an unbumped edit, but a stale version string makes a
 // receipt harder to interpret for anyone reading it later.
-const RulesetVersion = "core-2026.10.07a"
+const RulesetVersion = "core-2026.10.18b"
 
 // Classes detected by the default ruleset.
 const (
@@ -61,7 +61,21 @@ const (
 	ClassAnthropicKey Class = "secret.anthropic_key"
 	ClassPrivateKey   Class = "secret.private_key"
 	ClassJWT          Class = "secret.jwt"
+	ClassSupabaseKey  Class = "secret.supabase_key"
+	ClassLyntwayKey   Class = "secret.lyntway_key"
 	ClassAzureConnStr Class = "secret.azure_connection_string"
+
+	// A password sitting inside a URL — postgres://user:pw@host,
+	// mongodb+srv://admin:pw@cluster, redis://:pw@cache, and the
+	// https://oauth2:TOKEN@github.com form a CI job writes.
+	//
+	// This is the most common secret in a repository and nothing here
+	// caught it: `lyntway scan` reported "No provider keys" over a .env
+	// holding three production database passwords, which reads as nothing
+	// to find. It is its own class rather than a per-vendor one because
+	// the shape is the credential: the scheme says which database, and
+	// there is no prefix to key a vendor rule off.
+	ClassURLPassword Class = "secret.url_password"
 
 	// Prompt injection. Four shapes, kept separate because they are not
 	// equally alarming and a policy should be able to treat them
@@ -135,6 +149,40 @@ func defaultRules() []Rule {
 			Priority:   100,
 		},
 		{
+			ID: "url-password",
+			// scheme://user:password@host, with the password as the
+			// reported span so a substitution leaves a URL still shaped
+			// like a URL and the host — which is context, not a secret —
+			// stays readable.
+			//
+			// The userinfo must come before any path, which is what keeps
+			// a markdown link to a page with an @ in it from matching.
+			// The password may be empty of a username (redis://:pw@host)
+			// but never empty of a password: postgres://user@host carries
+			// no credential and must not be reported as one.
+			Class:      ClassURLPassword,
+			Pattern:    regexp.MustCompile(`\b[a-zA-Z][a-zA-Z0-9+.-]{1,31}://[^\s/:@]*:(?P<target>[^\s/:@]+)@[^\s/:@]+`),
+			Confidence: ConfidenceHigh,
+			Validate:   realURLPassword,
+			Prefilter:  []string{"://"},
+			// Above the email rule (60) and below the vendor rules (95+).
+			//
+			// Both halves of that matter. A GitHub token written as
+			// https://oauth2:ghp_…@github.com is a GitHub token first:
+			// calling it a generic URL password would lose the one fact
+			// that is operationally useful, which is where to revoke it.
+			//
+			// And email had to be outranked because it was winning. The
+			// userinfo of a URL ends in @host, so "S3cretPassw0rd@db.internal"
+			// is a well-formed email address to a pattern, and every
+			// database password with a dotted hostname after it was being
+			// reported as pii.email. Not merely a miss — a mislabel, and a
+			// dangerous one: on a route that tokenises email, the password
+			// would be substituted, the connection string broken, and the
+			// receipt would say an email address had been protected.
+			Priority: 80,
+		},
+		{
 			ID:         "slack-token",
 			Class:      ClassSlackToken,
 			Pattern:    regexp.MustCompile(`\b(xox[baprs]-[0-9A-Za-z-]{10,})\b`),
@@ -148,6 +196,46 @@ func defaultRules() []Rule {
 			Pattern:    regexp.MustCompile(`\b((?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{16,})\b`),
 			Confidence: ConfidenceExact,
 			Prefilter:  []string{"sk_live_", "sk_test_", "rk_live_", "rk_test_", "pk_live_", "pk_test_"},
+			Priority:   100,
+		},
+		{
+			// Our own issued key: lynt_sk_ and 32 characters of lowercase
+			// base32, which is what GenerateAPIKey emits.
+			//
+			// Here because the alternative is indefensible. We would be the
+			// only provider in a 385-entry catalog whose credential this
+			// ruleset does not recognise — a customer pasting their Lyntway
+			// key into a coding agent would get silence from the one tool
+			// that exists to stop exactly that, and it would leak into a
+			// diff past our own Action.
+			//
+			// A leaked key of ours is a contained incident rather than a
+			// weekend: it is scoped, revocable, rate-limited and every call
+			// it ever made has a receipt. That is the argument for routing
+			// through us, and it is not an argument for failing to spot one.
+			ID:         "lyntway-key",
+			Class:      ClassLyntwayKey,
+			Pattern:    regexp.MustCompile(`\blynt_sk_[a-z2-7]{32}\b`),
+			Confidence: ConfidenceExact,
+			Prefilter:  []string{"lynt_sk_"},
+			Priority:   100,
+		},
+		{
+			// Supabase's current secret key, sb_secret_…, which replaced the
+			// service_role JWT. The JWT form is already caught by the jwt
+			// rule; this one is not a JWT and matched nothing until now.
+			//
+			// It is here because of what the 2026 incident data says leaks:
+			// builders paste the secret key into a prompt or a client bundle
+			// believing it is the publishable one. sb_publishable_… is
+			// deliberately NOT matched — it is designed to be public, and a
+			// rule that flagged it would teach people to ignore the ones
+			// that matter.
+			ID:         "supabase-secret-key",
+			Class:      ClassSupabaseKey,
+			Pattern:    regexp.MustCompile(`\bsb_secret_[A-Za-z0-9_-]{16,}\b`),
+			Confidence: ConfidenceExact,
+			Prefilter:  []string{"sb_secret_"},
 			Priority:   100,
 		},
 		{
@@ -1280,4 +1368,57 @@ func validInternationalPhone(s string) bool {
 	}
 	// A trailing separator cannot occur: the pattern ends on a digit.
 	return digits >= 8 && digits <= 15 && groups <= 6
+}
+
+// realURLPassword rejects the things that sit in the password position of
+// a URL and are not passwords.
+//
+// A scanner that blocks a commit has to be right. Every shape below is one
+// a repository genuinely contains: a documented example, a compose-file
+// default, a variable the shell will expand, a port number that a pattern
+// cannot tell from a password.
+//
+// The two lists are matched differently on purpose. Short common words are
+// compared against the WHOLE password, because "test" as a substring
+// rejects Greatest123 and "fake" rejects Breakfast99 — real passwords, and
+// a rule that silently drops them is worse than one that never ran. The
+// substring list holds only markers that cannot occur by accident.
+func realURLPassword(pw string) bool {
+	if len(pw) < 4 {
+		return false
+	}
+	// A port is never a password. "user:5432@host" is malformed config,
+	// not a credential.
+	if strings.IndexFunc(pw, func(r rune) bool { return r < '0' || r > '9' }) < 0 {
+		return false
+	}
+	// A value something else will substitute: ${DB_PASS}, $PASSWORD,
+	// {{ password }}, <password>, %PASSWORD%.
+	if strings.ContainsAny(pw, "${}<>%") {
+		return false
+	}
+
+	lower := strings.ToLower(pw)
+	for _, exact := range []string{
+		"password", "passwd", "pass", "secret", "changeme", "change-me",
+		"test", "fake", "dummy", "sample", "example", "placeholder",
+		"redacted", "letmein", "hunter2", "notreal", "admin", "root",
+		// postgres://postgres:postgres@localhost is the compose default
+		// in a thousand READMEs, and flagging it is how a pre-commit hook
+		// gets switched off.
+		"postgres", "mysql", "mongo", "redis", "guest",
+	} {
+		if lower == exact {
+			return false
+		}
+	}
+	for _, marker := range []string{
+		"xxxx", "****", "....", "yourpassword", "your-password", "your_password",
+		"notareal", "not-a-real", "changeme", "placeholder", "redacted",
+	} {
+		if strings.Contains(lower, marker) {
+			return false
+		}
+	}
+	return true
 }

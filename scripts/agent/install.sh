@@ -62,6 +62,18 @@ info()  { printf '  \033[36m[info]\033[0m  %s\n' "$*"; }
 ok()    { printf '  \033[32m  [ok]\033[0m  %s\n' "$*"; }
 warn()  { printf '  \033[33m[warn]\033[0m  %s\n' "$*"; }
 
+# macOS ships shasum, Linux ships sha256sum, and a machine with neither
+# cannot verify anything — which is a refusal, not a warning.
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    fail "no sha256sum or shasum on this machine; cannot verify the download"
+  fi
+}
+
 # ── Detect platform ───────────────────────────────────────────────────
 
 case "$(uname -s)" in
@@ -161,8 +173,74 @@ install_on_device() {
   local binary="lyntway-agent_${os}_${arch}"
   curl -sSLf --retry 3 -o "$work/lyntway-agent" "$dl_base/$binary" \
     || fail "could not download the on-device agent from $dl_base/$binary"
-  chmod +x "$work/lyntway-agent"
   ok "downloaded lyntway-agent for $os/$arch"
+
+  # Integrity, before the binary is made executable.
+  #
+  # This download is the one that installs a certificate authority into the
+  # system trust store, and until 18 October 2026 it was fetched and run
+  # with no check of any kind — while the CLI install path further down
+  # this same script verified a checksum against SHA256SUMS. One script,
+  # two doors, and the unchecked one was the more dangerous.
+  #
+  # Refusing here is safe by construction: nothing has been installed, no
+  # certificate has been added and no proxy has been pointed anywhere, so
+  # a refusal costs an install and can never cost somebody their machine.
+  curl -sSLf --retry 3 -o "$work/SHA256SUMS" "$dl_base/SHA256SUMS" \
+    || fail "$API_BASE published no SHA256SUMS beside $binary; refusing to install an agent we cannot verify"
+  local want actual
+  # Accept the leading asterisk sha256sum writes for a binary-mode entry.
+  want=$(awk -v f="$binary" '$2 == f || $2 == "*" f { print $1 }' "$work/SHA256SUMS" | head -1)
+  [ -n "$want" ] || fail "SHA256SUMS names no entry for $binary; refusing to install"
+  actual=$(sha256_of "$work/lyntway-agent")
+  if [ "$want" != "$actual" ]; then
+    fail "checksum mismatch for $binary
+    published: $want
+   downloaded: $actual
+  Nothing has been changed on this machine."
+  fi
+  ok "checksum matches what $API_BASE published"
+
+  # What the signature says, said exactly. signing.json is published beside
+  # the binaries, so it describes the set that was just downloaded rather
+  # than a claim made somewhere else — and when it says the set is
+  # unsigned, that is printed rather than passed over. An installer that
+  # says nothing about signing reads as "signed" to most people, which is
+  # the strongest reading of an absent value and therefore the wrong one.
+  local signed="" sign_reason=""
+  if curl -sSLf --retry 3 -o "$work/signing.json" "$dl_base/signing.json" 2>/dev/null; then
+    signed=$(tr -d ' \t' < "$work/signing.json" | grep -o '"signed":[a-z]*' | cut -d: -f2 | head -1)
+    sign_reason=$(grep -o '"reason"[[:space:]]*:[[:space:]]*"[^"]*"' "$work/signing.json" | cut -d'"' -f4 | head -1)
+  fi
+  if [ "$signed" = "true" ]; then
+    if [ "$os" = "darwin" ]; then
+      command -v codesign >/dev/null 2>&1 \
+        || fail "$API_BASE publishes a signed agent but codesign is not on this machine; refusing to install it unverified"
+      codesign --verify --strict "$work/lyntway-agent" >/dev/null 2>&1 \
+        || fail "$API_BASE says this agent is signed and its signature does not verify on this machine; refusing to install"
+      local authority
+      authority=$(codesign -dv "$work/lyntway-agent" 2>&1 | awk -F'=' '/^Authority=/ { print $2; exit }')
+      ok "signature verified${authority:+: $authority}"
+      # Gatekeeper's own answer, which is a different question from
+      # "is it signed": it also asks Apple whether the notarisation ticket
+      # exists. Reported, never enforced — a machine with no network path
+      # to Apple is a normal corporate machine, not a compromised one.
+      if command -v spctl >/dev/null 2>&1; then
+        if spctl -a -vv -t install "$work/lyntway-agent" >/dev/null 2>&1; then
+          ok "notarised: Gatekeeper on this machine accepts it"
+        else
+          warn "Gatekeeper did not accept it — unnotarised, or this machine cannot reach Apple"
+        fi
+      fi
+    else
+      ok "verified by checksum; Linux binaries carry no OS-level signature"
+    fi
+  else
+    warn "this agent is NOT code-signed${sign_reason:+ — $sign_reason}"
+    warn "the checksum above is the only thing that ties it to $API_BASE"
+  fi
+
+  chmod +x "$work/lyntway-agent"
 
   # Step 2: Install to /usr/local/bin.
 

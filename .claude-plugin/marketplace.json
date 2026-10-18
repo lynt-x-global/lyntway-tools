@@ -1,0 +1,22 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "lyntway",
+  "description": "Keep secrets out of what your coding agent sends to a model, and get a signed receipt of what passed.",
+  "owner": {
+    "name": "Lynt-X Global",
+    "url": "https://lyntway.com"
+  },
+  "plugins": [
+    {
+      "name": "lyntway",
+      "description": "Find provider keys before they are committed, stop one reaching a model, and run a coding agent with its traffic governed and receipted on this machine.",
+      "category": "security",
+      "source": "./plugin",
+      "homepage": "https://lyntway.com",
+      "author": {
+        "name": "Lynt-X Global",
+        "url": "https://lyntway.com"
+      }
+    }
+  ]
+}

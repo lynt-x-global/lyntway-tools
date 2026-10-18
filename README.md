@@ -68,6 +68,126 @@ collects.
 Recording what those tools actually send is a different job, and that is
 what the rest of this is for.
 
+## Running a coding agent with its traffic governed
+
+```bash
+lyntway guard -- claude
+```
+
+A listener starts on this machine for each provider, the command runs with
+its base-URL variables pointing at them, and both stop when the command
+stops. Nothing on the machine is edited and nothing is left running.
+
+Every request and reply is governed here and written to a signed receipt
+under `~/.lyntway/receipts/guard/`. A request carrying a secret is answered
+with a 403 naming what it carried, and never reaches the provider:
+
+```
+✗ lyntway stopped this request — Supabase secret key (secret.supabase_key) ×1 · receipt rcpt_c6d934df…
+```
+
+Three things worth knowing before you rely on it:
+
+- **A base URL you had already set is fronted, not replaced.** If
+  `OPENAI_BASE_URL` points at Groq or at a local server, the listener
+  forwards there. Your configuration is governed, not overridden.
+- **"Nothing passed through" is reported as a failure, not a clean run.**
+  Pointing a tool at an address is a request, not a guarantee: some read a
+  different setting, some authenticate in a way that ignores this one. A
+  summary saying "0 findings" would describe an inspection that never
+  happened, so it says the run was not governed and names the addresses
+  that went unused.
+- **Each session verifies on its own**, with the command the summary
+  prints. A session writes its own chain, so two guards running at once
+  cannot interleave into what would read afterwards as a deleted receipt.
+
+`lyntway proxy` is the other half of this: use `guard` for a command you
+are launching, and `proxy` for a model server other applications are
+already talking to.
+
+### What the session cost
+
+When the command stops, the summary says what the run cost — the part
+somebody reads on a day when nothing was withheld:
+
+```
+  tokens    184,320 in, 31,004 out, as the provider reported them
+            claude-sonnet-4-5-20250929           184,320 in    31,004 out
+  cost      USD 1.0177 — estimate at the price you entered per million tokens
+```
+
+**The token counts are the provider's own figure**, read out of its
+response and labelled as theirs. Nothing here counts tokens — the
+tokenizer is the provider's, and a count made on this side would be a
+guess dressed as a measurement. A reply that reported no figure is named
+as unmetered rather than counted as zero, because zero reads as free.
+
+**There is no built-in price table.** Providers change list prices without
+notice, negotiated rates differ, and a figure from a stale table would be
+the one number a finance team copies into a spreadsheet and never checks.
+Prices are yours, from `~/.lyntway/prices.json` or for one run:
+
+```bash
+lyntway guard --price claude-opus-4=15/75 --currency USD -- claude
+```
+
+A model with no price is named beside the total rather than dropped from
+it — a total that silently left one out would read as the whole bill.
+
+### Sharing one
+
+```bash
+lyntway share
+```
+
+Turns the newest receipt into a link anyone can open. **Nothing is
+uploaded.** The receipt and its verifying key ride in the URL's fragment,
+and a fragment is never sent to any server — so we cannot see what was
+shared, how often it was opened, or by whom, and the link keeps working
+whatever happens to us. A link that stops working when its issuer does is
+not proof.
+
+What it prints before the link is the point of it:
+
+```
+This link carries one receipt. A reader will see:
+
+  receipt   rcpt_c0ee4bdc6a7544033d94509e
+  action    POST /v1/messages → api.anthropic.com
+  decision  block, governance full
+  found     Supabase secret key (secret.supabase_key) ×1
+  signed by local-1abb9d47d1f87e70
+
+  No content. A receipt records classes, counts and digests; the text
+  that was governed is not in it and never was.
+
+  The key travels with the link, because it is a key on this machine
+  and nobody else publishes it. So the reader can prove this receipt
+  has not been altered since you made it — not that an independent
+  party saw it happen. The page says the same.
+```
+
+That last paragraph is not a disclaimer, it is the design. A receipt
+written on a laptop is signed on that laptop, and the page the link opens
+says **"Signature valid — the sender's own key"** rather than "Verified",
+because a reader who concluded a third party had vouched for it would have
+been misled by us and not by the sender. Evidence somebody else weighs is
+signed by a deployment's published key instead.
+
+Change one character of the receipt in the link and the page says
+**Invalid**. That is the whole demonstration, and the reader can run it
+themselves in ten seconds.
+
+## In Claude Code
+
+```
+/plugin marketplace add lynt-x-global/lyntway-tools
+/plugin install lyntway@lyntway
+```
+
+Adds a skill the agent reads when a secret is in play, and a
+`/lyntway-scan` command. See [plugin/](plugin/).
+
 ## Connecting what it found
 
 ```bash

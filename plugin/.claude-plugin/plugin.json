@@ -1,0 +1,11 @@
+{
+  "name": "lyntway",
+  "version": "0.8.0",
+  "description": "Find provider keys before they are committed, stop one reaching a model, and run a coding agent with its traffic governed and receipted on this machine.",
+  "homepage": "https://lyntway.com",
+  "license": "Apache-2.0",
+  "author": {
+    "name": "Lynt-X Global",
+    "url": "https://lyntway.com"
+  }
+}

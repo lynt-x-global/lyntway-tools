@@ -35,6 +35,11 @@ import (
 
 // keyHit is one credential found in text.
 type keyHit struct {
+	// Concept is set when this file is a concept document in an Open
+	// Knowledge Format bundle — the context files agents read. Nil
+	// otherwise, which is almost always.
+	Concept *okfConcept
+
 	File string
 	Line int // 1-based; the line the match starts on
 
@@ -364,6 +369,15 @@ func scanAdvice(hits []keyHit) string {
 	if migratable {
 		lines = append(lines, "Provider keys can be held by Lyntway instead: `lyntway keys migrate` moves them out of\n.env files and points the SDKs at the gateway.")
 	}
+	var concepts []okfConcept
+	for _, h := range hits {
+		if h.Concept != nil {
+			concepts = append(concepts, *h.Concept)
+		}
+	}
+	if s := okfSentence(concepts); s != "" {
+		lines = append(lines, s)
+	}
 	lines = append(lines, "A line that is not a key can be marked "+allowMarker+" and will be skipped.")
 	return strings.Join(lines, "\n")
 }
@@ -425,8 +439,16 @@ func scanPaths(paths []string) ([]keyHit, int, error) {
 				return nil
 			}
 			scanned++
+			// Recognised, not scanned differently. The file was already
+			// read by the walk above; this only says what kind of file it
+			// turned out to be, so the report can say why a key here
+			// travels further than a key in a .env.
+			concept, isConcept := okfConceptOf(path, body)
 			for _, h := range findKeys(string(body), 1) {
 				h.File = filepath.ToSlash(path)
+				if isConcept {
+					h.Concept = &concept
+				}
 				hits = append(hits, h)
 			}
 			return nil

@@ -13,7 +13,7 @@ import (
 // Values used by the tests. Every test that prints ends by asserting none
 // of these reached the output: last4 is what a person sees.
 const (
-	tOpenAI    = "sk-proj-openai00000000000000ABCD"
+	tOpenAI    = "sk-proj-openai00000000000000000000000000ABCD"
 	tAnthropic = "sk-ant-api03-anthropic00000000WXYZ"
 	tGemini    = "AIzaSyGemini000000000000000000000QRST"
 	tXAI       = "xai-xai000000000000000000000000EFGH"

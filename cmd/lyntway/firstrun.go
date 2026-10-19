@@ -116,6 +116,7 @@ func printFirstRun(r firstRunReport) {
 	fmt.Fprint(stdout, "  lyntway hook install      stop a prompt that carries a key, before it is sent\n")
 	if cmd := guardSuggestion(r.Apps); cmd != "" {
 		fmt.Fprintf(stdout, "  lyntway guard -- %-8s run it with its traffic governed, and nothing here changed\n", cmd)
+		fmt.Fprintf(stdout, "  lyntway guard --install   do that every time, without having to remember\n")
 	}
 	if len(r.Keys) > 0 {
 		fmt.Fprint(stdout, "  lyntway keys migrate      move those keys out of the files\n")

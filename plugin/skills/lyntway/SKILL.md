@@ -75,6 +75,15 @@ A money figure appears only against prices you set, in
 A model with no price is named beside the total rather than dropped from
 it.
 
+To make it the default, so nobody has to remember:
+
+    npx lyntway guard --install
+
+It writes a shell function per tool, after showing the change and asking.
+A function and not an alias on purpose: if Lyntway is ever removed, the
+tool still runs. `lyntway guard --uninstall` or `lyntway undo` reverses it
+and the profile comes back byte for byte.
+
 Three things to pass on accurately:
 
 - **A base URL they had already set is fronted, not replaced.** If
@@ -124,6 +133,23 @@ report one as stronger than it is:
 | finding `detector` | a name means a model formed an opinion; empty means a deterministic rule matched and the finding is reproducible from the ruleset digest |
 
 An absent value is the weakest one, never the strongest.
+
+## Databases
+
+    npx lyntway-dbgateway
+
+Sits in front of PostgreSQL, MySQL or MongoDB and issues a receipt for
+every query an agent runs. It is a separate binary because a database
+speaks a binary wire protocol over TCP — the gateway cannot proxy it as
+HTTP and the MCP shim cannot see it.
+
+**Content never leaves the process.** Queries, results and any values in
+them stay on that machine; only classes and counts reach an account. There
+is no switch that changes this.
+
+It records rather than rewrites: a finding is `log_only` because a wire
+protocol cannot be safely re-framed, and a policy that blocks still
+blocks. Never describe it as substituting or redacting.
 
 ## What to say when it does not apply
 

@@ -197,6 +197,13 @@ func guardUsage() {
 		"\n"+
 		"  lyntway guard --price claude-opus-4=15/75 --currency USD -- claude\n"+
 		"\n"+
+		"So you do not have to remember it:\n"+
+		"  lyntway guard --install     your coding tools run governed by default\n"+
+		"  lyntway guard --uninstall   put it back\n"+
+		"\n"+
+		"It writes a shell function, after showing you exactly what it will add.\n"+
+		"If lyntway is ever removed, your tools keep working untouched.\n"+
+		"\n"+
 		"Flags:\n"+
 		"  --set ENV=URL   front URL and set ENV to the local address (repeatable)\n"+
 		"  --price M=IN/OUT  what a million tokens of model M costs you (repeatable)\n"+
@@ -215,6 +222,8 @@ func guardCmd(args []string) error {
 	fs.StringVar(&opts.Receipts, "receipts", "", "directory for this session's receipts (default ~/.lyntway/receipts/guard)")
 	fs.BoolVar(&opts.Report, "report", true, "report classes and counts to the account this machine is signed in to")
 	fs.BoolVar(&opts.Quiet, "quiet", false, "do not print a line when something is withheld")
+	install := fs.Bool("install", false, "make your coding tools run governed by default, after showing you the change")
+	uninstall := fs.Bool("uninstall", false, "undo --install")
 	var prices stringList
 	fs.Var(&prices, "price", "MODEL=IN/OUT per million tokens, for this run (repeatable)")
 	fs.StringVar(&opts.Currency, "currency", "", "a label for an estimate, like USD")
@@ -225,6 +234,18 @@ func guardCmd(args []string) error {
 	opts.Set = sets
 	opts.Price = prices
 	opts.Command = fs.Args()
+
+	// --install and --uninstall take no command: they are about the shell,
+	// not about one run.
+	if *install && *uninstall {
+		return errors.New("--install and --uninstall are opposites; pick one")
+	}
+	if *install {
+		return installGuardAlias(stdout)
+	}
+	if *uninstall {
+		return uninstallGuardAlias(stdout)
+	}
 
 	if len(opts.Command) == 0 {
 		guardUsage()

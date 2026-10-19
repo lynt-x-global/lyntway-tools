@@ -1,6 +1,6 @@
 # Lyntway tools
 
-Three command-line tools, and the packages behind them. No third-party
+Four command-line tools, and the packages behind them. No third-party
 dependencies — the whole module is standard library, so what goes into the
 tool that checks receipts can be read in an afternoon.
 
@@ -9,6 +9,7 @@ tool that checks receipts can be read in an afternoon.
 | `lyntway-verify` | Checks a receipt. No network calls, ever. | No |
 | `lyntway-mcp` | Runs between an agent and an MCP server, and governs tool results on the machine they land on. | No |
 | `lyntway` | Reports what AI software is on a machine, and can point it at a Lyntway service. | Only to record |
+| `lyntway-dbgateway` | Sits in front of PostgreSQL, MySQL or MongoDB and receipts every query. Content never leaves the process. | Yes, to know which databases |
 
 ## Install
 
@@ -105,6 +106,38 @@ Three things worth knowing before you rely on it:
 are launching, and `proxy` for a model server other applications are
 already talking to.
 
+### Running it every time, without remembering
+
+```bash
+lyntway guard --install
+```
+
+Writes a shell function per tool, after showing you exactly what it will
+add and asking. Afterwards `claude` *is* governed — no new habit, no extra
+word to type.
+
+**It is a function, not an alias, and that matters.** An alias would break
+your tool completely the day Lyntway is removed, moved, or missing from a
+shell with a different PATH, leaving you with a command that does not
+start and no reason why. The function checks for us first and falls
+through to the real command when we are not there:
+
+```sh
+claude() {
+  if command -v lyntway >/dev/null 2>&1; then
+    lyntway guard -- claude "$@"
+  else
+    command claude "$@"
+  fi
+}
+```
+
+The worst case is that governance quietly stops, which `lyntway status`
+reports — never that the tool dies.
+
+`lyntway guard --uninstall` takes it out, and so does `lyntway undo`. The
+profile comes back byte for byte, and a backup is written beside it first.
+
 ### What the session cost
 
 When the command stops, the summary says what the run cost — the part
@@ -177,6 +210,26 @@ signed by a deployment's published key instead.
 Change one character of the receipt in the link and the page says
 **Invalid**. That is the whole demonstration, and the reader can run it
 themselves in ten seconds.
+
+### Databases
+
+```bash
+lyntway-dbgateway
+```
+
+The only vantage point a database has. The gateway cannot proxy a binary
+wire protocol as HTTP, and the MCP shim cannot see it because it is not
+JSON-RPC over stdio — so this is a separate listener that understands
+PostgreSQL, MySQL and MongoDB framing, proxies to the real database, and
+issues a receipt for every query.
+
+**Content never leaves the process.** The queries, the results and any
+values found in them stay on that machine; only classes and counts are
+reported to an account. There is no switch that changes this.
+
+It records rather than rewrites: a wire protocol cannot be re-framed
+safely, so a finding is `log_only` and a policy that blocks still blocks.
+It does not substitute, and it does not claim to.
 
 ## In Claude Code
 

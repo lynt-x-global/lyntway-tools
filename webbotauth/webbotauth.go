@@ -277,7 +277,26 @@ func Verify(r *http.Request, keys KeyResolver, opts Options) (*Result, error) {
 }
 
 // validityWindow checks created and expires against the clock.
+//
+// At least one of them must be present. Both checks below sit behind an
+// "is this parameter here" guard, and nothing required either, so a
+// signature declaring neither verified now and would verify in ten years:
+// a captured Signature and Signature-Input pair was replayable
+// indefinitely and still set Actor.Verified. MaxAge says beside itself
+// that "an absent expires parameter does not mean unlimited validity",
+// which was true only while created was there to bound it.
+//
+// Refused rather than defaulted. Treating a missing created as "now"
+// would make every replay fresh, and treating it as the epoch would
+// refuse signatures that are merely terse — neither is a judgement this
+// code can make on the signer's behalf.
 func validityWindow(input *signatureInput, now time.Time, opts Options) (created, expires time.Time, err error) {
+	_, hasCreated := input.params["created"]
+	_, hasExpires := input.params["expires"]
+	if !hasCreated && !hasExpires {
+		return created, expires, fmt.Errorf("%w: the signature declares neither created nor expires, so its age cannot be bounded and it would verify for ever", ErrMalformed)
+	}
+
 	if raw, ok := input.params["created"]; ok {
 		secs, convErr := parseUnix(raw)
 		if convErr != nil {

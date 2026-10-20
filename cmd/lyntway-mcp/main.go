@@ -180,7 +180,9 @@ func proxy(command []string, g *governor, agentIn io.Reader, agentOut io.Writer)
 	go func() {
 		defer wg.Done()
 		defer serverIn.Close()
-		relay(agentIn, server, agent, g, directionToServer)
+		if err := relay(agentIn, server, agent, g, directionToServer); err != nil {
+			fmt.Fprintf(os.Stderr, "lyntway-mcp: %v\n", err)
+		}
 	}()
 
 	// Server to agent. This is the direction that matters: a tool result is
@@ -188,7 +190,16 @@ func proxy(command []string, g *governor, agentIn io.Reader, agentOut io.Writer)
 	// is what stops the values leaving at all.
 	go func() {
 		defer wg.Done()
-		relay(serverOut, agent, agent, g, directionToAgent)
+		// Closed here too. Without it, this relay ending abnormally left
+		// the process running with the other direction still alive: the
+		// server kept receiving requests and the agent never saw another
+		// reply, which looks exactly like a server that has hung. Closing
+		// the server's stdin ends the session, and the editor reports a
+		// tool server that stopped instead of one that answers nothing.
+		defer serverIn.Close()
+		if err := relay(serverOut, agent, agent, g, directionToAgent); err != nil {
+			fmt.Fprintf(os.Stderr, "lyntway-mcp: %v\n", err)
+		}
 	}()
 
 	wg.Wait()
@@ -208,6 +219,16 @@ const (
 	directionToServer direction = iota
 	directionToAgent
 )
+
+// String names the direction the way the stderr line has to read, because
+// the two failures need different things done about them: an oversized
+// request is the agent's doing, an oversized result is the server's.
+func (d direction) String() string {
+	if d == directionToServer {
+		return "agent-to-server"
+	}
+	return "server-to-agent"
+}
 
 // lineWriter writes one message per line, under a lock.
 //
@@ -237,11 +258,16 @@ func (l *lineWriter) writeLine(message []byte) {
 // server-to-agent direction, and a different one for agent-to-server —
 // where it carries the one thing this relay sends backwards, an error for
 // a request that was refused.
-func relay(src io.Reader, dst, agent *lineWriter, g *governor, dir direction) {
+// maxMessageBytes is the largest single JSON-RPC line this will buffer.
+// Named because the error below quotes it, and a message that disagrees
+// with the limit it is explaining is worse than no message.
+const maxMessageBytes = 8 << 20
+
+func relay(src io.Reader, dst, agent *lineWriter, g *governor, dir direction) error {
 	scanner := bufio.NewScanner(src)
 	// A tool result carrying a page of database rows is easily past the
 	// default limit, and a truncated message is worse than a slow one.
-	scanner.Buffer(make([]byte, 0, 64<<10), 8<<20)
+	scanner.Buffer(make([]byte, 0, 64<<10), maxMessageBytes)
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -270,6 +296,28 @@ func relay(src io.Reader, dst, agent *lineWriter, g *governor, dir direction) {
 
 		dst.writeLine(out)
 	}
+
+	// A read that ended in an error is not a stream that ended, and
+	// scanner.Err() was never consulted. So a tool result over the cap
+	// above did not fail loudly: Scan returned false, this function
+	// returned, the process stayed alive with its other direction still
+	// relaying, and the agent waited forever for a reply nothing was
+	// going to send. That is the exact failure answerFor exists to
+	// prevent — "a message that simply vanishes leaves Claude Desktop or
+	// Cursor waiting forever on a tool call that has already been
+	// decided" — arriving by a route that skipped it.
+	//
+	// Nothing leaked: an unread message is an ungoverned message and it
+	// was not forwarded. But silence is the one answer this relay must
+	// never give, so it is reported and it ends the session.
+	if err := scanner.Err(); err != nil {
+		if errors.Is(err, bufio.ErrTooLong) {
+			return fmt.Errorf("a %s message was larger than the %d MB this relay buffers, so it could not be "+
+				"governed and was not forwarded; nothing after it was relayed either", dir, maxMessageBytes>>20)
+		}
+		return fmt.Errorf("reading the %s stream: %w", dir, err)
+	}
+	return nil
 }
 
 // JSON-RPC 2.0 reserves -32000 to -32099 for the server's own errors.

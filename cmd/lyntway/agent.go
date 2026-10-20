@@ -895,13 +895,6 @@ func (a *agent) stopProxy() {
 	}
 }
 
-func isAre(n int) string {
-	if n == 1 {
-		return "was"
-	}
-	return "were"
-}
-
 // stdinIsTerminal is a variable so a test is never asked a question.
 var stdinIsTerminal = func() bool { return isTerminal(os.Stdin) }
 

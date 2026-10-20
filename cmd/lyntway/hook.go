@@ -123,6 +123,20 @@ func refusalMessage(hits []keyHit) string {
 	} else {
 		b.WriteString(" Take it out of the prompt and send the rest.")
 	}
+	// The way through, named every time.
+	//
+	// Without this the message blocks somebody and tells them to delete
+	// the thing they were asking about. Pasting a log line, an error, or
+	// a .env to ask what is wrong with it is the most ordinary thing a
+	// person does with a coding agent, and all three contain the string
+	// this refuses on. A guard with no stated way past it is a guard
+	// somebody removes the first time it is wrong — and then they have
+	// no guard at all, which is a worse outcome than the prompt going.
+	//
+	// Safe to advertise: UserPromptSubmit carries what the person typed,
+	// so the only one who can add the marker is the person whose key it
+	// is. It is the same marker `lyntway scan` has always honoured.
+	b.WriteString(" If you meant to send it, add lyntway:allow to that line.")
 	return b.String()
 }
 
@@ -206,7 +220,52 @@ func hookCommand(cursor bool) string {
 	return path + " hook prompt"
 }
 
-// selfPath prefers the copy `init` installs, which outlives the download.
+// ensureDurableSelf copies the running binary to ~/.lyntway/bin so that the
+// absolute path hookCommand is about to write keeps resolving.
+//
+// The first real install on a working machine wrote
+// `/private/tmp/lyntway hook prompt`, because that is where the binary had
+// been built. macOS sweeps /tmp; `npx lyntway secure` runs out of the npx
+// cache, which npm evicts. Either way the hook later names a file that is
+// gone, exits 127, and the editor treats that as a hook that failed — so the
+// prompt is sent, unprotected, with nothing on screen to say the protection
+// lapsed. Fail-open is right for a crash and wrong as a steady state.
+//
+// It copies os.Executable() rather than calling installSelf, which looks for
+// a sibling *named* "lyntway" and silently copies nothing when the packaging
+// used another name. That is the same silent lapse one step earlier.
+func ensureDurableSelf() (string, error) {
+	name := "lyntway"
+	if runtime.GOOS == "windows" {
+		name = "lyntway.exe"
+	}
+	h, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	if resolved, err := filepath.EvalSymlinks(self); err == nil {
+		self = resolved
+	}
+
+	dst := filepath.Join(h, ".lyntway", "bin", name)
+	if sameFile(self, dst) {
+		return dst, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return "", err
+	}
+	if err := copyFile(self, dst); err != nil {
+		return "", err
+	}
+	return dst, nil
+}
+
+// selfPath prefers the copy ensureDurableSelf plants, which outlives the
+// directory the binary was downloaded or built into.
 func selfPath() string {
 	name := "lyntway"
 	if runtime.GOOS == "windows" {
@@ -249,6 +308,15 @@ func hookInstall(args []string) error {
 	}
 	if path == "" {
 		return fmt.Errorf("this machine has no home directory")
+	}
+
+	// Before the path is shown or written, not after: the line printed
+	// below has to be the line the editor will actually run, and a hook
+	// that cannot be made durable is a protection that will lapse without
+	// saying so. Refusing here gives a named, fixable reason instead.
+	if _, err := ensureDurableSelf(); err != nil {
+		return fmt.Errorf("keeping a copy of this binary in ~/.lyntway/bin, so the hook does not "+
+			"stop working when this one is cleaned up: %w", err)
 	}
 
 	fmt.Fprintf(stdout, "\n%s will run this before every prompt:\n\n  %s\n\n", editor, hookCommand(*cursor))
@@ -345,10 +413,23 @@ func writeHook(path string, cursor bool) (changed bool, saved string, err error)
 			return false, "", fmt.Errorf("%s has a %q entry this does not understand; nothing written", path, event)
 		}
 	}
-	for _, g := range groups {
+	// An entry of ours already there is replaced when its command line has
+	// changed, not reported as installed.
+	//
+	// Our entry used to be a stop condition, so a hook naming a binary that
+	// had since been swept out of /tmp or evicted from the npx cache was
+	// answered with "already installed" — the one reading that is told they
+	// are protected by a path that resolves to nothing. It is also how a
+	// reinstall picks up a new location after an upgrade.
+	ours := -1
+	for i, g := range groups {
 		if hookGroupIsOurs(g, cursor) {
-			return false, "", nil
+			ours = i
+			break
 		}
+	}
+	if ours >= 0 && hookGroupCommand(groups[ours], cursor) == hookCommand(cursor) {
+		return false, "", nil
 	}
 
 	var entry any
@@ -367,7 +448,11 @@ func writeHook(path string, cursor bool) (changed bool, saved string, err error)
 	if err != nil {
 		return false, "", err
 	}
-	groups = append(groups, encoded)
+	if ours >= 0 {
+		groups[ours] = encoded
+	} else {
+		groups = append(groups, encoded)
+	}
 	if hooks[event], err = json.Marshal(groups); err != nil {
 		return false, "", err
 	}
@@ -466,6 +551,34 @@ func hookGroupIsOurs(group json.RawMessage, cursor bool) bool {
 		}
 	}
 	return false
+}
+
+// hookGroupCommand returns the command line in one of our entries, so a
+// stale one can be told apart from a current one.
+func hookGroupCommand(group json.RawMessage, cursor bool) string {
+	if cursor {
+		var g struct {
+			Command string `json:"command"`
+		}
+		if json.Unmarshal(group, &g) != nil {
+			return ""
+		}
+		return g.Command
+	}
+	var g struct {
+		Hooks []struct {
+			Command string `json:"command"`
+		} `json:"hooks"`
+	}
+	if json.Unmarshal(group, &g) != nil {
+		return ""
+	}
+	for _, h := range g.Hooks {
+		if isOurHook(h.Command) {
+			return h.Command
+		}
+	}
+	return ""
 }
 
 // removeHooksEverywhere is what `undo` calls: both editors and the

@@ -144,8 +144,8 @@ func TestFormatPreservation(t *testing.T) {
 		if !e164.MatchString(token) {
 			t.Errorf("token %q is not valid E.164", token)
 		}
-		if !strings.HasPrefix(token, "+99") {
-			t.Errorf("token %q is not in the unassigned +99 country code", token)
+		if !strings.HasPrefix(token, "+999") {
+			t.Errorf("token %q is not under country code 999, which the ITU reserves", token)
 		}
 	})
 

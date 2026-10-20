@@ -46,16 +46,6 @@ func handleConnection(client net.Conn, proxy ProtocolProxy, upstreams *UpstreamM
 	proxy.Handle(client, all, g)
 }
 
-// resolveUpstream finds a database upstream by name within a list.
-func resolveUpstream(all []dbUpstream, name string) (dbUpstream, bool) {
-	for _, u := range all {
-		if u.Name == name {
-			return u, true
-		}
-	}
-	return dbUpstream{}, false
-}
-
 // dialUpstream connects to a database upstream, using TLS when required.
 func dialUpstream(u dbUpstream) (net.Conn, error) {
 	dialHost := u.DialHost

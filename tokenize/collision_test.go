@@ -156,6 +156,23 @@ func TestACollisionInAnyFormatYieldsAFreshToken(t *testing.T) {
 // produced. Vaults hold tokens issued before the collision walk existed,
 // and a change to the first attempt would leave every one of them
 // unresolvable — silently, because Restore leaves unknown tokens in place.
+//
+// The phone vector moved once, on 19 October 2026, and it is the only one
+// that ever has. phoneToken drew from "+99" believing 99 to be an
+// unassigned country code; it is a zone, and +992 through +998 belong to
+// Tajikistan, Turkmenistan, Azerbaijan, Georgia, Kyrgyzstan and
+// Uzbekistan, so most substitutes were valid subscriber numbers in an
+// assigned country. It now draws from 999, which the ITU reserves.
+//
+// What that costs, stated plainly: a number already tokenised still
+// reverses, because the mapping is stored and tokenPattern matches "+99"
+// followed by ten digits either way. But Tokenize derives rather than
+// looking a value up, so the same number seen again gets a new token, and
+// anything downstream that joined on the old one sees two tokens for one
+// person. That was judged the smaller harm than handing a model a real
+// Azerbaijani number shape and calling it a dummy — this file's own rule
+// is that a substitute which could be somebody else's number "is not a
+// protection, it is a transfer of risk to a stranger".
 func TestFirstDerivationIsUnchanged(t *testing.T) {
 	s := fixedScope(t)
 	for _, c := range []struct {
@@ -164,7 +181,7 @@ func TestFirstDerivationIsUnchanged(t *testing.T) {
 		want  string
 	}{
 		{detect.ClassEmail, "priya@acme.com", "lynt-cusdfqze2z4ra@tokenized.invalid"},
-		{detect.ClassPhone, "+44 20 7946 0958", "+997735682607"},
+		{detect.ClassPhone, "+44 20 7946 0958", "+999773568260"},
 		{detect.ClassCreditCard, "4111 1111 1111 1111", "9999502163734022"},
 		{detect.ClassIPv4, "10.1.2.3", "192.0.2.41"},
 		{detect.ClassIPv4, "203.0.113.7", "192.0.2.91"},

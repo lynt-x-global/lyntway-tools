@@ -17,11 +17,46 @@ will try it.
 |---|---|
 | A key might be in these files | `npx lyntway scan` |
 | A key might be in what is about to be committed | `npx lyntway scan --staged` |
+| They ask what the agent has already seen, or a key may have been pasted into a session | `npx lyntway secure` |
+| They want that look without changing anything (CI, someone else's machine) | `npx lyntway history` |
 | They want keys stopped before they are pasted into a prompt | `npx lyntway hook install` |
 | They are about to run a coding agent | `npx lyntway guard -- claude` |
 | They have a receipt and want it checked | `npx lyntway-verify -keys keys.json receipt.json` |
 | They want to show somebody what was stopped | `npx lyntway share` |
 | They want history, a shareable report, or team controls | `npx lyntway setup` (this is the one that needs an account) |
+
+
+**If the refusal was wrong**, tell the user to add `lyntway:allow` to that
+line and send again. Pasting a log, an error or a .env to ask about it is
+ordinary and all three carry credential-shaped strings; a guard with no stated
+way past it gets uninstalled, and then there is no guard.
+
+A broken hook never blocks: only a found credential exits 2. Unreadable input
+or a missing binary lets the prompt through, so it stops protecting and never
+stops the work.
+## 1b. What the agent has already seen, and stopping the next one
+
+    npx lyntway secure
+
+Reads what the coding agents on this machine wrote to disk — transcripts,
+prompt histories, pasted buffers, shell snapshots, MCP configuration — and
+reports the credentials in them.
+
+Different question from the scan above, and a different remedy. A key in a
+project file is rotated and the file rewritten. A key in a transcript is in a
+file nobody edits and every backup copies, so the credential has to be revoked;
+cleaning the file is not the fix and this command does not try to.
+
+Sends nothing. Prints no value — label, last four, fingerprint. Changes no
+file. Reports one key seen forty times as one credential, not forty findings.
+
+**Report the labels and the last four characters, never a value.** Say plainly
+that some will be fixtures or examples the agent read, because a fixture is
+built to look like the real thing, and that `npx lyntway history --allow`
+retires the ones the user has judged by fingerprint.
+
+If it says the look was incomplete, say so rather than reporting a clean
+machine: a credential in a file it could not read is not in the count.
 
 ## 1. Scan
 

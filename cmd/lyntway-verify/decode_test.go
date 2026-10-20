@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 )
@@ -28,8 +29,18 @@ func TestAChainMayBeOneReceiptPerLine(t *testing.T) {
 	if len(fromArray) != 2 || len(fromLines) != 2 {
 		t.Fatalf("decoded %d from the array and %d from the lines, want 2 and 2", len(fromArray), len(fromLines))
 	}
-	if fromArray[1].ID != fromLines[1].ID || fromLines[1].Signature == nil {
-		t.Error("the line form did not decode the same receipts")
+	// Compared as bytes now, which is the point: decodeReceipts returns
+	// each receipt exactly as it arrived, because that is what the
+	// signature covers. Re-marshalling a parsed struct drops a member this
+	// build does not know and the signature then fails as tampering.
+	if !bytes.Equal(fromArray[1], fromLines[1]) {
+		t.Error("the line form did not decode the same bytes as the array form")
+	}
+	if !json.Valid(fromArray[1]) {
+		t.Error("the returned bytes are not a JSON value")
+	}
+	if !bytes.Contains(fromArray[1], []byte(`"signature"`)) {
+		t.Error("the returned bytes dropped the signature")
 	}
 
 	if _, err := decodeReceipts([]byte("  \n")); err == nil {

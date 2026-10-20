@@ -279,6 +279,7 @@ func last4(value string) string {
 func scanCommand(args []string) error {
 	fs := flag.NewFlagSet("scan", flag.ExitOnError)
 	base := fs.String("diff", "", "scan only the lines added since this git revision (a branch, tag or commit)")
+	staged := fs.Bool("staged", false, "scan only what is staged for the next commit")
 	format := fs.String("format", "text", "text, or github for ::error annotations a workflow shows inline")
 	fs.Usage = func() {
 		fmt.Fprint(os.Stderr, "lyntway scan — find provider keys before they are committed\n"+
@@ -286,6 +287,7 @@ func scanCommand(args []string) error {
 			"Usage:\n"+
 			"  lyntway scan [paths...]              scan files (default: the current directory)\n"+
 			"  lyntway scan --diff origin/main      scan the lines added since a revision\n"+
+			"  lyntway scan --staged                scan only what is about to be committed\n"+
 			"\n"+
 			"Prints file:line, what the key is, and its last four characters — never\n"+
 			"the key. Exits 1 when anything is found, so it can gate a commit or a\n"+
@@ -306,13 +308,22 @@ func scanCommand(args []string) error {
 		unit    string
 		err     error
 	)
-	if *base != "" {
+	switch {
+	case *base != "" && *staged:
+		return fmt.Errorf("--diff and --staged both choose what to scan; use one")
+	case *staged:
+		if fs.NArg() > 0 {
+			return fmt.Errorf("--staged scans the index; paths cannot be given with it")
+		}
+		hits, scanned, err = scanStaged(".")
+		unit = "staged line"
+	case *base != "":
 		if fs.NArg() > 0 {
 			return fmt.Errorf("--diff scans the repository's changes; paths cannot be given with it")
 		}
 		hits, scanned, err = scanDiff(".", *base)
 		unit = "added line"
-	} else {
+	default:
 		paths := fs.Args()
 		if len(paths) == 0 {
 			paths = []string{"."}
@@ -492,6 +503,24 @@ func scanDiff(dir, base string) ([]keyHit, int, error) {
 		// has, and its known over-reporting is the lesser problem.
 		out, err = gitOutput(dir, append([]string{"diff", base}, args[3:]...)...)
 	}
+	if err != nil {
+		return nil, 0, err
+	}
+	hits, lines := parseDiff(out)
+	return hits, lines, nil
+}
+
+// scanStaged scans exactly what is about to be committed.
+//
+// Documented in skill.md, in the plugin's SKILL.md decision table and in
+// plugin/commands/lyntway-scan.md, and absent from the code — so an agent
+// following any of the three ran `lyntway scan --staged` and got
+// "flag provided but not defined: -staged" and exit 2. The hook is the
+// other half of this: a scan that gates a commit should be able to look at
+// the index rather than the working tree, which is what --cached is.
+func scanStaged(dir string) ([]keyHit, int, error) {
+	out, err := gitOutput(dir, "diff", "--cached", "--unified=0", "--no-color",
+		"--no-ext-diff", "--diff-filter=ACMR", "--")
 	if err != nil {
 		return nil, 0, err
 	}

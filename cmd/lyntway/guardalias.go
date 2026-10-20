@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 )
 
 // Make `guard` a thing that is true rather than a thing you remember.
@@ -192,13 +191,21 @@ func installGuardAlias(out io.Writer) error {
 	// a backup over the file, and a record naming one that was never
 	// written would make undo report a missing backup for a file it in
 	// fact created.
-	rec, _ := loadRecord()
-	if backupPath != "" {
-		rec.Files = append(rec.Files, changedFile{Path: profile, Backup: backupPath, At: time.Now().UTC().Format(time.RFC3339)})
-	}
-	if err := saveRecord(rec); err != nil {
-		fmt.Fprintf(out, "  (the change was made; recording it for `lyntway undo` failed: %v)\n", err)
-	}
+	// Deliberately not added to the undo record.
+	//
+	// A record entry means "restore this whole file from its backup", and
+	// `lyntway undo` applies those after it has stripped the fenced blocks
+	// out of the profile. So recording the profile here made undo put back
+	// the block it had just removed, along with whatever the person had
+	// edited in the meantime, and still print a tick. Removal is fenced
+	// and byte-exact — stripGuardAliasBlock, which `guard --uninstall`
+	// already uses — so a whole-file restore is both unnecessary and
+	// destructive.
+	//
+	// The backup file itself still goes next to the profile, and the line
+	// below still names it, because it costs nothing and somebody may want
+	// it by hand.
+	_ = backupPath
 
 	fmt.Fprintf(out, "\n  ✓ %s\n", profile)
 	if backupPath != "" {

@@ -423,14 +423,30 @@ func emailToken(sum []byte) string {
 	return "lynt-" + encode(sum[:8]) + "@tokenized.invalid"
 }
 
-// phoneToken produces an E.164 number in the +99 range.
+// phoneToken produces an E.164 number under country code 999.
 //
-// Country code 99 is unassigned, so the result parses as a phone number and
-// validates, but cannot be dialled to reach a real person.
+// 999 is reserved by the ITU for future global service and allocated to no
+// country, so the result parses and validates as a phone number and cannot
+// reach a real person.
+//
+// This drew from "+99" and called 99 an unassigned country code. 99 is a
+// zone, not a code: +992 is Tajikistan, +993 Turkmenistan, +994
+// Azerbaijan, +995 Georgia, +996 Kyrgyzstan, +998 Uzbekistan. Only 990,
+// 991, 997 and 999 are not allocated to a country, so roughly six tokens
+// in ten were syntactically valid subscriber numbers in an assigned
+// country — and at twelve digits, exactly the national length for several
+// of them. The rule above this file's generators is that the dummy comes
+// from a range that can never be a real person's, "not 'unlikely' — never,
+// by the issuing authority's own rules", and a number in Azerbaijan's
+// range is somebody's.
+//
+// 999 over 990, 991 and 997 because the ITU reservation is published,
+// where merely-unallocated codes can be allocated later. Nine digits after
+// it, so the whole number stays inside E.164's fifteen.
 func phoneToken(sum []byte) string {
 	var b strings.Builder
-	b.WriteString("+99")
-	for i := 0; i < 10; i++ {
+	b.WriteString("+999")
+	for i := 0; i < 9; i++ {
 		b.WriteByte('0' + sum[i]%10)
 	}
 	return b.String()

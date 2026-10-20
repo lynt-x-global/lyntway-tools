@@ -1,6 +1,7 @@
 package receipt
 
 import (
+	"encoding/json"
 	"fmt"
 )
 
@@ -148,6 +149,17 @@ type ChainResult struct {
 
 	// Bypassed counts receipts where governance did not run at all.
 	Bypassed int
+
+	// Unrecognised counts receipts carrying vocabulary this build does not
+	// know.
+	//
+	// Counted because Degraded and Bypassed cannot speak for it: a mode
+	// this verifier has never heard of matched neither switch arm, so a
+	// chain of such receipts reported Degraded 0, Bypassed 0, and every
+	// caller computing "full strength" from those two printed a green
+	// result over governance it could not read. The absent value must read
+	// as the weakest, and an unreadable one is weaker still.
+	Unrecognised int
 }
 
 // VerifyChain verifies a contiguous run of receipts and their links.
@@ -161,6 +173,36 @@ type ChainResult struct {
 // caller can point at the exact receipt that broke rather than reporting
 // that something, somewhere, is wrong.
 func VerifyChain(receipts []*Receipt, keys KeyResolver, opts VerifyOptions) (*ChainResult, error) {
+	return verifyChain(receipts, nil, keys, opts)
+}
+
+// VerifyChainJSON verifies a chain from the bytes each receipt arrived as.
+//
+// Prefer it to VerifyChain wherever the bytes are still in hand. Verifying
+// the parsed struct re-marshals it, so a member this build has never heard
+// of is dropped before canonicalisation and the signature fails — reported
+// as tampering, which is the worst false alarm this product can raise and
+// the one thing that would make an old verifier untrustworthy rather than
+// merely old. The single-receipt path has taken raw bytes for exactly this
+// reason since the forward-vocabulary work; the chain path was missed, and
+// the chain path is what `lyntway-verify -chain` runs and what customers
+// are told to run after every guard session.
+func VerifyChainJSON(raws [][]byte, keys KeyResolver, opts VerifyOptions) (*ChainResult, error) {
+	if len(raws) == 0 {
+		return nil, fmt.Errorf("receipt: no receipts to verify")
+	}
+	receipts := make([]*Receipt, 0, len(raws))
+	for i, raw := range raws {
+		var r Receipt
+		if err := json.Unmarshal(raw, &r); err != nil {
+			return nil, fmt.Errorf("receipt: position %d: %w", i, err)
+		}
+		receipts = append(receipts, &r)
+	}
+	return verifyChain(receipts, raws, keys, opts)
+}
+
+func verifyChain(receipts []*Receipt, raws [][]byte, keys KeyResolver, opts VerifyOptions) (*ChainResult, error) {
 	if len(receipts) == 0 {
 		return nil, fmt.Errorf("receipt: no receipts to verify")
 	}
@@ -192,7 +234,11 @@ func VerifyChain(receipts []*Receipt, keys KeyResolver, opts VerifyOptions) (*Ch
 			}
 		}
 
-		res, err := Verify(r, keys, opts)
+		var raw []byte
+		if i < len(raws) {
+			raw = raws[i]
+		}
+		res, err := verify(r, raw, keys, opts)
 		if err != nil {
 			return nil, fmt.Errorf("receipt: position %d (seq %d): %w", i, r.Chain.Seq, err)
 		}
@@ -210,6 +256,12 @@ func VerifyChain(receipts []*Receipt, keys KeyResolver, opts VerifyOptions) (*Ch
 			out.Degraded++
 		case ModeBypassed:
 			out.Bypassed++
+		}
+		// A mode this build does not know matches neither arm above, so
+		// without this a chain of them counts as nothing at all and reads
+		// as fully governed.
+		if len(res.Unrecognised) > 0 {
+			out.Unrecognised++
 		}
 
 		out.Results = append(out.Results, res)

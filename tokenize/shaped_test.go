@@ -1,6 +1,8 @@
 package tokenize
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -154,5 +156,58 @@ func TestRestoreAllCoversPatternedAndEnumeratedTokens(t *testing.T) {
 	_, n, _ = oneWay.RestoreAll([]byte(tok))
 	if n != 0 {
 		t.Errorf("a DiscardStore scope restored %d tokens; it holds nothing to restore from", n)
+	}
+}
+
+// A substitute must be impossible to issue, not merely unlikely.
+//
+// Two generators broke that. phoneToken drew from "+99" on the belief that
+// 99 was an unassigned country code; it is a zone, and +992 to +998 are
+// Tajikistan, Turkmenistan, Azerbaijan, Georgia, Kyrgyzstan and
+// Uzbekistan, so most tokens were valid subscriber numbers in an assigned
+// country. ssnToken used an area of 9xx, which the SSA never issues, with
+// a group of 01–99 — and the IRS issues ITINs in exactly that shape, in
+// published group ranges 50–65, 70–88, 90–92 and 94–99, so a substitute
+// could be a real taxpayer identification number.
+func TestPhoneAndSSNSubstitutesCannotBeSomebodyElses(t *testing.T) {
+	// Every published ITIN group range, as the IRS states them.
+	itin := func(group int) bool {
+		switch {
+		case group >= 50 && group <= 65,
+			group >= 70 && group <= 88,
+			group >= 90 && group <= 92,
+			group >= 94 && group <= 99:
+			return true
+		}
+		return false
+	}
+
+	for i := 0; i < 4000; i++ {
+		sum := sha256.Sum256([]byte(fmt.Sprintf("subject-%d", i)))
+
+		phone := phoneToken(sum[:])
+		if !strings.HasPrefix(phone, "+999") {
+			t.Fatalf("phone token %q is not under the ITU's reserved 999", phone)
+		}
+		// E.164 allows fifteen digits at most, and a number longer than
+		// that is not a phone number at all.
+		if digits := len(phone) - 1; digits > 15 {
+			t.Fatalf("phone token %q has %d digits, more than E.164 allows", phone, digits)
+		}
+
+		ssn := ssnToken(sum[:])
+		var area, group, serial int
+		if _, err := fmt.Sscanf(ssn, "%03d-%02d-%04d", &area, &group, &serial); err != nil {
+			t.Fatalf("ssn token %q does not parse: %v", ssn, err)
+		}
+		if area < 900 || area > 999 {
+			t.Fatalf("ssn token %q has area %d, which the SSA may issue", ssn, area)
+		}
+		if itin(group) {
+			t.Fatalf("ssn token %q has group %d, inside a published IRS ITIN range — it is shaped like a real taxpayer id", ssn, group)
+		}
+		if group == 0 || serial == 0 {
+			t.Fatalf("ssn token %q has a zero group or serial, which no real number has either", ssn)
+		}
 	}
 }

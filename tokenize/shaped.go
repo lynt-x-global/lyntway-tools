@@ -32,9 +32,18 @@ import (
 // SSN: area numbers 900–999 are never issued by the Social Security
 // Administration (nor 000 or 666), and the group and serial are never 00
 // or 0000.
+//
+// The group is kept inside 01–49 because an area of 9xx is not enough on
+// its own. The IRS issues ITINs in the SSN format, always beginning with
+// 9, and publishes the group ranges it uses: 50–65, 70–88, 90–92 and
+// 94–99. The group was 1–99, so a little under four tokens in ten landed
+// on a published ITIN range and were therefore shaped exactly like a real
+// taxpayer identification number — 996-99-7182 is an ITIN, not a dummy.
+// 01–49 is outside every range the IRS publishes and outside everything
+// the SSA issues.
 func ssnToken(sum []byte) string {
 	area := 900 + int(sum[0])%100
-	group := 1 + int(sum[1])%99
+	group := 1 + int(sum[1])%49
 	serial := 1 + (int(sum[2])<<8|int(sum[3]))%9999
 	return fmt.Sprintf("%03d-%02d-%04d", area, group, serial)
 }

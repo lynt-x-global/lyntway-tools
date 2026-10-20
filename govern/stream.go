@@ -3,6 +3,7 @@ package govern
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
@@ -106,7 +107,16 @@ type StreamGovernor struct {
 
 	// findings accumulates across the whole stream, so the receipt
 	// describes the stream rather than its last chunk.
-	findings map[detect.Class]int
+	//
+	// The decision is carried per class because this was a bare count, and
+	// Findings() then re-derived the decision by asking the policy what it
+	// would do at ConfidenceExact — the strongest confidence there is. A
+	// class matched only by a medium-confidence rule, which the policy
+	// leaves at log_only and release() therefore does not substitute, was
+	// reported in the receipt as tokenize, over content that went out
+	// verbatim. This mirrors the buffered aggregation in policy.go so the
+	// two paths cannot disagree about the same stream.
+	findings map[detect.Class]*streamFinding
 
 	// frozenAt marks where emission stopped because a refusing class may
 	// begin there. Negative means nothing is frozen.
@@ -118,6 +128,12 @@ type StreamGovernor struct {
 
 	stopped   bool
 	truncated bool
+
+	// tokenizeFailed records that a substitution the policy asked for
+	// could not be applied, so the value went out as it arrived. Reported
+	// as a degraded component: the findings alone would say log_only and
+	// read as a policy that never asked for substitution.
+	tokenizeFailed bool
 }
 
 // StreamOption adjusts how a stream is governed. The zero configuration
@@ -178,7 +194,7 @@ func (e *Engine) NewStreamGovernor(scope *tokenize.Scope, opts ...StreamOption) 
 		scope:    scope,
 		ruleset:  e.ruleset,
 		policy:   e.policy,
-		findings: make(map[detect.Class]int),
+		findings: make(map[detect.Class]*streamFinding),
 		frozenAt: -1,
 	}
 	for _, opt := range opts {
@@ -191,6 +207,44 @@ func (e *Engine) NewStreamGovernor(scope *tokenize.Scope, opts ...StreamOption) 
 // are made for the same destination and key. Three call sites once each
 // called Decide directly, which is how a scoped rule came to apply on one
 // path and not another.
+// streamFinding is what one class accumulated over a stream: how many
+// spans matched, the strongest decision any of them actually triggered,
+// and the detector that found it.
+type streamFinding struct {
+	count    int
+	decision receipt.Decision
+	detector string
+}
+
+// note records a span against its class at the confidence it matched with.
+//
+// The confidence is the whole point: it is what decides whether release()
+// substitutes the value, so it is what the receipt must report.
+func (s *StreamGovernor) note(sp detect.Span) {
+	d := s.decide(sp.Class, sp.Confidence)
+	f, ok := s.findings[sp.Class]
+	if !ok {
+		f = &streamFinding{decision: d}
+		s.findings[sp.Class] = f
+	}
+	f.count++
+	if sp.Detector != "" {
+		f.detector = sp.Detector
+	}
+	// A class can be matched by rules of differing confidence, so keep the
+	// strongest action any of its spans triggered — the same rule the
+	// buffered path applies.
+	f.decision = strongest(f.decision, d)
+}
+
+// released marks a class as having gone out unsubstituted after a
+// tokenisation failure, so the receipt stops claiming it was substituted.
+func (s *StreamGovernor) noteReleasedVerbatim(class detect.Class) {
+	if f, ok := s.findings[class]; ok && f.decision == receipt.DecisionTokenize {
+		f.decision = receipt.DecisionLogOnly
+	}
+}
+
 func (s *StreamGovernor) decide(class detect.Class, conf detect.Confidence) receipt.Decision {
 	return s.policy.DecideFor(s.target, s.keyID, class, conf)
 }
@@ -323,7 +377,7 @@ func (s *StreamGovernor) release(end int) []byte {
 
 	spans := s.ruleset.Scan(out)
 	for _, sp := range spans {
-		s.findings[sp.Class]++
+		s.note(sp)
 	}
 
 	// On the way back, two kinds of value sit in the same sentence and need
@@ -353,6 +407,12 @@ func (s *StreamGovernor) release(end int) []byte {
 			if len(toTokenize) > 0 {
 				if applied, err := s.scope.Apply(out, toTokenize); err == nil {
 					out = applied
+				} else {
+					// The value is about to go out as it arrived. The
+					// receipt must not go on saying tokenize.
+					for _, sp := range toTokenize {
+						s.noteReleasedVerbatim(sp.Class)
+					}
 				}
 			}
 		}
@@ -368,10 +428,22 @@ func (s *StreamGovernor) release(end int) []byte {
 		if len(toTokenize) > 0 {
 			if applied, err := s.scope.Apply(segment, toTokenize); err == nil {
 				out = applied
+			} else {
+				// The segment goes out unchanged rather than being
+				// dropped, which is a deliberate choice about a stream
+				// already in flight. What was not deliberate is that the
+				// receipt kept reporting the class as tokenize, so it
+				// claimed a substitution over a value the caller received
+				// in full. The comment here used to say the discrepancy
+				// was "visible rather than silent"; nothing made it
+				// visible. Now the finding reads log_only, which is what
+				// happened, and the component below marks the stream
+				// degraded so the receipt does not read as a clean run.
+				for _, sp := range toTokenize {
+					s.noteReleasedVerbatim(sp.Class)
+				}
+				s.tokenizeFailed = true
 			}
-			// A tokenisation failure leaves the segment unchanged rather
-			// than dropping it. The receipt still records the finding, so
-			// the discrepancy is visible rather than silent.
 		}
 	}
 
@@ -397,6 +469,21 @@ func (s *StreamGovernor) Released() []byte {
 //
 // A truncated stream that reads as a complete one is the worst outcome
 // available here, so this is surfaced rather than inferred.
+// SubstitutionFailed reports that the policy asked for a value to be
+// substituted and the substitution could not be applied, so the value
+// reached the caller as it arrived.
+//
+// Separate from Findings() because the findings alone cannot say it. They
+// now report log_only, which is true of what happened to the bytes and
+// indistinguishable from a policy that never asked for a substitution at
+// all. The caller turns this into a degraded component so the receipt does
+// not read as a clean run.
+func (s *StreamGovernor) SubstitutionFailed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.tokenizeFailed
+}
+
 func (s *StreamGovernor) Truncated() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -409,13 +496,15 @@ func (s *StreamGovernor) Findings() []receipt.Finding {
 	defer s.mu.Unlock()
 
 	out := make([]receipt.Finding, 0, len(s.findings))
-	for class, count := range s.findings {
+	for class, f := range s.findings {
 		out = append(out, receipt.Finding{
 			Class:    string(class),
-			Count:    count,
-			Decision: s.decide(class, detect.ConfidenceExact),
+			Count:    f.count,
+			Decision: f.decision,
+			Detector: f.detector,
 		})
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Class < out[j].Class })
 	return out
 }
 
@@ -445,7 +534,7 @@ func (s *StreamGovernor) cutForRefused() bool {
 		return false
 	}
 	for _, sp := range refused {
-		s.findings[sp.Class]++
+		s.note(sp)
 	}
 	s.stopped, s.truncated = true, true
 	return true

@@ -319,7 +319,15 @@ func readiness(args []string) error {
 			return err
 		}
 		fmt.Fprintln(stdout, string(out))
-		return nil
+		// Through finish(), not around it. This was a fourth exit from a
+		// function whose own comment says "every way out of this function
+		// ends here" because the first version had three and only one of
+		// them saved. Returning nil here made --sign, --out, --upload,
+		// --state and --fail-on-new silent no-ops whenever --json was
+		// passed, so a pipeline running `readiness --json --fail-on-new`
+		// stayed green whatever it found — which is the one combination a
+		// pipeline would actually use.
+		return finish()
 	}
 
 	open := 0

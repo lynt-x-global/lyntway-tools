@@ -58,6 +58,9 @@ func signRequest(t *testing.T, r *http.Request, priv ed25519.PrivateKey, opts si
 
 	params := fmt.Sprintf(`;created=%d;keyid=%q;alg=%q;expires=%d;tag=%q`,
 		created.Unix(), keyID, alg, expires.Unix(), tag)
+	if opts.omitTimestamps {
+		params = fmt.Sprintf(`;keyid=%q;alg=%q;tag=%q`, keyID, alg, tag)
+	}
 	inner := "(" + strings.Join(quoted, " ") + ")" + params
 
 	// Build the signature base exactly as RFC 9421 specifies, without
@@ -95,6 +98,10 @@ type signOptions struct {
 	keyID      string
 	created    time.Time
 	expires    time.Time
+
+	// omitTimestamps signs with neither created nor expires, which is what
+	// an agent that wants its signature to last for ever would send.
+	omitTimestamps bool
 }
 
 func testKeys(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey, StaticKeys) {
@@ -509,5 +516,40 @@ func TestNilInputs(t *testing.T) {
 	}
 	if _, err := Verify(newRequest(), nil, Options{}); err == nil {
 		t.Error("nil resolver accepted")
+	}
+}
+
+// A signature with no timestamps must be refused, not trusted for ever.
+//
+// Both the created and the expires check sat behind an "is this parameter
+// present" guard and nothing required either, so a signature declaring
+// neither verified now and would verify in ten years. A captured
+// Signature and Signature-Input pair was replayable indefinitely and
+// still set Actor.Verified — and nonce is parsed into params and never
+// checked or remembered, so nothing else stood in the way.
+func TestASignatureWithNoTimestampsIsRefused(t *testing.T) {
+	pub, priv, keys := testKeys(t)
+	_ = pub
+
+	r := httptest.NewRequest(http.MethodGet, "https://lyntway.example/x", nil)
+	signRequest(t, r, priv, signOptions{omitTimestamps: true})
+
+	if _, err := Verify(r, keys, Options{}); err == nil {
+		t.Fatal("a signature declaring neither created nor expires verified")
+	} else if !errors.Is(err, ErrMalformed) {
+		t.Errorf("err = %v, want ErrMalformed", err)
+	}
+
+	// And the same signature ten years on, which is the point.
+	if _, err := Verify(r, keys, Options{Now: time.Now().AddDate(10, 0, 0)}); err == nil {
+		t.Fatal("it verified ten years later too")
+	}
+
+	// A signature that does declare its window still verifies, so this is
+	// a bound on replay rather than a new way to refuse honest agents.
+	ok := httptest.NewRequest(http.MethodGet, "https://lyntway.example/x", nil)
+	signRequest(t, ok, priv, signOptions{})
+	if _, err := Verify(ok, keys, Options{}); err != nil {
+		t.Errorf("an ordinary signature was refused: %v", err)
 	}
 }

@@ -271,7 +271,28 @@ const majorSimple byte = 7
 // not depend on a generic decoder's idea of what it saw. This exists for
 // the headers, where a map has to be walked to find the labels that matter
 // and carried intact past the ones that do not.
+// maxNestingDepth bounds how deeply decodeValue will recurse.
+//
+// Without it, nesting is bounded only by the goroutine stack, and
+// exceeding that is a fatal error rather than a panic: it cannot be
+// recovered, so the process dies. cose.Verify1 over two million nested
+// tags — a 2MB file, which anybody can hand to lyntway-verify — printed
+// "fatal error: stack overflow" instead of NOT VERIFIED. A verifier that
+// can be killed by the thing it was asked to check is worse than one that
+// refuses it, because the refusal is an answer.
+//
+// 32 is far above anything real. A COSE_Sign1 is a tag over an array of
+// four, and the deepest protected header this product issues sits at five.
+const maxNestingDepth = 32
+
 func decodeValue(in []byte) (Value, []byte, error) {
+	return decodeValueAt(in, 0)
+}
+
+func decodeValueAt(in []byte, depth int) (Value, []byte, error) {
+	if depth > maxNestingDepth {
+		return nil, nil, fmt.Errorf("%w: nested more than %d deep", ErrMalformed, maxNestingDepth)
+	}
 	major, argument, rest, err := decodeHead(in)
 	if err != nil {
 		return nil, nil, err
@@ -299,7 +320,7 @@ func decodeValue(in []byte) (Value, []byte, error) {
 		out := make(Array, 0, min(argument, uint64(len(rest))))
 		for i := uint64(0); i < argument; i++ {
 			var item Value
-			item, rest, err = decodeValue(rest)
+			item, rest, err = decodeValueAt(rest, depth+1)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -311,7 +332,7 @@ func decodeValue(in []byte) (Value, []byte, error) {
 		seen := make(map[string]bool, len(out))
 		for i := uint64(0); i < argument; i++ {
 			var key, value Value
-			key, rest, err = decodeValue(rest)
+			key, rest, err = decodeValueAt(rest, depth+1)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -322,7 +343,7 @@ func decodeValue(in []byte) (Value, []byte, error) {
 				return nil, nil, fmt.Errorf("%w: duplicate map key", ErrMalformed)
 			}
 			seen[encoded] = true
-			value, rest, err = decodeValue(rest)
+			value, rest, err = decodeValueAt(rest, depth+1)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -330,7 +351,7 @@ func decodeValue(in []byte) (Value, []byte, error) {
 		}
 		return out, rest, nil
 	case majorTag:
-		inner, rest, err := decodeValue(rest)
+		inner, rest, err := decodeValueAt(rest, depth+1)
 		if err != nil {
 			return nil, nil, err
 		}

@@ -93,6 +93,7 @@ func TestMCPToolsList(t *testing.T) {
 	for _, tool := range []string{
 		"lyntway_status", "lyntway_setup", "lyntway_scan",
 		"lyntway_migrate", "lyntway_init", "lyntway_receipts",
+		"lyntway_history",
 	} {
 		if !strings.Contains(result, tool) {
 			t.Errorf("tools/list does not contain %s", tool)

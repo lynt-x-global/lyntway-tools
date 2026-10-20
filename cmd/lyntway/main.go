@@ -69,6 +69,23 @@ var (
 var version = "dev"
 
 func main() {
+	// Asked before flag.Parse, which owns every argument that begins with
+	// a dash: an undefined one is answered with "flag provided but not
+	// defined" and exit 2. The dispatch below listed -v, --version, -h and
+	// --help as aliases and flag.Parse meant none of them could reach it,
+	// so `lyntway --version` — the form nearly every other tool takes —
+	// answered a version question with a parse error.
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "-v", "-version", "--version":
+			fmt.Println(version)
+			return
+		case "-h", "-help", "--help":
+			printUsage()
+			return
+		}
+	}
+
 	flag.Usage = printUsage
 	flag.Parse()
 
@@ -115,6 +132,12 @@ func main() {
 		err = hook(args[1:])
 	case "scan":
 		err = scanCommand(args[1:])
+	case "secure":
+		cliCommand = "secure"
+		err = secureCommand(args[1:])
+	case "history":
+		cliCommand = "history"
+		err = historyCommand(args[1:])
 	case "guard":
 		err = guardCmd(args[1:])
 	case "share":
@@ -136,9 +159,9 @@ func main() {
 		err = status()
 	case "undo":
 		err = undo()
-	case "version", "-v", "--version":
+	case "version":
 		fmt.Println(version)
-	case "help", "-h", "--help":
+	case "help":
 		printUsage()
 	default:
 		fmt.Fprintf(os.Stderr, "lyntway: no command called %q\n\n", args[0])
@@ -170,6 +193,9 @@ Usage:
   lyntway keys sign      give this key a signing keypair
   lyntway hook install   have Claude Code or Cursor refuse a prompt that carries a key
   lyntway scan           find provider keys in files, or in a diff before it is pushed
+  lyntway secure         one command: find what your AI tools have already seen, and
+                         stop the next one reaching a model
+  lyntway history        the same look, report only — never changes anything
   lyntway guard -- CMD   run one command with its model traffic governed, and
                          nothing on this machine changed
   lyntway share          turn a receipt into a link anyone can check
@@ -525,21 +551,6 @@ func status() error {
 // sit on a status command for half a minute.
 var statusClient = &http.Client{Timeout: 8 * time.Second}
 
-// signedInLine is the first line of `status`, and it asks the service
-// rather than the config file.
-//
-// "Signed in" used to mean "config.json exists", which the live service
-// contradicted: a key with a registered signing key was refused on every
-// call while status said it was signed in. So the key is presented once,
-// signed as every other call is, to an endpoint every deployment has,
-// and the line says what the service said. A 401 is reported as the
-// service refusing the key — with its own sentence, which names the fix
-// — and never as signed in.
-func signedInLine(c config, client *http.Client) string {
-	line, _ := signedInLineWithBody(c, client)
-	return line
-}
-
 // signedInLineWithBody is signedInLine but also returns the raw response
 // body on success, so the caller can inspect provider keys without a
 // second request.
@@ -716,9 +727,14 @@ func undo() error {
 			if !strings.Contains(string(body), markerStart) {
 				continue
 			}
-			// The block is removed rather than the backup restored, so
-			// anything else added to the profile since is kept.
-			if err := os.WriteFile(t.Path, []byte(removeBlock(string(body))), 0o600); err != nil {
+			// Both fenced blocks come out, and the backup is not
+			// restored, so anything else added to the profile since is
+			// kept. `guard --install` writes a second block under its own
+			// markers, and undo removed only the first — then restored the
+			// profile wholesale from the backup two steps below, which put
+			// the first block back and discarded every edit made since.
+			next, _ := stripGuardAliasBlock(removeBlock(string(body)))
+			if err := os.WriteFile(t.Path, []byte(next), 0o600); err != nil {
 				fmt.Printf("  ✗ %s — %v\n", t.Path, err)
 				continue
 			}

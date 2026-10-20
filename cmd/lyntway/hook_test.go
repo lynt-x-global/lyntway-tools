@@ -23,11 +23,11 @@ func TestCheckPromptRefusesAKeyAndSaysItWasNotSent(t *testing.T) {
 		want   string // "" means allowed
 	}{
 		{"fix the failing test in parser.go", ""},
-		{"here is my key " + tOpenAI + " please use it", "That looks like an OpenAI key (…ABCD). It was not sent. Store it with `lyntway keys migrate` or paste a Lyntway key instead."},
-		{"ANTHROPIC_API_KEY=" + tAnthropic, "That looks like an Anthropic key (…WXYZ). It was not sent. Store it with `lyntway keys migrate` or paste a Lyntway key instead."},
-		{"use " + tGitHub + " to push", "That looks like a GitHub token (…IJKL). It was not sent. Take it out of the prompt and send the rest."},
-		{"my cert:\n" + tPEM, "That looks like a private key. It was not sent. Take it out of the prompt and send the rest."},
-		{tOpenAI + " and " + tGitHub, "That looks like an OpenAI key (…ABCD). 1 more found. It was not sent. Store it with `lyntway keys migrate` or paste a Lyntway key instead."},
+		{"here is my key " + tOpenAI + " please use it", "That looks like an OpenAI key (…ABCD). It was not sent. Store it with `lyntway keys migrate` or paste a Lyntway key instead. If you meant to send it, add lyntway:allow to that line."},
+		{"ANTHROPIC_API_KEY=" + tAnthropic, "That looks like an Anthropic key (…WXYZ). It was not sent. Store it with `lyntway keys migrate` or paste a Lyntway key instead. If you meant to send it, add lyntway:allow to that line."},
+		{"use " + tGitHub + " to push", "That looks like a GitHub token (…IJKL). It was not sent. Take it out of the prompt and send the rest. If you meant to send it, add lyntway:allow to that line."},
+		{"my cert:\n" + tPEM, "That looks like a private key. It was not sent. Take it out of the prompt and send the rest. If you meant to send it, add lyntway:allow to that line."},
+		{tOpenAI + " and " + tGitHub, "That looks like an OpenAI key (…ABCD). 1 more found. It was not sent. Store it with `lyntway keys migrate` or paste a Lyntway key instead. If you meant to send it, add lyntway:allow to that line."},
 		{"example: OPENAI_API_KEY=sk-your-key-here-xxxxxxxxxxxxx", ""},
 	}
 	for _, c := range cases {
@@ -243,6 +243,112 @@ func TestHookInstallCreatesTheFileAndLeavesNoEmptyKeys(t *testing.T) {
 	}
 	if body, _ := os.ReadFile(path); string(body) != "[1,2]" {
 		t.Error("the refused file was changed")
+	}
+}
+
+// The hook must not name the directory the binary happened to be run from.
+//
+// The first install on a real machine wrote `/private/tmp/lyntway hook
+// prompt`, because that is where it had been built. /tmp is swept and the
+// npx cache is evicted, so the hook would later name a missing file, exit
+// 127, and be treated by the editor as a hook that failed — the prompt
+// sent unprotected with nothing on screen to say so.
+func TestTheInstalledHookNamesAPathThatSurvivesTheDownload(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	capture(t, "", func() {
+		if err := hookInstall([]string{"--yes"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	body, err := os.ReadFile(claudeHooksFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Hooks map[string][]struct {
+			Hooks []struct {
+				Command string `json:"command"`
+			} `json:"hooks"`
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatalf("settings: %s (%v)", body, err)
+	}
+	entries := doc.Hooks["UserPromptSubmit"]
+	if len(entries) != 1 || len(entries[0].Hooks) != 1 {
+		t.Fatalf("settings: %s", body)
+	}
+	command := entries[0].Hooks[0].Command
+
+	durable := filepath.Join(home, ".lyntway", "bin", "lyntway")
+	if !strings.HasPrefix(command, durable+" ") {
+		t.Errorf("the hook runs %q, which is wherever this binary was built;\nwant the copy at %s", command, durable)
+	}
+
+	// And the file is there, executable. A path under ~/.lyntway/bin that
+	// nothing was copied to is the same lapse with a tidier name.
+	info, err := os.Stat(durable)
+	if err != nil {
+		t.Fatalf("no binary at the path the hook names: %v", err)
+	}
+	if info.Mode().Perm()&0o100 == 0 {
+		t.Errorf("the copy is not executable: %v", info.Mode())
+	}
+}
+
+// A hook of ours naming a binary that is gone must be repaired, not
+// reported as installed. That is what someone gets when the npx cache is
+// evicted and they run the command a second time to check.
+func TestAStaleHookIsRewrittenRatherThanCalledInstalled(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	settings := claudeHooksFile()
+	if err := os.MkdirAll(filepath.Dir(settings), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// An entry this wrote, pointing where /tmp used to have a binary, and
+	// one of the person's own hooks beside it.
+	stale := `{"hooks":{"UserPromptSubmit":[` +
+		`{"hooks":[{"type":"command","command":"/tmp/lyntway hook prompt","timeout":10}]},` +
+		`{"hooks":[{"type":"command","command":"/usr/local/bin/mine"}]}]}}`
+	if err := os.WriteFile(settings, []byte(stale), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	capture(t, "", func() {
+		if err := hookInstall([]string{"--yes"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	body, _ := os.ReadFile(settings)
+	if strings.Contains(string(body), "/tmp/lyntway hook prompt") {
+		t.Errorf("the dead path is still there: %s", body)
+	}
+	durable := filepath.Join(home, ".lyntway", "bin", "lyntway")
+	if !strings.Contains(string(body), durable) {
+		t.Errorf("not repointed at %s: %s", durable, body)
+	}
+	// Repaired in place: one entry of ours, and theirs untouched.
+	if n := strings.Count(string(body), " hook prompt"); n != 1 {
+		t.Errorf("%d entries of ours, want 1: %s", n, body)
+	}
+	if !strings.Contains(string(body), "/usr/local/bin/mine") {
+		t.Errorf("their own hook was dropped: %s", body)
+	}
+
+	// Running it again, now that the path is current, changes nothing.
+	out := capture(t, "", func() {
+		if err := hookInstall([]string{"--yes"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "already installed") {
+		t.Errorf("a second run should be a no-op: %q", out)
 	}
 }
 
@@ -476,4 +582,52 @@ func TestTheGitHookScansPathsThatContainSpaces(t *testing.T) {
 // shellQuote wraps a path for safe interpolation into the test's stub.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// A refusal has to name the way through.
+//
+// Pasting a log line, an error, or a .env to ask what is wrong with it is
+// the most ordinary thing somebody does with a coding agent, and all
+// three carry the strings this refuses on. Before this, the message told
+// them to delete the thing they were asking about and stopped there. A
+// guard with no stated way past it is a guard somebody removes the first
+// time it is wrong — and then they have no guard, which is worse than
+// the prompt having gone.
+func TestARefusalNamesTheWayThrough(t *testing.T) {
+	refusal, err := checkPrompt(strings.NewReader(
+		`{"prompt":"auth failed for AKIA` + "J3QX7F2MNB4KD9PL" + `, why?"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refusal == "" {
+		t.Fatal("a real key was not refused, so this test proves nothing")
+	}
+	if !strings.Contains(refusal, "lyntway:allow") {
+		t.Errorf("the refusal does not say how to send it anyway:\n  %s", refusal)
+	}
+	// And the marker has to actually work, or naming it is a lie.
+	through, err := checkPrompt(strings.NewReader(
+		`{"prompt":"AKIA` + "J3QX7F2MNB4KD9PL" + ` lyntway:allow"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if through != "" {
+		t.Errorf("the marker the refusal recommends does not let the prompt through: %s", through)
+	}
+}
+
+// Every failure that is not a found credential must let the prompt go.
+//
+// Only exit 2 blocks in Claude Code. If an unreadable input or a missing
+// file produced 2, a person could be unable to type anything at all —
+// locked out of their own editor by a security tool, which is the one
+// outcome this repository rules out everywhere.
+func TestOnlyAFoundCredentialCanBlockAPrompt(t *testing.T) {
+	for _, input := range []string{"", "not json", "{}", `{"prompt":""}`, `{"prompt":"ordinary question"}`} {
+		refusal, err := checkPrompt(strings.NewReader(input))
+		if refusal != "" {
+			t.Errorf("input %q produced a refusal: %s", input, refusal)
+		}
+		_ = err // an error here is reported and the prompt proceeds; it is not a block.
+	}
 }

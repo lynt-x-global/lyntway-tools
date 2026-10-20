@@ -58,6 +58,34 @@ type governor struct {
 // had no subject.
 const componentBindParameters = "bind-parameters"
 
+// componentResultRows names the part of detection that reads the rows
+// coming back from the database.
+//
+// The Postgres proxy governs every DataRow it relays. The MySQL and
+// MongoDB proxies copy the server's reply straight through with
+// io.CopyBuffer — their relays do not even take a governor — because
+// neither result-set framing is parsed here. The query is examined on all
+// three, so all three produced a receipt, and nothing on it distinguished
+// them: a SELECT returning ten thousand card numbers left the same record
+// as one returning none, under evidence.provenance: observed.
+//
+// Reported on the query receipt, because that is the only receipt those
+// two protocols write. It is what makes the mode degraded, which is the
+// honest reading: the gateway ran, and part of what it exists to inspect
+// went past unread.
+const componentResultRows = "result-rows"
+
+// resultRowsNotInspected is what a protocol whose replies are forwarded
+// unread says about them.
+func resultRowsNotInspected(protocol string) receipt.Component {
+	return receipt.Component{
+		Name:   componentResultRows,
+		Health: receipt.HealthUnavailable,
+		Detail: "rows were forwarded without being read: this gateway does not parse " +
+			protocol + " result framing, so only the query was examined",
+	}
+}
+
 // governorConfig is everything a governor needs from its environment,
 // gathered so a test can point every path at a temporary directory.
 type governorConfig struct {
@@ -156,6 +184,13 @@ type governOptions struct {
 // Returns nil content when the policy blocks the query.
 func (g *governor) governQuery(dbName, query, method string) (*govern.Result, error) {
 	return g.govern(dbName, []byte(query), receipt.DirectionRequest, method, governOptions{})
+}
+
+// governQueryUninspectedReplies is governQuery for a protocol that forwards
+// the server's reply without reading it. See componentResultRows.
+func (g *governor) governQueryUninspectedReplies(dbName, query, method, protocol string) (*govern.Result, error) {
+	return g.govern(dbName, []byte(query), receipt.DirectionRequest, method,
+		governOptions{components: []receipt.Component{resultRowsNotInspected(protocol)}})
 }
 
 // governRefused receipts a query the gateway refused before the policy had

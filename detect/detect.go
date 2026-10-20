@@ -28,8 +28,11 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"reflect"
 	"regexp"
+	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -177,28 +180,69 @@ type Ruleset struct {
 	digest  string
 }
 
+// validatorIdentity names the function a rule validates with, so the
+// digest covers it.
+//
+// Every validator in this package is a named function — there are no
+// closures, and a test keeps it that way — so the name is stable across
+// builds and changes when the validator is swapped or removed.
+func validatorIdentity(v func(string) bool) string {
+	if v == nil {
+		return ""
+	}
+	return runtime.FuncForPC(reflect.ValueOf(v).Pointer()).Name()
+}
+
 // NewRuleset builds a ruleset and computes its digest.
 //
 // Rules are sorted by ID first, so the digest depends on rule content alone
 // and not on the order they were declared in. Without that, reordering a
 // slice would silently change every receipt's ruleset digest.
+//
+// The digest covers every field that decides what matches. It used to
+// cover four — ID, class, pattern and confidence — and leave out the three
+// that decide whether a rule runs and which of its matches survives:
+// Priority, the two prefilters, and Validate. So deleting the Luhn check
+// from the card rule changed what was detected while the version string
+// and the digest both stayed byte-identical, and that digest is what every
+// receipt carries as governance.policy.bundle_digest, documented as
+// pinning the decision to bytes rather than to a mutable label. It pinned
+// about half the decision.
+//
+// The prefilter lists are sorted before hashing for the same reason the
+// rules are: their order cannot change behaviour, because mayMatch tries
+// all of them, so it must not change the digest either.
 func NewRuleset(version string, rules []Rule) *Ruleset {
 	sorted := make([]Rule, len(rules))
 	copy(sorted, rules)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].ID < sorted[j].ID })
 
 	h := sha256.New()
-	h.Write([]byte(version))
-	h.Write([]byte{0})
+	writeField := func(b []byte) {
+		h.Write(b)
+		h.Write([]byte{0})
+	}
+	writeList := func(in []string) {
+		list := make([]string, len(in))
+		copy(list, in)
+		sort.Strings(list)
+		for _, lit := range list {
+			writeField([]byte(lit))
+		}
+		// So ["a","b"] and ["ab"] cannot hash alike.
+		writeField([]byte("|"))
+	}
+
+	writeField([]byte(version))
 	for _, r := range sorted {
-		h.Write([]byte(r.ID))
-		h.Write([]byte{0})
-		h.Write([]byte(r.Class))
-		h.Write([]byte{0})
-		h.Write([]byte(r.Pattern.String()))
-		h.Write([]byte{0})
-		h.Write([]byte{byte(r.Confidence)})
-		h.Write([]byte{0})
+		writeField([]byte(r.ID))
+		writeField([]byte(r.Class))
+		writeField([]byte(r.Pattern.String()))
+		writeField([]byte{byte(r.Confidence)})
+		writeField([]byte(strconv.Itoa(r.Priority)))
+		writeField([]byte(validatorIdentity(r.Validate)))
+		writeList(r.Prefilter)
+		writeList(r.PrefilterFold)
 	}
 
 	return &Ruleset{

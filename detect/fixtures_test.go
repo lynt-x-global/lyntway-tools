@@ -1,6 +1,9 @@
 package detect
 
-import "strings"
+import (
+	"strings"
+	"testing"
+)
 
 // Synthetic credential fixtures, assembled at runtime.
 //
@@ -60,7 +63,11 @@ func fakeStripeTestKey() string { return "pk" + "_test_" + strings.Repeat("z", 1
 func fakeAnthropicKey() string { return "sk" + "-ant-" + strings.Repeat("x", 24) }
 
 // fakeOpenAIKey returns a synthetic OpenAI project key.
-func fakeOpenAIKey() string { return "sk" + "-proj-" + strings.Repeat("q", 22) }
+// 48 and not 22: the rule's floor was raised to 32 characters on
+// 19 Oct 2026 so a documented example key stops blocking a coding agent,
+// and a fixture under the floor matches nothing while every test using it
+// still passes.
+func fakeOpenAIKey() string { return "sk" + "-proj-" + strings.Repeat("q", 48) }
 
 // fakePEMBlock returns a synthetic private key block of the given type.
 func fakePEMBlock(kind string) string {
@@ -95,4 +102,50 @@ func pemBlockHeader(kind string) string {
 // not derived from any key.
 func pemBodyLine() string {
 	return strings.Repeat("Qk1h", 16)
+}
+
+// Every positive fixture must actually match the rule it stands for.
+//
+// This exists because raising the OpenAI rule's length floor on
+// 19 Oct 2026 left this file's key 10 characters short, and nothing went
+// red: the fixture's only user is the prefilter-equivalence corpus, which
+// compares two runs of the same ruleset and is satisfied when both find
+// nothing. A fixture that matches nothing is not a weaker test, it is an
+// absent one, and the only reason it surfaced at all was the browser
+// extension's separate suite asserting an exact class list.
+func TestPositiveFixturesStillMatch(t *testing.T) {
+	rs := Default()
+	for _, c := range []struct {
+		name  string
+		value string
+		class Class
+	}{
+		{"aws access key", fakeAWSKey(), ClassAWSAccessKey},
+		{"aws temporary key", fakeAWSTempKey(), ClassAWSAccessKey},
+		{"github pat", fakeGitHubToken(), ClassGitHubToken},
+		{"github oauth token", fakeGitHubOAuthToken(), ClassGitHubToken},
+		{"slack bot token", fakeSlackBotToken(), ClassSlackToken},
+		{"slack user token", fakeSlackUserToken(), ClassSlackToken},
+		{"stripe live key", fakeStripeLiveKey(), ClassStripeKey},
+		{"stripe test secret key", "sk" + "_test_" + strings.Repeat("7", 20), ClassStripeKey},
+		{"stripe restricted key", "rk" + "_live_" + strings.Repeat("5", 20), ClassStripeKey},
+		{"anthropic key", fakeAnthropicKey(), ClassAnthropicKey},
+		{"openai key", fakeOpenAIKey(), ClassOpenAIKey},
+		{"jwt", fakeJWT(), ClassJWT},
+		{"azure account key", fakeAzureAccountKey(), ClassAzureConnStr},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var got []Class
+			found := false
+			for _, sp := range rs.Scan([]byte("value is " + c.value)) {
+				got = append(got, sp.Class)
+				if sp.Class == c.class {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("fixture no longer matches %s (found %v) — the fixture is stale, not the rule", c.class, got)
+			}
+		})
+	}
 }

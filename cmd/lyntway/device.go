@@ -108,7 +108,7 @@ func deviceStart() error {
 			return exec.Command("wscript.exe", launcher).Run()
 		}
 	}
-	cmd := exec.Command(bin, "--daemon")
+	cmd := exec.Command(bin, agentDaemonArgs()...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Start()
@@ -350,7 +350,18 @@ func deviceInstall(args []string) error {
 	fmt.Fprintln(stdout, "Step 4/5: System setup (CA, proxy, autostart)")
 	setupArgs := []string{"--setup"}
 	if noProxy {
-		fmt.Fprintln(stdout, "  Skipping system proxy (--no-proxy).")
+		// Recorded for the daemon, which is what points the machine at the
+		// proxy. Said with its limit, because this used to print
+		// "Skipping system proxy" over a flag that reached nothing: the
+		// autostart entry the agent registers carries its own command
+		// line, so the preference holds for the agent started here and
+		// not for the one a later login starts.
+		agentNoSystemProxy = true
+		setupArgs = append(setupArgs, "--no-system-proxy")
+		fmt.Fprintln(stdout, "  The system proxy will stay off (--no-proxy).")
+		fmt.Fprintln(stdout, "  This applies to the agent started now. Autostart registers its own")
+		fmt.Fprintln(stdout, "  command, so after a reboot run `lyntway device --no-proxy` again, or")
+		fmt.Fprintln(stdout, "  `lyntway agent uninstall` to remove autostart entirely.")
 	}
 	if err := runAgentSetup(agentPath, setupArgs); err != nil {
 		// Not fatal: the agent runs, the extension can hand it files, and
@@ -1001,9 +1012,29 @@ End If
 	_ = exec.Command("wscript.exe", launcher).Run()
 }
 
+// agentNoSystemProxy carries `lyntway device --no-proxy` to the daemon.
+//
+// The flag was parsed, printed as "Skipping system proxy (--no-proxy)",
+// and then never passed to anything — setupArgs was []string{"--setup"}
+// whatever it said. The agent does support it, as --no-system-proxy, and
+// honours it in the daemon, which is what points the machine at the proxy;
+// setup() deliberately does not, because enabling a proxy before the
+// listener is bound breaks the internet until the daemon comes up.
+var agentNoSystemProxy bool
+
+// agentDaemonArgs is the daemon command line, so the two places that start
+// it cannot disagree about it.
+func agentDaemonArgs() []string {
+	args := []string{"--daemon"}
+	if agentNoSystemProxy {
+		args = append(args, "--no-system-proxy")
+	}
+	return args
+}
+
 // startAgent starts the agent binary in daemon mode.
 func startAgent(agentPath string) error {
-	cmd := exec.Command(agentPath, "--daemon")
+	cmd := exec.Command(agentPath, agentDaemonArgs()...)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	if err := cmd.Start(); err != nil {

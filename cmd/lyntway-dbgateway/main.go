@@ -57,13 +57,25 @@ var version = "dev"
 func main() { os.Exit(run()) }
 
 func run() int {
-	if len(os.Args) > 1 && (os.Args[1] == "-version" || os.Args[1] == "--version") {
-		fmt.Println(version)
-		return 0
-	}
-	if len(os.Args) > 1 && (os.Args[1] == "-h" || os.Args[1] == "--help" || os.Args[1] == "-help") {
-		fmt.Fprint(os.Stdout, usage)
-		return 0
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "-version", "--version", "version":
+			fmt.Println(version)
+			return 0
+		case "-h", "-help", "--help", "help":
+			fmt.Fprint(os.Stdout, usage)
+			return 0
+		default:
+			// An unrecognised argument used to fall through and start the
+			// gateway. `lyntway-dbgateway version` — the form the main CLI
+			// takes, so the one a person types — opened three listeners,
+			// generated a key, wrote receipts into whatever directory they
+			// were in and printed nothing at all. A typo must not start a
+			// service, and silence must not look like success.
+			fmt.Fprintf(os.Stderr, "lyntway-dbgateway: unrecognised argument %q. This command takes no arguments; it is configured by environment variable.\n\n", os.Args[1])
+			fmt.Fprint(os.Stderr, usage)
+			return 2
+		}
 	}
 
 	origin := os.Getenv("LYNTWAY_URL")
@@ -75,7 +87,7 @@ func run() int {
 	listenPG := envOr("LYNTWAY_LISTEN_PG", ":15432")
 	listenMY := envOr("LYNTWAY_LISTEN_MY", ":13306")
 	listenMG := envOr("LYNTWAY_LISTEN_MG", ":27018")
-	receiptsPath := envOr("LYNTWAY_RECEIPTS", "./receipts.jsonl")
+	receiptsPath := envOr("LYNTWAY_RECEIPTS", defaultReceiptsPath())
 
 	keyPath, err := signingKeyPath()
 	if err != nil {
@@ -204,13 +216,6 @@ type dbUpstream struct {
 type UpstreamMap struct {
 	mu      sync.RWMutex
 	entries map[string]dbUpstream
-}
-
-func (m *UpstreamMap) get(name string) (dbUpstream, bool) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	u, ok := m.entries[name]
-	return u, ok
 }
 
 // allForProtocol returns all upstreams matching a protocol.
@@ -520,6 +525,41 @@ func parseEnvUpstreams(env string, umap *UpstreamMap) {
 	}
 }
 
+// defaultReceiptsPath keeps the receipts where the signing key already is.
+//
+// The default was ./receipts.jsonl, and the position file written beside it
+// is the whole reason a restart continues a chain instead of beginning a
+// second one at seq 0. A working-directory default made that promise
+// conditional on being started twice from the same directory: launched from
+// anywhere else the gateway finds no position, writes another genesis
+// receipt for the same chain, and splits one database's history across two
+// files that each look complete. A gateway started by launchd, a container
+// entrypoint or an operator's shell has no stable working directory to rely
+// on, so the condition was invisible and usually false.
+//
+// An existing ./receipts.jsonl is still appended to, because moving a
+// running installation's receipts is exactly the split this prevents. With
+// no home directory to use, the old location is better than refusing to
+// keep receipts at all — this binary exists to issue them.
+func defaultReceiptsPath() string {
+	const beside = "./receipts.jsonl"
+	if _, err := os.Stat(beside); err == nil {
+		log.Printf("lyntway-dbgateway: appending to %s in the working directory; "+
+			"the default has moved to ~/.lyntway/receipts/dbgateway/receipts.jsonl, "+
+			"and LYNTWAY_RECEIPTS chooses", beside)
+		return beside
+	}
+	h, err := os.UserHomeDir()
+	if err != nil {
+		return beside
+	}
+	dir := filepath.Join(h, ".lyntway", "receipts", "dbgateway")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return beside
+	}
+	return filepath.Join(dir, "receipts.jsonl")
+}
+
 // signingKeyPath is where the seed lives: the same directory the CLI keeps
 // its settings in, so one place holds everything this machine remembers.
 func signingKeyPath() (string, error) {
@@ -555,11 +595,16 @@ Environment:
   LYNTWAY_LISTEN_PG   PostgreSQL listener (default :15432)
   LYNTWAY_LISTEN_MY   MySQL listener (default :13306)
   LYNTWAY_LISTEN_MG   MongoDB listener (default :27018)
-  LYNTWAY_RECEIPTS    Receipt file (default ./receipts.jsonl); the public key
+  LYNTWAY_RECEIPTS    Receipt file (default
+                      ~/.lyntway/receipts/dbgateway/receipts.jsonl); the public key
                       is published beside it as <stem>-keys.json (stem: the receipts file without its extension)
   LYNTWAY_SIGNING_KEY Signing seed (default ~/.lyntway/dbgateway-signing.key)
 
 Flags:
-  -version    print the version and exit
-  -h, -help   show this message
+  -version, version    print the version and exit
+  -h, -help, help      show this message
+
+It takes no other argument: an unrecognised one is refused rather than
+started, because a gateway that opens listeners on a typo is worse than
+one that prints this message.
 `

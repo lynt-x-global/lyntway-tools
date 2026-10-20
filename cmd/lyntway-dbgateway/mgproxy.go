@@ -98,7 +98,7 @@ func mgRelayClientToServer(client, server net.Conn, g *governor, dbName string) 
 								target = db + "." + collection
 							}
 							_ = target
-							res, err := g.governQuery(dbName, cmd+" "+collection, verb)
+							res, err := g.governQueryUninspectedReplies(dbName, cmd+" "+collection, verb, "MongoDB")
 							if err != nil {
 								log.Printf("lyntway-dbgateway: mongodb: govern error: %v", err)
 							}

@@ -168,7 +168,7 @@ func myRelayClientToServer(client, server net.Conn, g *governor, dbName string) 
 			if cmd == myCOMQuery || cmd == myCOMStmtPrepare {
 				sql := string(payload[1:])
 				verb := sqlVerb(sql)
-				res, err := g.governQuery(dbName, sql, verb)
+				res, err := g.governQueryUninspectedReplies(dbName, sql, verb, "MySQL")
 				if err != nil {
 					log.Printf("lyntway-dbgateway: mysql: govern error: %v", err)
 				}

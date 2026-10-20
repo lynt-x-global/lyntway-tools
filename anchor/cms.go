@@ -3,7 +3,6 @@ package anchor
 import (
 	"bytes"
 	"crypto"
-	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
@@ -375,23 +374,4 @@ func signatureAlgorithm(si signerInfo, h crypto.Hash) (x509.SignatureAlgorithm, 
 		}
 	}
 	return 0, fmt.Errorf("anchor: the token is signed with %v, which is not accepted", oid)
-}
-
-// encodeLength writes a DER length, which is needed to rebuild the SET
-// wrapper around the signed attributes.
-func encodeLength(n int) []byte {
-	if n < 0x80 {
-		return []byte{byte(n)}
-	}
-	var b []byte
-	for v := n; v > 0; v >>= 8 {
-		b = append([]byte{byte(v)}, b...)
-	}
-	return append([]byte{byte(0x80 | len(b))}, b...)
-}
-
-// sha256Of is a small helper so callers do not repeat the two lines.
-func sha256Of(b []byte) []byte {
-	sum := sha256.Sum256(b)
-	return sum[:]
 }

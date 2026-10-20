@@ -318,3 +318,70 @@ func TestScanDiffReportsOnlyWhatTheBranchAdded(t *testing.T) {
 		assertNoValue(t, out)
 	}
 }
+
+// `lyntway scan --staged` is documented in three places and must exist.
+//
+// skill.md lists it, plugin/skills/lyntway/SKILL.md puts it in the
+// decision table an agent reads, and plugin/commands/lyntway-scan.md tells
+// the agent to add it. The flag was never defined, so flag.ExitOnError
+// turned all three into "flag provided but not defined: -staged" and exit
+// 2. documented_commands_test.go checks subcommand names only, so it could
+// not see a missing flag.
+func TestScanStagedScansTheIndex(t *testing.T) {
+	// `scan --staged` asks git what is in the index; without git there is
+	// no feature to test rather than a feature that is broken. The image
+	// the deploy builds its tests in has no git, and a hard failure there
+	// said this flag was broken when it was not.
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not on PATH, and --staged is git asking git")
+	}
+
+	dir := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@e",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@e")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git("init", "-q")
+
+	// Committed, so it is not part of what is about to be committed.
+	if err := os.WriteFile(filepath.Join(dir, "ok.txt"), []byte("nothing here\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git("add", "ok.txt")
+	git("-c", "commit.gpgsign=false", "commit", "-qm", "first")
+
+	// Staged, and carrying a key.
+	secret := "sk" + "-ant-" + strings.Repeat("y", 40)
+	if err := os.WriteFile(filepath.Join(dir, "env.txt"), []byte("ANTHROPIC_API_KEY="+secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git("add", "env.txt")
+
+	hits, _, err := scanStaged(dir)
+	if err != nil {
+		t.Fatalf("scanStaged: %v", err)
+	}
+	if len(hits) == 0 {
+		t.Fatal("a staged key was not found, so --staged cannot gate a commit")
+	}
+
+	// And the working tree alone is not what it reads: an unstaged key is
+	// not about to be committed.
+	if err := os.WriteFile(filepath.Join(dir, "later.txt"), []byte("OPENAI_API_KEY=sk-proj-"+strings.Repeat("z", 48)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	after, _, err := scanStaged(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(hits) {
+		t.Errorf("an unstaged file changed the staged result: %d then %d", len(hits), len(after))
+	}
+}

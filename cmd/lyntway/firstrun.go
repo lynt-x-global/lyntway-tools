@@ -113,7 +113,17 @@ func printFirstRun(r firstRunReport) {
 	// Free and account-free first. Everything above was read without one,
 	// and following that report with "sign in" as the only way forward
 	// would make the report look like a sales step.
-	fmt.Fprint(stdout, "  lyntway hook install      stop a prompt that carries a key, before it is sent\n")
+	//
+	// history leads, because it is the diagnosis and the line under it is
+	// the remedy: what has already happened, then how to stop the next
+	// one. Offered whether or not an agent was found above — a tool that
+	// has been uninstalled leaves its transcripts behind, and a key in
+	// the history of something no longer on the machine is the one least
+	// likely to have been thought about.
+	fmt.Fprint(stdout, "  lyntway secure            one command: what your AI tools have already seen,\n"+
+		"                            and stop the next one. Sends nothing, asks before\n"+
+		"                            it changes anything\n"+
+		"  lyntway history           the same look, report only — changes nothing\n")
 	if cmd := guardSuggestion(r.Apps); cmd != "" {
 		fmt.Fprintf(stdout, "  lyntway guard -- %-8s run it with its traffic governed, and nothing here changed\n", cmd)
 		fmt.Fprintf(stdout, "  lyntway guard --install   do that every time, without having to remember\n")

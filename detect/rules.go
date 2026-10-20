@@ -11,7 +11,7 @@ import (
 // Bump it on ANY change to rule content. The digest will change regardless
 // and would expose an unbumped edit, but a stale version string makes a
 // receipt harder to interpret for anyone reading it later.
-const RulesetVersion = "core-2026.10.19a"
+const RulesetVersion = "core-2026.10.20a"
 
 // Classes detected by the default ruleset.
 const (
@@ -191,11 +191,23 @@ func defaultRules() []Rule {
 			Priority:   100,
 		},
 		{
+			// sk_ and rk_ only. A pk_ key is Stripe's publishable key,
+			// which their own documentation says is not secret and is
+			// meant to be shipped in page JavaScript and mobile apps —
+			// their sample keys are printed in the docs. This matched it as
+			// secret.stripe_key until 20 October 2026, so a customer whose
+			// frontend or README held a pk_test_ key got a receipt naming a
+			// secret that was never one, and in block mode the request was
+			// refused. Precision failures are ours: see TestFalsePositives.
+			//
+			// rk_ stays. A restricted key is scoped but still secret, and
+			// sk_test_ stays too — it cannot move money, but it reads and
+			// writes a customer's test data and Stripe treats it as secret.
 			ID:         "stripe-key",
 			Class:      ClassStripeKey,
-			Pattern:    regexp.MustCompile(`\b((?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{16,})\b`),
+			Pattern:    regexp.MustCompile(`\b((?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,})\b`),
 			Confidence: ConfidenceExact,
-			Prefilter:  []string{"sk_live_", "sk_test_", "rk_live_", "rk_test_", "pk_live_", "pk_test_"},
+			Prefilter:  []string{"sk_live_", "sk_test_", "rk_live_", "rk_test_"},
 			Priority:   100,
 		},
 		{
@@ -551,9 +563,9 @@ func defaultRules() []Rule {
 			Class: ClassInstructionOverride,
 			Pattern: regexp.MustCompile(
 				`(?i)\b(ignore|disregard|forget|override|discard)\b[^.!?\n]{0,40}?\b(previous|prior|earlier|above|preceding|all)\b[^.!?\n]{0,20}?\b(instruction|instructions|prompt|prompts|rule|rules|direction|directions|context|information|guidance|guidelines|constraints|directives|programming|configuration)\b`),
-			Confidence: ConfidenceModerate,
-			Prefilter:  []string{"ignore", "Ignore", "IGNORE", "disregard", "Disregard", "forget", "Forget", "override", "Override", "discard", "Discard"},
-			Priority:   40,
+			Confidence:    ConfidenceModerate,
+			PrefilterFold: []string{"ignore", "disregard", "forget", "override", "discard"},
+			Priority:      40,
 		},
 		{
 			ID: "injection-prompt-extraction",
@@ -563,9 +575,9 @@ func defaultRules() []Rule {
 			Class: ClassPromptExtraction,
 			Pattern: regexp.MustCompile(
 				`(?i)\b(reveal|repeat|print|show|output|display|tell me|what (?:is|are))\b[^.!?\n]{0,30}?\b(your |the )?(system prompt|initial instructions|original instructions|system message|developer message|prompt above)\b`),
-			Confidence: ConfidenceModerate,
-			Prefilter:  []string{"system prompt", "System prompt", "System Prompt", "initial instructions", "original instructions", "system message", "developer message", "prompt above"},
-			Priority:   40,
+			Confidence:    ConfidenceModerate,
+			PrefilterFold: []string{"system prompt", "initial instructions", "original instructions", "system message", "developer message", "prompt above"},
+			Priority:      40,
 		},
 		{
 			ID: "injection-persona-override",
@@ -574,9 +586,9 @@ func defaultRules() []Rule {
 			Class: ClassPersonaOverride,
 			Pattern: regexp.MustCompile(
 				`(?i)\b(you are now|from now on,? you|act as if you|pretend (?:that )?you|you must now)\b[^.!?\n]{0,60}?\b(no (?:longer )?(?:have|has)|without|free from|unrestricted|unfiltered|no restrictions|no rules|do anything|jailbr|developer mode|dan mode)\b`),
-			Confidence: ConfidenceModerate,
-			Prefilter:  []string{"you are now", "You are now", "from now on", "From now on", "act as if", "Act as if", "pretend you", "Pretend you", "you must now", "You must now"},
-			Priority:   40,
+			Confidence:    ConfidenceModerate,
+			PrefilterFold: []string{"you are now", "from now on", "act as if", "pretend", "you must now"},
+			Priority:      40,
 		},
 		{
 			ID: "injection-context-escape",
@@ -587,9 +599,9 @@ func defaultRules() []Rule {
 			Class: ClassContextEscape,
 			Pattern: regexp.MustCompile(
 				`(?i)(<\|im_start\|>|<\|im_end\|>|<\|system\|>|<\|endoftext\|>|\[/?INST\]|<<SYS>>|###\s*(?:system|assistant)\s*:)`),
-			Confidence: ConfidenceHigh,
-			Prefilter:  []string{"<|im_start|>", "<|im_end|>", "<|system|>", "<|endoftext|>", "[INST]", "[/INST]", "<<SYS>>", "### system", "### System", "### assistant", "### Assistant"},
-			Priority:   45,
+			Confidence:    ConfidenceHigh,
+			PrefilterFold: []string{"<|im_start|>", "<|im_end|>", "<|system|>", "<|endoftext|>", "[inst]", "[/inst]", "<<sys>>", "###"},
+			Priority:      45,
 		},
 
 		// The rules below were written against the tune split of
@@ -697,10 +709,31 @@ func defaultRules() []Rule {
 
 		// --- Contact details ---------------------------------------------
 		{
+			// The reject group is a URI's userinfo. scheme://user@host is a
+			// username and a hostname, not a person's address, and this
+			// rule reported every one of them as pii.email until
+			// 20 October 2026: a Sentry DSN, postgres://appuser@db,
+			// amqp://worker@rabbit, redis://default@cache. Under redact
+			// mode each was substituted with a dummy address, which
+			// corrupts the connection string and silently breaks the thing
+			// it configures; on a receipt each claimed personal data where
+			// there was none.
+			//
+			// The url-password rule next door already said the first half
+			// of this — "postgres://user@host carries no credential and
+			// must not be reported as one" — and that was true of secrets
+			// while this rule reported it as PII instead.
+			//
+			// RE2 has no lookbehind, so the userinfo is matched and
+			// refused, the same way the Aadhaar rule refuses a longer run
+			// of digits. An address in a query string still matches: that
+			// one is usually a real person's, and in a URL is exactly where
+			// it should be reported.
 			ID:         "email",
 			Class:      ClassEmail,
-			Pattern:    regexp.MustCompile(`\b([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})\b`),
+			Pattern:    regexp.MustCompile(`(?P<reject>:/{2}[^\s/@]*)?\b([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})\b`),
 			Confidence: ConfidenceExact,
+			Validate:   notAHostServiceAccount,
 			Prefilter:  []string{"@"},
 			Priority:   60,
 		},
@@ -1087,6 +1120,31 @@ func validUKNINO(s string) bool {
 //
 // This is what separates a card number from any other run of digits. A
 // card-number rule without it is a false-positive generator, not a detector.
+// notAHostServiceAccount rejects the SSH login of a code host.
+//
+// git@github.com is in the remote URL of every repository that uses it, so
+// it appears in READMEs, CI logs, shell history and any prompt that quotes
+// a clone command. It matched the email rule exactly, which made a git
+// remote personal data: substituted under redact mode, so the remote in a
+// pasted command came back pointing nowhere, and counted on a receipt as
+// an address that belongs to no one.
+//
+// A denylist and not a pattern, because the thing that makes these not
+// people is who they are, not how they are spelled — and a rule guessing
+// at "looks like a service account" would start refusing real addresses.
+// The userinfo guard in the pattern above cannot reach these: an SSH
+// remote has no scheme, which is the whole of its syntax.
+func notAHostServiceAccount(s string) bool {
+	switch strings.ToLower(s) {
+	case "git@github.com", "git@gitlab.com", "git@bitbucket.org",
+		"git@ssh.dev.azure.com", "git@vs-ssh.visualstudio.com",
+		"git@codeberg.org", "git@git.sr.ht", "git@gitea.com",
+		"hg@bitbucket.org", "aur@aur.archlinux.org":
+		return false
+	}
+	return true
+}
+
 func validLuhn(s string) bool {
 	var digits []int
 	for _, r := range s {

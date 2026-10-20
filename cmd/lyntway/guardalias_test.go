@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -229,5 +230,100 @@ func TestARealShellReadsTheBlockAndTheToolStillRuns(t *testing.T) {
 	}
 	if !strings.Contains(withUs, "TOOL RAN: --model x") {
 		t.Errorf("guard did not pass the arguments through to the tool:\n%s", withUs)
+	}
+}
+
+// `lyntway undo` must not put back what it has just taken out.
+//
+// Nothing tested undo() at all, and it had this shape: the kindEnv branch
+// stripped the `lyntway init` block out of the profile and printed a tick,
+// then undoRecorded() two steps later restored the whole profile from the
+// backup taken at `guard --install` time. That backup contains the init
+// block, so the block came back; it predates everything the person has
+// edited since, so those edits were discarded; and the tick was printed
+// either way. skill.md promises "the profile comes back byte for byte".
+func TestUndoRemovesBothBlocksAndKeepsEverythingElse(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("SHELL", "/bin/zsh")
+
+	// guardAliasTools only wraps a tool it can find, and findBinary looks
+	// in $HOME/.local/bin among other places. Without this the premise
+	// depended on claude, codex or aider happening to be installed on
+	// whatever machine ran the test: on a laptop it was, in the image the
+	// deploy builds its tests in it was not, and the test then refused to
+	// prove nothing — correctly, but by failing the deploy.
+	bin := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Asserted against a host with nothing on its PATH, because the
+	// machine running this test usually has claude both installed and
+	// running, and either satisfies the detection for its own reasons.
+	// This is the one condition CI has and a laptop does not.
+	if found := findBinary(agentHost{GOOS: runtime.GOOS, Root: "/", Home: home}, []string{"claude"}); found == "" {
+		t.Fatal("the stub is not where findBinary looks, so on a machine with no coding tool this test would prove nothing again")
+	}
+
+	profile := filepath.Join(home, ".zshrc")
+	const mine = "export EDITOR=vim\nalias gs='git status'\n"
+	if err := os.WriteFile(profile, []byte(mine), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Both blocks, as the two commands write them.
+	body := mine + "\n" + markerStart + "\nexport OPENAI_BASE_URL=https://lyntway.example\n" + markerEnd + "\n"
+	if err := os.WriteFile(profile, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Answer yes, and print where the test can read.
+	in := strings.NewReader("y\n")
+	oldIn, oldOut := stdin, stdout
+	var buf bytes.Buffer
+	stdin, stdout, input, inputFrom = in, &buf, nil, nil
+	defer func() { stdin, stdout, input, inputFrom = oldIn, oldOut, nil, nil }()
+
+	if err := installGuardAlias(&buf); err != nil {
+		t.Fatalf("installing the guard block: %v", err)
+	}
+
+	after, err := os.ReadFile(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(after), guardAliasOpen) || !strings.Contains(string(after), markerStart) {
+		t.Fatalf("the profile does not hold both blocks, so this test proves nothing:\n%s", after)
+	}
+
+	// A line added after the install, which a whole-file restore loses.
+	withLater := string(after) + "export LATER=1\n"
+	if err := os.WriteFile(profile, []byte(withLater), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := undo(); err != nil {
+		t.Fatalf("undo: %v", err)
+	}
+
+	final, err := os.ReadFile(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(final)
+	if strings.Contains(got, markerStart) {
+		t.Errorf("the init block is still there after undo:\n%s", got)
+	}
+	if strings.Contains(got, guardAliasOpen) {
+		t.Errorf("the guard block is still there after undo:\n%s", got)
+	}
+	if !strings.Contains(got, "export LATER=1") {
+		t.Errorf("a line added after the install was discarded:\n%s", got)
+	}
+	if !strings.Contains(got, "alias gs='git status'") {
+		t.Errorf("the person's own lines were discarded:\n%s", got)
 	}
 }

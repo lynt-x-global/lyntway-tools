@@ -762,20 +762,26 @@ func verifyOne(data []byte, keys receipt.KeyResolver, opts receipt.VerifyOptions
 }
 
 func verifyChain(data []byte, keys receipt.KeyResolver, opts receipt.VerifyOptions, jsonOut bool) int {
-	rs, err := decodeReceipts(data)
+	raws, err := decodeReceipts(data)
 	if err != nil {
 		return fail(jsonOut, err, 2)
 	}
 
-	chain, err := receipt.VerifyChain(rs, keys, opts)
+	chain, err := receipt.VerifyChainJSON(raws, keys, opts)
 	if err != nil {
 		return fail(jsonOut, err, 1)
 	}
 
 	out := output{
-		Status:       "VERIFIED",
-		Valid:        true,
-		FullStrength: chain.Degraded == 0 && chain.Bypassed == 0,
+		Status: "VERIFIED",
+		Valid:  true,
+		// Unrecognised is in here because a governance mode this build
+		// does not know matches neither the degraded nor the bypassed
+		// counter, so a chain of such receipts reported 0 and 0 and
+		// printed a green, full-strength VERIFIED over governance it could
+		// not read. The absent value reads as the weakest; an unreadable
+		// one cannot read as the strongest.
+		FullStrength: chain.Degraded == 0 && chain.Bypassed == 0 && chain.Unrecognised == 0,
 		ChainID:      chain.ChainID,
 		ChainLength:  chain.Length,
 		ChainHead:    chain.Head,
@@ -786,6 +792,11 @@ func verifyChain(data []byte, keys receipt.KeyResolver, opts receipt.VerifyOptio
 		out.Status = "VERIFIED — CONTAINS BYPASSED ACTIONS"
 	} else if chain.Degraded > 0 {
 		out.Status = "VERIFIED — CONTAINS DEGRADED GOVERNANCE"
+	} else if chain.Unrecognised > 0 {
+		// The same wording the single-receipt path uses, for the same
+		// reason: the signatures are good and this build cannot read
+		// everything the receipts say.
+		out.Status = "VERIFIED — NEWER THAN THIS VERIFIER"
 	}
 
 	if jsonOut {
@@ -1178,29 +1189,46 @@ func reportAnchors(r *receipt.Receipt, results []anchor.AnchorResult, err error)
 // rewritten as an array on every event is a file that is corrupt whenever
 // the process dies mid-write. Asking a person to convert the format before
 // they can check it is one more reason not to check.
-func decodeReceipts(data []byte) ([]*receipt.Receipt, error) {
+// decodeReceipts returns each receipt's own bytes, not a parsed struct.
+//
+// The bytes are what the signature covers. Parsing and re-marshalling
+// drops any member this build has never heard of, and the signature then
+// fails and is reported as tampering — the worst false alarm available,
+// and the one that would make an old verifier untrustworthy rather than
+// merely old. The single-receipt path has verified raw bytes since the
+// forward-vocabulary work; -chain parsed into structs and threw the bytes
+// away, so a chain containing one newer receipt printed NOT VERIFIED and
+// exited 1.
+func decodeReceipts(data []byte) ([][]byte, error) {
 	trimmed := bytes.TrimLeft(data, " \t\r\n")
 	if len(trimmed) > 0 && trimmed[0] == '[' {
-		var rs []*receipt.Receipt
-		if err := json.Unmarshal(trimmed, &rs); err != nil {
+		var raws []json.RawMessage
+		if err := json.Unmarshal(trimmed, &raws); err != nil {
 			return nil, fmt.Errorf("parsing receipt array: %w", err)
 		}
-		return rs, nil
+		out := make([][]byte, 0, len(raws))
+		for _, raw := range raws {
+			out = append(out, []byte(raw))
+		}
+		if len(out) == 0 {
+			return nil, fmt.Errorf("no receipts in input")
+		}
+		return out, nil
 	}
-	var rs []*receipt.Receipt
+	var out [][]byte
 	dec := json.NewDecoder(bytes.NewReader(trimmed))
 	for {
-		var r receipt.Receipt
-		if err := dec.Decode(&r); err != nil {
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
 			if err == io.EOF {
 				break
 			}
-			return nil, fmt.Errorf("parsing receipt %d: %w", len(rs)+1, err)
+			return nil, fmt.Errorf("parsing receipt %d: %w", len(out)+1, err)
 		}
-		rs = append(rs, &r)
+		out = append(out, []byte(raw))
 	}
-	if len(rs) == 0 {
+	if len(out) == 0 {
 		return nil, fmt.Errorf("no receipts in input")
 	}
-	return rs, nil
+	return out, nil
 }

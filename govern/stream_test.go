@@ -498,3 +498,57 @@ func TestNilStreamOptionsKeepTheEngineDefaults(t *testing.T) {
 		t.Error("nil options replaced the engine's ruleset or policy")
 	}
 }
+
+// A streamed finding must report what happened to the value.
+//
+// Findings() used to re-derive each decision by asking the policy what it
+// would do at detect.ConfidenceExact — the strongest confidence there is —
+// while release() substitutes only spans whose own confidence the policy
+// answers with tokenize. A class matched by a weaker rule therefore went
+// out verbatim and was reported in the signed receipt as substituted.
+//
+// Stated as the invariant rather than as the symptom: if the receipt says a
+// class was tokenized, none of that class's original values may still be in
+// what the caller received. Anything else is a receipt claiming more than
+// happened.
+func TestAStreamedFindingNeverClaimsASubstitutionThatDidNotHappen(t *testing.T) {
+	// Each value is one the deterministic ruleset finds, chosen so the set
+	// spans more than one confidence. The IP is in the RFC 2544 range, the
+	// card is Luhn-valid, the email and phone are ordinary.
+	values := []string{
+		"198.18.44.9",
+		"5500 0055 5555 5559",
+		"dev.ananth@northbay.co.uk",
+		"+447700900412",
+	}
+	content := "the host is " + values[0] + ", card " + values[1] +
+		", mail " + values[2] + ", phone " + values[3] + ". " +
+		strings.Repeat("ordinary trailing sentence to push past the lookback. ", 20)
+
+	for _, chunk := range []int{1, 7, 64, len(content)} {
+		engine, scope := streamEngine(t)
+		released, g, err := streamAll(t, engine, scope, content, chunk)
+		if err != nil {
+			t.Fatalf("chunk %d: %v", chunk, err)
+		}
+		for _, f := range g.Findings() {
+			if f.Decision != receipt.DecisionTokenize {
+				continue
+			}
+			for _, v := range values {
+				if !strings.Contains(content, v) || !strings.Contains(released, v) {
+					continue
+				}
+				// The value is still there in full. Only fail if this
+				// finding is the class that value belongs to.
+				spans := engine.ruleset.Scan([]byte(v))
+				for _, sp := range spans {
+					if string(sp.Class) == f.Class {
+						t.Errorf("chunk %d: the receipt reports %s as %s, and %q is still in what the caller received",
+							chunk, f.Class, f.Decision, v)
+					}
+				}
+			}
+		}
+	}
+}

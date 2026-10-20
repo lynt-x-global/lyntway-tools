@@ -21,10 +21,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/lynt-x-global/lyntway-tools/agentsecrets"
 )
 
 func mcpServer(args []string) error {
@@ -196,6 +199,21 @@ var mcpTools = []mcpTool{
 		},
 	},
 	{
+		Name: "lyntway_history",
+		Description: "Report the credentials this machine's AI coding agents have already seen: the keys in their " +
+			"transcripts, prompt histories, pasted buffers, shell snapshots and MCP configuration. Reads local files " +
+			"only and sends nothing. Never shows a key's value — a label, the last four characters and a fingerprint. " +
+			"Changes no file. One key seen in many files is reported as one credential, because the count is the " +
+			"number of things to revoke. Some findings are test fixtures or documented examples the agent read " +
+			"rather than live keys; say so when reporting, and never print a value back to the user.",
+		InputSchema: mcpInputSchema{
+			Type: "object",
+			Properties: map[string]mcpProp{
+				"project": {Type: "string", Description: "Also read the agent files kept inside this project directory, such as a committed .mcp.json. Optional."},
+			},
+		},
+	},
+	{
 		Name:        "lyntway_migrate",
 		Description: "Move provider keys from .env files to Lyntway. Without confirm, shows the plan: which keys will be moved and what will change. With confirm: true, executes the migration. Every file is backed up first; undo with `lyntway undo`.",
 		InputSchema: mcpInputSchema{
@@ -298,6 +316,8 @@ func mcpToolsCall(params json.RawMessage, startWatcher func(string)) (any, *json
 		text, toolErr = mcpToolStatus()
 	case "lyntway_setup":
 		text, toolErr = mcpToolSetup(call.Arguments)
+	case "lyntway_history":
+		text, toolErr = mcpToolHistory(call.Arguments)
 	case "lyntway_scan":
 		text, toolErr = mcpToolScan(call.Arguments)
 	case "lyntway_migrate":
@@ -393,6 +413,81 @@ func mcpToolSetup(args json.RawMessage) (string, error) {
 		return "", err
 	}
 	return text, nil
+}
+
+// mcpToolHistory lets an agent ask what it has already seen.
+//
+// The one tool here that reports on the agent calling it. Written so the
+// answer is actionable without being dangerous: the agent is told what
+// to revoke and where it was, never the value — a tool result becomes
+// part of the next prompt, so returning a key here would put it straight
+// back into the model this exists to keep it away from.
+func mcpToolHistory(args json.RawMessage) (string, error) {
+	var p struct {
+		Project string `json:"project"`
+	}
+	if len(args) > 0 {
+		_ = json.Unmarshal(args, &p)
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("this machine has no home directory to look in: %w", err)
+	}
+	sources := agentsecrets.Sources(agentsecrets.Host{
+		GOOS:         runtime.GOOS,
+		Home:         home,
+		AppData:      os.Getenv("APPDATA"),
+		LocalAppData: os.Getenv("LOCALAPPDATA"),
+	})
+	if p.Project != "" {
+		abs, err := filepath.Abs(p.Project)
+		if err != nil {
+			return "", err
+		}
+		sources = append(sources, agentsecrets.ProjectSources(abs)...)
+	}
+
+	res := agentsecrets.Scan(sources, agentsecrets.DefaultRules())
+	allow, err := agentsecrets.LoadAllow(filepath.Join(home, ".lyntway"))
+	if err != nil {
+		return "", fmt.Errorf("reading the judged list: %w", err)
+	}
+	res = res.Excluding(allow)
+	creds := res.Credentials()
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Read %d file%s (%d MB) across %d location%s.\n",
+		res.Files, pluralS(res.Files), res.Bytes>>20, res.Sources, pluralS(res.Sources))
+	if !res.Complete() {
+		// Said first, because an agent summarising this will lead with
+		// the count and a count over a partial read is not a verdict.
+		fmt.Fprintf(&sb, "INCOMPLETE: %d file%s could not be read, so this is not a clean result. "+
+			"Report that before any number.\n", len(res.Unread), pluralS(len(res.Unread)))
+	}
+	if res.Allowed > 0 {
+		fmt.Fprintf(&sb, "%d finding%s already judged by the user and not listed.\n", res.Allowed, pluralS(res.Allowed))
+	}
+	if len(creds) == 0 {
+		sb.WriteString("\nNo credentials found in what the agents here have written.\n")
+		return sb.String(), nil
+	}
+
+	fmt.Fprintf(&sb, "\n%d credential%s, %d sighting%s:\n\n",
+		len(creds), pluralS(len(creds)), len(res.Findings), pluralS(len(res.Findings)))
+	for _, c := range creds {
+		kinds := make([]string, 0, 4)
+		for _, k := range c.Kinds() {
+			kinds = append(kinds, string(k))
+		}
+		fmt.Fprintf(&sb, "  %s ending %s (%s) — %d sighting%s in %s\n",
+			c.Label, c.Last4, c.Fingerprint, len(c.Seen), pluralS(len(c.Seen)), strings.Join(kinds, ", "))
+	}
+	sb.WriteString("\nSome of these may be test fixtures or documented examples rather than live keys: " +
+		"a fixture is built to have the shape of the real thing. Tell the user that, and never print a value.\n" +
+		"A key in a transcript cannot be rotated out of the file — nobody edits it and every backup has a copy — " +
+		"so the remedy is to revoke the credential. `lyntway history --allow` retires the ones they have judged.\n")
+	return sb.String(), nil
 }
 
 func mcpToolScan(args json.RawMessage) (string, error) {

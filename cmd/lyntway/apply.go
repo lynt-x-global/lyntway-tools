@@ -80,31 +80,65 @@ func writeEnv(path string, c config) (string, error) {
 	// this twice does not leave two blocks disagreeing about the base URL.
 	body := removeBlock(string(existing))
 
-	lines := []string{
-		markerStart,
-		"# Added by `lyntway init`. Remove with `lyntway undo`.",
-		"# Your AI traffic is routed through Lyntway so it can be recorded.",
-		`export PATH="$HOME/.lyntway/bin:$PATH"`,
-		fmt.Sprintf("export OPENAI_BASE_URL=%q", origin+"/gw/openai/v1"),
-		fmt.Sprintf("export ANTHROPIC_BASE_URL=%q", origin+"/gw/anthropic"),
-		fmt.Sprintf("export LYNTWAY_KEY=%q", key),
-		"# The gateway authenticates the Lyntway key and forwards yours. OpenAI's",
-		"# SDK has one field for both, so they are joined with a tilde — only when",
-		"# your own key is set, and only once, so a profile read twice is not",
-		"# paired twice. Anthropic's SDK sends its bearer token separately.",
+	// PowerShell shares the `#` comment with the Bourne family and nothing
+	// else: no `export`, and variables live under the env: drive. Keyed on
+	// the file's own suffix, like fish below, so the syntax follows the
+	// profile being written rather than the machine writing it.
+	var lines []string
+	if isPowerShell(path) {
+		lines = []string{
+			markerStart,
+			"# Added by `lyntway init`. Remove with `lyntway undo`.",
+			"# Your AI traffic is routed through Lyntway so it can be recorded.",
+			`$env:PATH = "$HOME\.lyntway\bin;$env:PATH"`,
+			fmt.Sprintf(`$env:OPENAI_BASE_URL = %q`, origin+"/gw/openai/v1"),
+			fmt.Sprintf(`$env:ANTHROPIC_BASE_URL = %q`, origin+"/gw/anthropic"),
+			fmt.Sprintf(`$env:LYNTWAY_KEY = %q`, key),
+			"# The gateway authenticates the Lyntway key and forwards yours. OpenAI's",
+			"# SDK has one field for both, so they are joined with a tilde — only when",
+			"# your own key is set, and only once, so a profile read twice is not",
+			"# paired twice. Anthropic's SDK sends its bearer token separately.",
+		}
+	} else {
+		lines = []string{
+			markerStart,
+			"# Added by `lyntway init`. Remove with `lyntway undo`.",
+			"# Your AI traffic is routed through Lyntway so it can be recorded.",
+			`export PATH="$HOME/.lyntway/bin:$PATH"`,
+			fmt.Sprintf("export OPENAI_BASE_URL=%q", origin+"/gw/openai/v1"),
+			fmt.Sprintf("export ANTHROPIC_BASE_URL=%q", origin+"/gw/anthropic"),
+			fmt.Sprintf("export LYNTWAY_KEY=%q", key),
+			"# The gateway authenticates the Lyntway key and forwards yours. OpenAI's",
+			"# SDK has one field for both, so they are joined with a tilde — only when",
+			"# your own key is set, and only once, so a profile read twice is not",
+			"# paired twice. Anthropic's SDK sends its bearer token separately.",
+		}
 	}
 	lines = append(lines, pairingLines(path)...)
 	if c.SigningKey != "" {
-		lines = append(lines,
-			"# Requests are signed with this key, so the receipt records who sent them.",
-			fmt.Sprintf("export LYNTWAY_SIGNING_KEY=%q", c.SigningKey),
-			fmt.Sprintf("export LYNTWAY_KEY_ID=%q", c.KeyID))
+		lines = append(lines, "# Requests are signed with this key, so the receipt records who sent them.")
+		if isPowerShell(path) {
+			lines = append(lines,
+				fmt.Sprintf(`$env:LYNTWAY_SIGNING_KEY = %q`, c.SigningKey),
+				fmt.Sprintf(`$env:LYNTWAY_KEY_ID = %q`, c.KeyID))
+		} else {
+			lines = append(lines,
+				fmt.Sprintf("export LYNTWAY_SIGNING_KEY=%q", c.SigningKey),
+				fmt.Sprintf("export LYNTWAY_KEY_ID=%q", c.KeyID))
+		}
 	}
 	lines = append(lines, markerEnd, "")
 	block := strings.Join(lines, "\n")
 
 	if body != "" && !strings.HasSuffix(body, "\n") {
 		body += "\n"
+	}
+	// The directory may not exist. On Windows the PowerShell profile lives
+	// under Documents\WindowsPowerShell, which is absent until something
+	// writes a profile, so a fresh machine would fail here with a bare
+	// "no such file or directory" naming a path nobody chose.
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", fmt.Errorf("creating %s: %w", filepath.Dir(path), err)
 	}
 	if err := os.WriteFile(path, []byte(body+block), 0o600); err != nil {
 		return "", err
@@ -119,6 +153,12 @@ func writeEnv(path string, c config) (string, error) {
 // a compatibility function, which is why the base URLs above need no
 // special case.
 func pairingLines(profile string) []string {
+	if isPowerShell(profile) {
+		return []string{
+			`if ($env:OPENAI_API_KEY -and $env:OPENAI_API_KEY -notlike "*~*") { $env:OPENAI_API_KEY = "$env:LYNTWAY_KEY~$env:OPENAI_API_KEY" }`,
+			`$env:ANTHROPIC_AUTH_TOKEN = $env:LYNTWAY_KEY`,
+		}
+	}
 	if strings.HasSuffix(profile, ".fish") {
 		return []string{
 			`if set -q OPENAI_API_KEY; and not string match -q '*~*' -- $OPENAI_API_KEY; set -gx OPENAI_API_KEY "$LYNTWAY_KEY~$OPENAI_API_KEY"; end`,
@@ -209,7 +249,56 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(dst, data, 0o755)
+	if err := os.WriteFile(dst, data, 0o755); err == nil {
+		return nil
+	} else if !replaceInUse(dst, data) {
+		return err
+	}
+	return nil
+}
+
+// replaceInUse overwrites a file another process is holding open, and
+// reports whether it managed it.
+//
+// Windows refuses to write a file that is in use and an executable stays
+// in use while it runs, so copying a new lyntway.exe over the one in
+// ~/.lyntway/bin fails with "The process cannot access the file because it
+// is being used by another process". The first Windows tester hit exactly
+// that, and because the hook install refuses when the durable copy cannot
+// be made, neither editor got a hook — on a machine where everything else
+// had worked.
+//
+// Renaming a file in use is allowed where overwriting it is not. The old
+// one is moved aside and the new one written in its place; the process
+// still running keeps the file it already opened, which is correct, and
+// the next run clears the leftovers once nothing holds them.
+//
+// On failure the old file is put back, so a machine is never left with no
+// binary at a path something else is about to run.
+func replaceInUse(dst string, data []byte) bool {
+	aside := dst + ".old-" + time.Now().UTC().Format("20060102150405")
+	if err := os.Rename(dst, aside); err != nil {
+		return false
+	}
+	if err := os.WriteFile(dst, data, 0o755); err != nil {
+		_ = os.Rename(aside, dst)
+		return false
+	}
+	sweepReplaced(dst)
+	return true
+}
+
+// sweepReplaced removes the copies moved aside by earlier runs. Each stays
+// until nothing holds it, so this is best effort by design and says
+// nothing when a file is still in use.
+func sweepReplaced(dst string) {
+	matches, err := filepath.Glob(dst + ".old-*")
+	if err != nil {
+		return
+	}
+	for _, m := range matches {
+		_ = os.Remove(m)
+	}
 }
 
 // addToUserPath adds a directory to the user's PATH on Windows.
@@ -395,4 +484,10 @@ func restore(path string) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// isPowerShell reports whether this profile is read by PowerShell, which
+// shares the # comment with the Bourne family and nothing else.
+func isPowerShell(profile string) bool {
+	return strings.EqualFold(filepath.Ext(profile), ".ps1")
 }

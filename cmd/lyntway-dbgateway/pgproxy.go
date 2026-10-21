@@ -260,7 +260,14 @@ func pgDialUpstream(u dbUpstream) (net.Conn, error) {
 	}
 	if resp[0] != 'S' {
 		tcpConn.Close()
-		return nil, fmt.Errorf("upstream refused SSL (responded %q)", resp[0])
+		// Names the fix. This is what a self-hosted deployment hits on its
+		// first run against an internal database, and the answer is not
+		// guessable: sslmode in the URL is not read, the scheme is what
+		// turns TLS on, so the remedy is to take the scheme off.
+		return nil, fmt.Errorf("upstream refused SSL (responded %q); "+
+			"this upstream is configured with TLS because its URL has a scheme. "+
+			"For a database that does not offer TLS, write the upstream without one "+
+			"— LYNTWAY_UPSTREAMS=\"name=host:5432/db\"", resp[0])
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

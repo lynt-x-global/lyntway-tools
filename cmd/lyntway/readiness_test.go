@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -222,5 +223,129 @@ func TestAScopedRunStillSucceedsWithoutAnAccount(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "Not signed in") {
 		t.Errorf("the run did not say the endpoint half was skipped:\n%s", buf.String())
+	}
+}
+
+// A pipeline has an environment, not a login.
+//
+// `readiness --fail-on-new` exists for CI, and `--upload`/`--sign` answered
+// "not signed in. Run lyntway login first" on any runner, because
+// loadConfig read ~/.lyntway/config.json and nothing else. `lyntway agent`
+// had documented the opposite precedence since it shipped.
+func TestTheEnvironmentIsASignIn(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	// No file, no variables: still not signed in.
+	t.Setenv("LYNTWAY_API_KEY", "")
+	t.Setenv("LYNTWAY_URL", "")
+	if _, err := loadConfig(); err == nil {
+		t.Error("an empty machine reported itself signed in")
+	}
+
+	// A key alone is a sign-in, and defaults to the hosted service.
+	t.Setenv("LYNTWAY_API_KEY", "lynt_sk_pipelinetestkey000000")
+	c, err := loadConfig()
+	if err != nil {
+		t.Fatalf("a key in the environment was refused: %v", err)
+	}
+	if c.Key != "lynt_sk_pipelinetestkey000000" {
+		t.Errorf("key = %q", c.Key)
+	}
+	if c.Origin != defaultOrigin {
+		t.Errorf("origin = %q, want the hosted service when LYNTWAY_URL is unset", c.Origin)
+	}
+
+	// A config file beats the environment. The first version of this had
+	// it the other way round and sent a proxy's reports to the real
+	// lyntway.com instead of the server the test had just started — which
+	// is what it would do to anybody who had run `lyntway login` with a
+	// stray LYNTWAY_API_KEY in their shell.
+	if _, err := saveConfig(config{Origin: "https://saved.example", Key: "lynt_sk_fromthefile"}); err != nil {
+		t.Fatal(err)
+	}
+	c, err = loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Key != "lynt_sk_fromthefile" || c.Origin != "https://saved.example" {
+		t.Errorf("the environment overrode a saved sign-in: key=%q origin=%q", c.Key, c.Origin)
+	}
+	if err := os.Remove(filepath.Join(home, ".lyntway", "config.json")); err != nil {
+		t.Fatal(err)
+	}
+
+	// With an address, a self-hosted deployment.
+	t.Setenv("LYNTWAY_URL", "https://lyntway.internal.example/")
+	c, err = loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Origin != "https://lyntway.internal.example" {
+		t.Errorf("origin = %q; the trailing slash should be trimmed", c.Origin)
+	}
+
+	// An address with no key is not a sign-in — it must still fall through
+	// to the file, or a self-hoster who set only LYNTWAY_URL would send
+	// unauthenticated requests and be told something unrelated.
+	t.Setenv("LYNTWAY_API_KEY", "")
+	if _, err := loadConfig(); err == nil {
+		t.Error("LYNTWAY_URL alone reported a sign-in; there is no key to authenticate with")
+	}
+}
+
+// An endpoint recorded with a scheme must match a scope written without
+// one, and the other way round.
+//
+// The scope was normalised and the destination was not, so a surface
+// entry of "https://lyntway.com" could not match a scope of
+// "lyntway.com" — nor of "https://lyntway.com", since that was reduced to
+// the host while the destination stayed whole. It was unmatchable by
+// anything anybody could type, and the run reported "nothing to check"
+// about an endpoint it had been authorised to check.
+func TestScopeMatchesAnEndpointHoweverItWasRecorded(t *testing.T) {
+	recorded := []string{"lyntway.com", "https://lyntway.com", "HTTPS://Lyntway.com/", "http://lyntway.com:80"}
+	scopes := []string{"lyntway.com", "https://lyntway.com", " LYNTWAY.COM "}
+
+	for _, scope := range scopes {
+		allowed := hostSet(scope)
+		for _, dest := range recorded {
+			if !allowed[scopeHost(dest)] {
+				t.Errorf("scope %q does not reach an endpoint recorded as %q", scope, dest)
+			}
+		}
+		// And something genuinely outside it is still outside.
+		for _, other := range []string{"api.openai.com", "https://api.anthropic.com", "evil-lyntway.com"} {
+			if allowed[scopeHost(other)] {
+				t.Errorf("scope %q reached %q, which is not in it", scope, other)
+			}
+		}
+	}
+}
+
+// The whole planner, not just the comparison: an in-scope endpoint has to
+// stop being listed as skipped.
+func TestAnInScopeEndpointIsNoLongerSkippedForBeingOutOfScope(t *testing.T) {
+	endpoints := []surfaceEndpoint{
+		{Destination: "https://lyntway.com", Method: "GET /v1/health"},
+		{Destination: "api.openai.com", Method: "POST /v1/chat/completions"},
+	}
+	_, skipped := planProbes(endpoints, hostSet("lyntway.com"), "https")
+
+	for _, s := range skipped {
+		if strings.Contains(s.Endpoint, "lyntway.com") && s.Detail == "not in scope" {
+			t.Errorf("an endpoint inside the scope was skipped for being outside it: %+v", s)
+		}
+	}
+	// The one genuinely outside is still skipped, and for that reason.
+	var sawOpenAI bool
+	for _, s := range skipped {
+		if strings.Contains(s.Endpoint, "api.openai.com") && s.Detail == "not in scope" {
+			sawOpenAI = true
+		}
+	}
+	if !sawOpenAI {
+		t.Error("an endpoint outside the scope was not skipped, so the scope stopped meaning anything")
 	}
 }

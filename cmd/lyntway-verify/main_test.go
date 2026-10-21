@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -331,5 +332,33 @@ func TestAReleasedHoldNamesWhoApprovedIt(t *testing.T) {
 	plain, plainRes := signedReceipt(t, nil)
 	if text := captureStdout(t, func() { report(false, plainRes, plain, nil) }); strings.Contains(text, "approval") {
 		t.Errorf("a receipt nobody had to decide mentions approval:\n%s", text)
+	}
+}
+
+// -keys takes a file and the help names a URL to get one from, so people
+// paste the URL. os.ReadFile then reported it as a bad filename — on
+// Windows, "The filename, directory name, or volume label syntax is
+// incorrect", which explains nothing and suggests nothing.
+func TestAURLPassedToKeysIsExplained(t *testing.T) {
+	_, err := loadKeyFile("https://lyntway.com/.well-known/lyntway-keys.json", keyFlag{})
+	if err == nil {
+		t.Fatal("a URL was accepted as a key file")
+	}
+	got := err.Error()
+	for _, want := range []string{
+		"not a URL",       // what is wrong
+		"fetches nothing", // why it is not simply downloaded for them
+		"curl",            // and the way through
+		"-o keys.json",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the error does not contain %q:\n%s", want, got)
+		}
+	}
+	// A real path still reports a real filesystem error.
+	if _, err := loadKeyFile(filepath.Join(t.TempDir(), "absent.json"), keyFlag{}); err == nil {
+		t.Error("a missing file was accepted")
+	} else if strings.Contains(err.Error(), "not a URL") {
+		t.Errorf("a plain path was mistaken for a URL: %v", err)
 	}
 }

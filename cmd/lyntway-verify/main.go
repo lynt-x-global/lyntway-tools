@@ -391,6 +391,24 @@ func readInput(path string) ([]byte, error) {
 }
 
 func loadKeyFile(path string, into keyFlag) ([]receipt.Revocation, error) {
+	// A URL is the natural mistake and deserves a real answer.
+	//
+	// -keys takes a file, and the help says where to get one — so people
+	// paste that URL. os.ReadFile then reports it as a bad filename,
+	// which on Windows reads "The filename, directory name, or volume
+	// label syntax is incorrect" and explains nothing.
+	//
+	// This verifier does not fetch anything, and that is the point of it:
+	// a check that reaches the issuer's server to decide whether the
+	// issuer's signature is good is not an independent check. So the
+	// remedy is to download the file, and it is spelled out rather than
+	// implied.
+	if strings.HasPrefix(strings.ToLower(path), "http://") || strings.HasPrefix(strings.ToLower(path), "https://") {
+		return nil, fmt.Errorf("-keys takes a file, not a URL. This verifier fetches nothing, "+
+			"so that checking a signature never depends on the party that made it. Download it first:\n"+
+			"  curl -fsSL %s -o keys.json\n"+
+			"  lyntway-verify -keys keys.json <receipt.json>", path)
+	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading key file: %w", err)

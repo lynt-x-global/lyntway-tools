@@ -30,7 +30,50 @@ import (
 	"github.com/lynt-x-global/lyntway-tools/agentsecrets"
 )
 
+// The tools this server offers, for the usage message.
+const mcpServerUsage = `lyntway mcp-server — MCP tool server for AI agents
+
+Usage:
+  lyntway mcp-server          speak MCP over stdio; an editor starts this, not a person
+
+Tools offered:
+  lyntway_status       whether Lyntway is configured here, and what is not covered
+  lyntway_setup        sign in; with an API key, saves it immediately
+  lyntway_scan         find .env files in a directory and report which carry keys
+  lyntway_history      the credentials this machine's coding agents have already seen
+  lyntway_migrate      move provider keys out of .env files and into Lyntway
+  lyntway_init         detect the AI tools installed here and route them
+  lyntway_full_setup   sign in, scan, migrate and route, in one call
+  lyntway_receipts     list recent local receipts from ~/.lyntway/receipts
+  lyntway_watch        watch a directory's .env files for new provider keys
+
+It reads JSON-RPC on stdin and writes it on stdout, so running it by hand
+looks like nothing happening — that is the protocol, not a fault. Put it in
+an editor's MCP configuration instead, which ` + "`lyntway init`" + ` does.
+
+It takes no argument.
+`
+
 func mcpServer(args []string) error {
+	// Arguments are refused rather than ignored.
+	//
+	// They used to be dropped on the floor, so `lyntway mcp-server --help`
+	// printed nothing and sat waiting on stdin — which to the person
+	// running it is indistinguishable from a hang. Every other command
+	// here answers --help, and the database gateway refuses an
+	// unrecognised flag for the same reason: starting on a typo is worse
+	// than printing this.
+	for _, a := range args {
+		switch a {
+		case "-h", "--help", "help":
+			fmt.Fprint(stdout, mcpServerUsage)
+			return nil
+		default:
+			return fmt.Errorf("mcp-server takes no argument, and got %q. "+
+				"It speaks MCP over stdio and is started by an editor; `lyntway mcp-server --help` explains", a)
+		}
+	}
+
 	reader := bufio.NewReader(os.Stdin)
 	writer := os.Stdout
 	var writeMu sync.Mutex

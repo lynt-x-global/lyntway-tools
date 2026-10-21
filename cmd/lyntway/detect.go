@@ -129,6 +129,9 @@ func shellProfile() string {
 	if h == "" {
 		return ""
 	}
+	if runtime.GOOS == "windows" {
+		return powershellProfile(h)
+	}
 	shell := filepath.Base(os.Getenv("SHELL"))
 	switch shell {
 	case "zsh":
@@ -146,6 +149,56 @@ func shellProfile() string {
 	default:
 		return ""
 	}
+}
+
+// powershellProfile is where PowerShell reads a per-user profile.
+//
+// Windows sets no $SHELL, so the switch below fell through to "" and the
+// summary reported the shell as "not installed" — on a machine that has
+// one, with nothing said about why and no way through. The consequence was
+// not cosmetic: the shell entry is what routes anything using the standard
+// SDKs, so on Windows that was every Python and Node application, silently.
+// Found by the first person to run this on Windows, which no test could
+// have done: filepath.Join resolves at compile time, so a Mac asking what
+// a Windows machine would do gets a Mac's answer.
+//
+// Two profiles exist and the names are not interchangeable: PowerShell 7
+// reads Documents\PowerShell, Windows PowerShell 5.1 reads
+// Documents\WindowsPowerShell. Whichever directory is already there is the
+// one in use; with both, 7 wins because a machine that has it is running
+// it. With neither, 5.1 is written, because it ships with Windows and 7
+// does not.
+//
+// Documents itself may be redirected into OneDrive, in which case the real
+// Documents is empty and writing there edits a file PowerShell will never
+// read. OneDrive's copy is preferred when it exists for that reason.
+func powershellProfile(home string) string {
+	const name = "Microsoft.PowerShell_profile.ps1"
+
+	docs := []string{}
+	if od := strings.TrimSpace(os.Getenv("OneDrive")); od != "" {
+		docs = append(docs, filepath.Join(od, "Documents"))
+	}
+	docs = append(docs, filepath.Join(home, "OneDrive", "Documents"), filepath.Join(home, "Documents"))
+
+	var fallback string
+	for _, d := range docs {
+		if !isDir(d) {
+			continue
+		}
+		for _, edition := range []string{"PowerShell", "WindowsPowerShell"} {
+			if dir := filepath.Join(d, edition); isDir(dir) {
+				return filepath.Join(dir, name)
+			}
+		}
+		if fallback == "" {
+			fallback = filepath.Join(d, "WindowsPowerShell", name)
+		}
+	}
+	if fallback != "" {
+		return fallback
+	}
+	return filepath.Join(home, "Documents", "WindowsPowerShell", name)
 }
 
 // scan looks at this machine and reports what it found.

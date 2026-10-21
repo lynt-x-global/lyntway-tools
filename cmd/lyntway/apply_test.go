@@ -530,3 +530,199 @@ func TestStatusDoesNotCallAShellRoutedUntilTheKeyIsPaired(t *testing.T) {
 		t.Errorf("a correctly configured Anthropic shell is not called routed:\n%s", line)
 	}
 }
+
+// Windows sets no $SHELL, so the shell entry reported "not installed" on a
+// machine that has one — and the shell entry is what routes everything
+// using the standard SDKs. Found by the first person to run this on
+// Windows; no test could have, because filepath.Join resolves at compile
+// time and a Mac asking what Windows would do gets a Mac's answer.
+func TestAPowerShellProfileIsWrittenInPowerShell(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Microsoft.PowerShell_profile.ps1")
+
+	if _, err := writeEnv(path, config{
+		Origin: "https://lyntway.com", Key: "lynt_sk_windowstest0000",
+		SigningKey: "sk-sign-test", KeyID: "key-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(body)
+
+	// Nothing Bourne-only may appear: PowerShell does not have export, and
+	// a profile carrying it errors on every new terminal.
+	if strings.Contains(got, "export ") {
+		t.Errorf("a PowerShell profile carries `export`, which it cannot run:\n%s", got)
+	}
+	for _, want := range []string{
+		`$env:OPENAI_BASE_URL = "https://lyntway.com/gw/openai/v1"`,
+		`$env:ANTHROPIC_BASE_URL = "https://lyntway.com/gw/anthropic"`,
+		`$env:LYNTWAY_KEY = "lynt_sk_windowstest0000"`,
+		`$env:LYNTWAY_SIGNING_KEY = "sk-sign-test"`,
+		`$env:ANTHROPIC_AUTH_TOKEN = $env:LYNTWAY_KEY`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q from:\n%s", want, got)
+		}
+	}
+	// And undo still finds its own block, since the markers are comments
+	// in both languages.
+	if left := removeBlock(got); strings.Contains(left, "LYNTWAY_KEY") {
+		t.Errorf("removeBlock left the block behind:\n%s", left)
+	}
+}
+
+// A posix profile must not drift into PowerShell syntax.
+func TestAPosixProfileIsUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".zshrc")
+	if _, err := writeEnv(path, config{Origin: "https://lyntway.com", Key: "k"}); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := os.ReadFile(path)
+	if !strings.Contains(string(body), `export OPENAI_BASE_URL=`) {
+		t.Errorf("a zsh profile lost its export lines:\n%s", body)
+	}
+	if strings.Contains(string(body), "$env:") {
+		t.Errorf("a zsh profile picked up PowerShell syntax:\n%s", body)
+	}
+}
+
+// Which profile file PowerShell actually reads, asked from any platform.
+func TestThePowerShellProfilePathFollowsWhatExists(t *testing.T) {
+	// Nothing present: Windows PowerShell, which ships with the OS.
+	home := t.TempDir()
+	if got := powershellProfile(home); !strings.HasSuffix(got,
+		filepath.Join("Documents", "WindowsPowerShell", "Microsoft.PowerShell_profile.ps1")) {
+		t.Errorf("empty machine → %q", got)
+	}
+
+	// PowerShell 7 present: it wins, because a machine that has it runs it.
+	home7 := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home7, "Documents", "PowerShell"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home7, "Documents", "WindowsPowerShell"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := powershellProfile(home7); !strings.Contains(got, filepath.Join("Documents", "PowerShell")) {
+		t.Errorf("with both editions → %q, want the 7 directory", got)
+	}
+
+	// Documents redirected into OneDrive: the real Documents is the empty
+	// one, and writing there edits a file PowerShell never reads.
+	od := t.TempDir()
+	t.Setenv("OneDrive", od)
+	if err := os.MkdirAll(filepath.Join(od, "Documents", "WindowsPowerShell"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plain := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(plain, "Documents"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := powershellProfile(plain); !strings.HasPrefix(got, od) {
+		t.Errorf("with Documents redirected → %q, want it under OneDrive", got)
+	}
+}
+
+// A fresh Windows machine has no Documents\WindowsPowerShell until
+// something writes a profile into it.
+func TestTheProfileDirectoryIsCreatedWhenAbsent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Documents", "WindowsPowerShell", "Microsoft.PowerShell_profile.ps1")
+	if _, err := os.Stat(filepath.Dir(path)); err == nil {
+		t.Fatal("the directory already exists, so this proves nothing")
+	}
+	if _, err := writeEnv(path, config{Origin: "https://lyntway.com", Key: "k"}); err != nil {
+		t.Fatalf("writing into a directory that does not exist: %v", err)
+	}
+	if _, err := os.ReadFile(path); err != nil {
+		t.Fatalf("the profile was not written: %v", err)
+	}
+}
+
+// Windows refuses to overwrite a file another process holds open, and an
+// executable is held open while it runs. The first Windows tester got
+// "The process cannot access the file because it is being used by another
+// process" from ~/.lyntway/bin/lyntway.exe, and because the hook install
+// refuses when the durable copy cannot be made, neither editor got a hook.
+//
+// Simulated here by making the destination unwritable, which is the same
+// shape: WriteFile fails, Rename is still allowed.
+func TestAFileInUseIsReplacedByRenamingItAside(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the mode bits this uses to make the write fail")
+	}
+	dir := t.TempDir()
+	src := filepath.Join(dir, "new")
+	dst := filepath.Join(dir, "held")
+	if err := os.WriteFile(src, []byte("the new binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, []byte("the old binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Unwritable file in a writable directory: WriteFile fails, Rename works.
+	if err := os.Chmod(dst, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, []byte("x"), 0o755); err == nil {
+		t.Skip("this filesystem allows writing a read-only file, so the failure cannot be staged")
+	}
+
+	if err := copyFile(src, dst); err != nil {
+		t.Fatalf("copyFile gave up on a destination it could not write: %v", err)
+	}
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "the new binary" {
+		t.Errorf("destination holds %q, want the new binary", got)
+	}
+	// Whatever was there is still runnable by anything that had it open,
+	// and the sweep takes it on a later run.
+	aside, _ := filepath.Glob(dst + ".old-*")
+	if len(aside) != 0 {
+		t.Errorf("the moved-aside copy should have been swept once written: %v", aside)
+	}
+}
+
+// And a destination that cannot be renamed either is still an error, not
+// a silent success.
+func TestAnUnreplaceableDestinationIsStillAnError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the mode bits this uses")
+	}
+	dir := t.TempDir()
+	src := filepath.Join(dir, "new")
+	if err := os.WriteFile(src, []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	locked := filepath.Join(dir, "locked")
+	if err := os.MkdirAll(locked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(locked, "held")
+	if err := os.WriteFile(dst, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The file read-only so the write fails, and the directory read-only
+	// so the rename fails too. A read-only directory alone is not enough:
+	// truncating an existing file needs permission on the file, not on
+	// the directory holding it.
+	if err := os.Chmod(dst, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(locked, 0o755)
+
+	if err := copyFile(src, dst); err == nil {
+		t.Error("copyFile reported success on a destination it could neither write nor rename")
+	}
+}

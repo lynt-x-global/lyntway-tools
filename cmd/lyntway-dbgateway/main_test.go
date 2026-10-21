@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -84,5 +85,26 @@ func TestAnExistingReceiptsFileInTheWorkingDirectoryIsStillUsed(t *testing.T) {
 
 	if got := defaultReceiptsPath(); got != "./receipts.jsonl" {
 		t.Fatalf("default receipts path is %q; an installation already appending to ./receipts.jsonl must keep its chain", got)
+	}
+}
+
+// The only documented upstream form forced TLS, and nothing said so.
+//
+// useTLS is true for any URL containing "://", which every example in the
+// help had. A self-hosted deployment pointing at an internal Postgres
+// without TLS got "upstream refused SSL" and no way to learn that taking
+// the scheme off is the fix — sslmode in the URL is not read.
+func TestTheHelpShowsBothUpstreamForms(t *testing.T) {
+	help := usage
+
+	if !strings.Contains(help, "://") {
+		t.Error("the help no longer shows a TLS upstream")
+	}
+	// The schemeless form, and what it means.
+	if !strings.Contains(help, "without") {
+		t.Error("the help does not show an upstream reached without TLS")
+	}
+	if !strings.Contains(help, "sslmode") {
+		t.Error("the help does not say sslmode is ignored; somebody will put it in the URL and believe it took effect")
 	}
 }

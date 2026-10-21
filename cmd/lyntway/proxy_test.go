@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -513,10 +514,23 @@ func TestOnlyCountsReachTheAccount(t *testing.T) {
 	}
 	rs := readReceipts(t, p.receiptsPath)
 	for i, raw := range reports {
-		body := string(raw)
+		// Opaque identifiers are taken out before the scan.
+		//
+		// A report carries a receipt reference and a host:port, both of
+		// which are hex or digits chosen at random, and the list below
+		// includes short numeric fragments of the card. On 21 Oct the
+		// image build failed because a receipt id came out as
+		// rcpt_6afd6c41113997cafb96a3db — "4111" is in there, and the
+		// test said a card number had left the machine when none had.
+		//
+		// Removing the identifiers rather than removing the fragment from
+		// the list: a leak of the first four digits alone is still a leak,
+		// and the whole point of scanning the raw body is to catch content
+		// arriving somewhere the struct below does not model.
+		body := identifiers.ReplaceAllString(string(raw), "")
 		for _, forbidden := range []string{testCard, "4111", testEmail, "priya", "Charge", "Noted", "content", "digest", "messages", "text", "sha256"} {
 			if strings.Contains(strings.ToLower(body), strings.ToLower(forbidden)) {
-				t.Errorf("report %d carries %q, which must never leave the machine:\n%s", i, forbidden, body)
+				t.Errorf("report %d carries %q, which must never leave the machine:\n%s", i, forbidden, string(raw))
 			}
 		}
 		var sent struct {
@@ -861,3 +875,8 @@ func TestRunProxyWritesThePIDFileAndRemovesIt(t *testing.T) {
 		t.Errorf("the summary printed a value:\n%s", text)
 	}
 }
+
+// identifiers matches the opaque values a report legitimately carries: a
+// receipt reference and a host:port. Both are random, both can contain any
+// run of digits, and neither is content.
+var identifiers = regexp.MustCompile(`rcpt_[0-9a-f]+|\b\d{1,3}(?:\.\d{1,3}){3}:\d+`)

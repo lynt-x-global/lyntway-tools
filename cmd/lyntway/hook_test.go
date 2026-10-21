@@ -631,3 +631,64 @@ func TestOnlyAFoundCredentialCanBlockAPrompt(t *testing.T) {
 		_ = err // an error here is reported and the prompt proceeds; it is not a block.
 	}
 }
+
+// A refusal must say what the file is, not only what it is not.
+//
+// A Windows tester hit this on Cursor's hooks.json. "is not a JSON
+// object; nothing written" named neither the shape nor a way forward, so
+// the only move left was to send us the file.
+func TestARefusalNamesWhatTheFileActuallyIs(t *testing.T) {
+	cases := []struct {
+		name, body, want string
+	}{
+		{"array", `[{"command":"x"}]`, "JSON array"},
+		{"comments", "{\n  // Cursor writes these\n  \"hooks\": {}\n}", "comments"},
+		{"prose", "this file was written by hand\n", "does not start with {"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "hooks.json")
+			if err := os.WriteFile(path, []byte(c.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := readJSONObject(path)
+			if err == nil {
+				t.Fatalf("%s was accepted as a JSON object", c.name)
+			}
+			if !strings.Contains(err.Error(), c.want) {
+				t.Errorf("error does not say %q:\n  %v", c.want, err)
+			}
+			// And it always says what shape is expected.
+			if !strings.Contains(err.Error(), `{"hooks"`) {
+				t.Errorf("the error does not show the shape it wants:\n  %v", err)
+			}
+			// The file is untouched.
+			if got, _ := os.ReadFile(path); string(got) != c.body {
+				t.Error("a refused file was modified")
+			}
+		})
+	}
+}
+
+// With --yes nobody is being asked, so the text written for somebody
+// about to be asked must not appear — it ended up inside a failure
+// message, telling a tester what the editor "will run" directly after
+// saying nothing had been written.
+func TestNoConsentTextWhenNobodyIsBeingAsked(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	out := capture(t, "", func() {
+		if err := hookInstall([]string{"--yes"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if strings.Contains(out, "will run this before every prompt") {
+		t.Errorf("the consent explanation was printed with --yes:\n%s", out)
+	}
+	// It still reports what it did.
+	if !strings.Contains(out, "✓") {
+		t.Errorf("the install said nothing about what it wrote:\n%s", out)
+	}
+}

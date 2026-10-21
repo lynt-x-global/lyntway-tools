@@ -583,10 +583,18 @@ func envOr(key, fallback string) string {
 const usage = `lyntway-dbgateway — govern database wire-protocol traffic
 
 Usage:
-  LYNTWAY_UPSTREAMS="neon=postgresql://host:5432/db" lyntway-dbgateway
+  LYNTWAY_UPSTREAMS="neon=postgresql://host:5432/db" lyntway-dbgateway   # with TLS
+  LYNTWAY_UPSTREAMS="internal=db.corp:5432/app"      lyntway-dbgateway   # without
 
 Listens on TCP ports for PostgreSQL, MySQL and MongoDB wire protocols,
 proxies connections to real databases, and issues receipts for every query.
+
+An upstream written with a scheme is reached over TLS, and so is any host
+belonging to a managed provider. Written without one it is reached in the
+clear, which is what an internal database on a private network usually
+needs. sslmode in the URL is not read: the form of the upstream is what
+decides, so that a connection cannot be quietly downgraded by a query
+string somebody copied.
 
 Environment:
   LYNTWAY_UPSTREAMS   Database upstreams (name=url,name=url)

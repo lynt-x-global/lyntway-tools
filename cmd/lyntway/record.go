@@ -82,11 +82,28 @@ func undoRecorded() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	var restored int
+	var restored, forgotten int
 	var remaining []changedFile
 	for _, f := range r.Files {
 		body, err := os.ReadFile(f.Backup)
 		if err != nil {
+			// A file that is gone, whose backup is also gone, needs
+			// nothing done and is dropped from the record.
+			//
+			// A Windows tester ran undo and got fourteen of these in a
+			// row, every one naming a Go test's temporary directory from
+			// three weeks earlier. The directories had been swept, the
+			// backups with them, and there was nothing to restore
+			// anywhere — but the output said "restore it by hand"
+			// fourteen times and a successful undo read as a broken one.
+			//
+			// When the file is still there and the backup is not, the
+			// problem is real and is still reported: something was
+			// changed and cannot be put back.
+			if _, statErr := os.Stat(f.Path); os.IsNotExist(statErr) {
+				forgotten++
+				continue
+			}
 			fmt.Fprintf(stdout, "  ✗ %s — its backup %s is gone; restore it by hand\n", f.Path, filepath.Base(f.Backup))
 			remaining = append(remaining, f)
 			continue
@@ -102,6 +119,13 @@ func undoRecorded() (int, error) {
 		}
 		fmt.Fprintf(stdout, "  ✓ %s (from %s)\n", f.Path, filepath.Base(f.Backup))
 		restored++
+	}
+	// Said once, with a number, rather than once per entry. These are
+	// almost always a test run's temporary directories, swept along with
+	// their backups, and a line each buried the real result.
+	if forgotten > 0 {
+		fmt.Fprintf(stdout, "  · %d record%s dropped — the file and its backup are both gone, so there was nothing to put back\n",
+			forgotten, pluralS(forgotten))
 	}
 	for _, dir := range r.Gitignores {
 		if ok, err := unignoreBackups(dir); err != nil {

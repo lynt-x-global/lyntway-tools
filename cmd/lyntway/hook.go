@@ -319,12 +319,20 @@ func hookInstall(args []string) error {
 			"stop working when this one is cleaned up: %w", err)
 	}
 
-	fmt.Fprintf(stdout, "\n%s will run this before every prompt:\n\n  %s\n\n", editor, hookCommand(*cursor))
-	fmt.Fprintf(stdout, "It reads the prompt, looks for provider keys and other credentials, and refuses\n")
-	fmt.Fprintf(stdout, "the prompt if one is there. It sends nothing anywhere.\n\n")
-	if !*yes && !ask(fmt.Sprintf("Add it to %s? A backup is written first. [y/N] ", path)) {
-		fmt.Fprintln(stdout, "Nothing was changed.")
-		return nil
+	// The explanation is for somebody about to be asked. With --yes
+	// nobody is being asked, and `secure` has already explained and taken
+	// the answer — so printing it there put "Cursor will run this before
+	// every prompt" into the middle of a failure that had just said
+	// nothing was written. Two sentences contradicting each other, in one
+	// message, about whether the machine was changed.
+	if !*yes {
+		fmt.Fprintf(stdout, "\n%s will run this before every prompt:\n\n  %s\n\n", editor, hookCommand(*cursor))
+		fmt.Fprintf(stdout, "It reads the prompt, looks for provider keys and other credentials, and refuses\n")
+		fmt.Fprintf(stdout, "the prompt if one is there. It sends nothing anywhere.\n\n")
+		if !ask(fmt.Sprintf("Add it to %s? A backup is written first. [y/N] ", path)) {
+			fmt.Fprintln(stdout, "Nothing was changed.")
+			return nil
+		}
 	}
 
 	changed, saved, err := writeHook(path, *cursor)
@@ -813,9 +821,38 @@ func readJSONObject(path string) (map[string]json.RawMessage, error) {
 		return doc, nil
 	}
 	if err := json.Unmarshal(body, &doc); err != nil {
-		return nil, fmt.Errorf("%s is not a JSON object; nothing written", path)
+		// What it actually is, not only what it is not.
+		//
+		// A Windows tester hit this on Cursor's hooks.json and the
+		// message named neither the shape nor a way forward, so the only
+		// move left was to send us the file. An editor writing JSON with
+		// comments, a trailing comma, or an array instead of an object
+		// are all different problems with different answers.
+		return nil, fmt.Errorf("%s: %s; nothing written. Open it and check — "+
+			"this reads a JSON object like {\"hooks\": …}", path, describeJSON(body, err))
 	}
 	return doc, nil
+}
+
+// describeJSON says what a file that is not a JSON object turned out to
+// be, in the words somebody would use to fix it.
+func describeJSON(body []byte, err error) string {
+	trimmed := strings.TrimSpace(string(body))
+	switch {
+	case strings.HasPrefix(trimmed, "["):
+		return "this is a JSON array, not an object"
+	case strings.Contains(trimmed, "//") || strings.Contains(trimmed, "/*"):
+		return "this looks like JSON with comments, which is not JSON"
+	case strings.Contains(err.Error(), "invalid character '}'"),
+		strings.Contains(err.Error(), "invalid character ']'"):
+		return "there is a trailing comma"
+	case !strings.HasPrefix(trimmed, "{"):
+		if len(trimmed) > 40 {
+			trimmed = trimmed[:40] + "…"
+		}
+		return fmt.Sprintf("it does not start with { — it starts %q", trimmed)
+	}
+	return "it is not valid JSON: " + err.Error()
 }
 
 func writeJSONObject(path string, doc map[string]json.RawMessage) error {

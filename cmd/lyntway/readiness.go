@@ -370,7 +370,7 @@ func planProbes(endpoints []surfaceEndpoint, allowed map[string]bool, scheme str
 		item := probeResult{Endpoint: label, Host: ep.Destination, Verdict: verdictSkipped}
 
 		switch {
-		case !allowed[ep.Destination]:
+		case !allowed[scopeHost(ep.Destination)]:
 			item.Detail = "not in scope"
 		case !ok:
 			item.Detail = "no method and path recorded, so there is nothing to ask for"
@@ -479,16 +479,9 @@ func splitMethodPath(recorded string) (method, path string, ok bool) {
 func hostSet(scope string) map[string]bool {
 	out := map[string]bool{}
 	for _, h := range strings.Split(scope, ",") {
-		h = strings.TrimSpace(strings.ToLower(h))
-		if h == "" {
-			continue
+		if h = scopeHost(h); h != "" {
+			out[h] = true
 		}
-		// A host typed with a scheme is what everybody types. Take the host
-		// out of it rather than refusing a reasonable thing.
-		if u, err := url.Parse(h); err == nil && u.Host != "" {
-			h = u.Host
-		}
-		out[h] = true
 	}
 	return out
 }
@@ -505,4 +498,37 @@ func hostsOf(endpoints []surfaceEndpoint) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// scopeHost reduces an address to the host, for comparing one against
+// another.
+//
+// Not agent_mcp.go's hostOnly, which answers "" for anything without an
+// http scheme — here a bare "lyntway.com" is the ordinary way somebody
+// writes a scope and has to survive.
+//
+// Only the scope was normalised before, and the recorded destination was
+// compared raw. An endpoint recorded as "https://lyntway.com" could not
+// match a scope of "lyntway.com" — nor of "https://lyntway.com", since
+// that was reduced to the host and the destination was not. It was
+// unmatchable by any scope anybody could type, and the run reported
+// "nothing to check" over an endpoint it had been authorised to check.
+// A readiness run saying it found nothing, about a surface it declined to
+// look at, is the shape of error this tool exists to avoid.
+func scopeHost(s string) string {
+	s = strings.TrimSpace(strings.ToLower(s))
+	if s == "" {
+		return ""
+	}
+	u, err := url.Parse(s)
+	if err != nil || u.Hostname() == "" {
+		return s
+	}
+	// A default port is the same host written longer. Keeping it meant
+	// "http://lyntway.com:80" missed a scope of "lyntway.com".
+	host, port := u.Hostname(), u.Port()
+	if port == "" || (u.Scheme == "https" && port == "443") || (u.Scheme == "http" && port == "80") {
+		return host
+	}
+	return host + ":" + port
 }

@@ -50,6 +50,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -164,7 +165,7 @@ func main() {
 	case "help":
 		printUsage()
 	default:
-		fmt.Fprintf(os.Stderr, "lyntway: no command called %q\n\n", args[0])
+		writeUnknownCommand(os.Stderr, args[0])
 		printUsage()
 		os.Exit(2)
 	}
@@ -250,11 +251,50 @@ func configPath() (string, error) {
 	return filepath.Join(h, ".lyntway", "config.json"), nil
 }
 
+// loadConfig finds the key and address this machine should use.
+//
+// The file `lyntway login` writes, then the environment. `readiness
+// --upload` and `--sign` answered "not signed in" on a CI runner with
+// LYNTWAY_API_KEY set — the one place `--fail-on-new` exists to run and
+// the one place `lyntway login` cannot be completed — so the environment
+// had to count for something.
+//
+// It counts only when there is no file, and that order is deliberate. The
+// first version of this put the environment first, to match what
+// `lyntway agent` documents. It broke a test by sending a proxy's reports
+// to the real lyntway.com instead of the test's own server, which is the
+// same thing it would have done to somebody who had run `lyntway login`
+// and happened to have LYNTWAY_API_KEY left in their shell from something
+// else: their traffic quietly reported somewhere they did not choose.
+//
+// `agent` keeps the opposite order on purpose and says so — it is a
+// daemon an RMM tool deploys by setting the environment, where no login
+// has happened. A person at a terminal has logged in deliberately, and
+// that is the stronger signal.
+//
+// LYNTWAY_URL without a key is not a sign-in either: an address with
+// nothing to authenticate with is not credentials.
 func loadConfig() (config, error) {
 	path, err := configPath()
 	if err != nil {
 		return config{}, err
 	}
+	if body, err := os.ReadFile(path); err == nil {
+		var c config
+		if err := json.Unmarshal(body, &c); err != nil {
+			return config{}, fmt.Errorf("the saved settings are unreadable; run `lyntway login` again")
+		}
+		return c, nil
+	}
+
+	if key := strings.TrimSpace(os.Getenv("LYNTWAY_API_KEY")); key != "" {
+		origin := strings.TrimRight(strings.TrimSpace(os.Getenv("LYNTWAY_URL")), "/")
+		if origin == "" {
+			origin = defaultOrigin
+		}
+		return config{Origin: origin, Key: key}, nil
+	}
+
 	body, err := os.ReadFile(path)
 	if err != nil {
 		return config{}, fmt.Errorf("not signed in on this machine — run `lyntway login` first")
@@ -446,7 +486,7 @@ func initialise(args []string) error {
 				fmt.Println("      provided it is set before this block.")
 			} else {
 				fmt.Println("      No OPENAI_API_KEY is set in this shell. When you set one, pair it:")
-				fmt.Printf("        export OPENAI_API_KEY=\"%s~YOUR_OPENAI_KEY\"\n", c.Key)
+				fmt.Printf("        %s\n", setEnvLine("OPENAI_API_KEY", c.Key+"~YOUR_OPENAI_KEY"))
 			}
 			fmt.Println("      ANTHROPIC_AUTH_TOKEN carries your Lyntway key; ANTHROPIC_API_KEY stays your own.")
 			fmt.Println("      Run `lyntway status` in a new terminal to confirm before relying on it.")
@@ -647,11 +687,11 @@ func shellStatusLine(t target, c config, getenv func(string) string) string {
 		// Not pointed at us in this shell; nothing to say about the key.
 	case getenv("OPENAI_API_KEY") == "":
 		detail = append(detail, "OpenAI: no OPENAI_API_KEY in this shell. When you set one, pair it:",
-			fmt.Sprintf(`  export OPENAI_API_KEY="%s~YOUR_OPENAI_KEY"`, c.Key))
+			"  "+setEnvLine("OPENAI_API_KEY", c.Key+"~YOUR_OPENAI_KEY"))
 	case !paired(getenv("OPENAI_API_KEY"), c.Key):
 		broken = append(broken, "OpenAI")
 		detail = append(detail, "OpenAI: OPENAI_API_KEY is not paired with your Lyntway key, so every call is refused (401). Set:",
-			fmt.Sprintf(`  export OPENAI_API_KEY="%s~YOUR_OPENAI_KEY"`, c.Key))
+			"  "+setEnvLine("OPENAI_API_KEY", c.Key+"~YOUR_OPENAI_KEY"))
 	default:
 		routed = append(routed, "OpenAI")
 	}
@@ -666,13 +706,13 @@ func shellStatusLine(t target, c config, getenv func(string) string) string {
 		broken = append(broken, "Anthropic")
 		detail = append(detail, "Anthropic: ANTHROPIC_API_KEY carries the tilde pair, but Anthropic's SDK sends it in a header",
 			"  the gateway does not authenticate, so every call is refused (401). Keep your own key there and set:",
-			fmt.Sprintf(`  export ANTHROPIC_AUTH_TOKEN="%s"`, c.Key))
+			"  "+setEnvLine("ANTHROPIC_AUTH_TOKEN", c.Key))
 	case getenv("ANTHROPIC_API_KEY") == "":
 		detail = append(detail, "Anthropic: no ANTHROPIC_API_KEY in this shell; nothing to route until one is set.")
 	case getenv("ANTHROPIC_AUTH_TOKEN") != c.Key:
 		broken = append(broken, "Anthropic")
 		detail = append(detail, "Anthropic: ANTHROPIC_AUTH_TOKEN is not your Lyntway key, so every call is refused (401). Set:",
-			fmt.Sprintf(`  export ANTHROPIC_AUTH_TOKEN="%s"`, c.Key))
+			"  "+setEnvLine("ANTHROPIC_AUTH_TOKEN", c.Key))
 	default:
 		routed = append(routed, "Anthropic")
 	}
@@ -774,4 +814,37 @@ func undo() error {
 	fmt.Printf("\nDone. Backups are left in place; delete them when you are satisfied.\n")
 	fmt.Println("Open a new terminal for the shell settings to take effect.")
 	return nil
+}
+
+// writeUnknownCommand says which build is running and how to get a newer
+// one.
+//
+// A tester ran `npx lyntway secure` against a build predating the command
+// and read "no command called \"secure\"" as the product not having the
+// feature — on the day the npm page told them to run it. npx reuses what
+// it already has, a global install or its own cache, so an old binary
+// answering a new instruction is the ordinary case rather than the odd
+// one, and the message that met them named no way through.
+func writeUnknownCommand(w io.Writer, name string) {
+	fmt.Fprintf(w, "lyntway: no command called %q\n", name)
+	fmt.Fprintf(w, "This is lyntway %s. If you expected %q, it may have arrived in a later\n", version, name)
+	fmt.Fprintf(w, "release than the one running here — `npx lyntway@latest %s`, or `brew upgrade\n", name)
+	fmt.Fprintf(w, "lyntway`. The commands this build has are below.\n\n")
+}
+
+// setEnvLine is how to set a variable in the shell the reader is using.
+//
+// Every one of these printed `export NAME="value"` on Windows, where it
+// is not a command. The first Windows tester was shown it directly under
+// a line confirming their PowerShell profile had been written — advice in
+// one language about a file in another.
+//
+// PowerShell is decided by the platform rather than the profile path
+// here, because this is about the terminal somebody is typing into, not
+// about a file being edited.
+func setEnvLine(name, value string) string {
+	if runtime.GOOS == "windows" {
+		return fmt.Sprintf(`$env:%s = "%s"`, name, value)
+	}
+	return fmt.Sprintf(`export %s="%s"`, name, value)
 }

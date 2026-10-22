@@ -257,6 +257,20 @@ type localProxy struct {
 	// state: the receipts on disk are the record either way.
 	reporter *proxyReporter
 
+	// upstreamSigner signs the traffic this listener forwards, and is nil
+	// unless the upstream IS the service this machine is signed in to.
+	//
+	// A key that registered a signing key is held to it on every request.
+	// Until this existed the proxy signed its reports and not the traffic,
+	// so `lyntway keys sign` — the strongest step we offer — was what broke
+	// `lyntway guard`, with a 401 bad_signature after the governing had
+	// already worked.
+	//
+	// Nil for a provider on purpose. A web-bot-auth signature means nothing
+	// at api.openai.com, and a provider that checks its own would be handed
+	// a second one to argue with.
+	upstreamSigner *requestSigner
+
 	mu       sync.Mutex
 	requests int
 	findings map[detect.Class]int
@@ -351,36 +365,62 @@ func newLocalProxy(opts proxyOptions) (*localProxy, error) {
 		return nil, fmt.Errorf("creating a token scope: %w", err)
 	}
 
+	// Loaded whenever this machine is signed in, not only when reporting:
+	// forwarded traffic needs it too, and `guard --report=false` still has
+	// to reach a gateway that demands a signature.
+	var apiSigner *requestSigner
+	if signedIn {
+		apiSigner, err = loadRequestSigner(c)
+		if err != nil {
+			return nil, err
+		}
+	}
 	var reporter *proxyReporter
 	if opts.Report && signedIn {
 		// The reports go to the account under this machine's key, and a
 		// key that registered a signing key is refused unsigned.
-		requestSigner, err := loadRequestSigner(c)
-		if err != nil {
-			return nil, err
-		}
-		reporter = newProxyReporter(c, requestSigner)
+		reporter = newProxyReporter(c, apiSigner)
+	}
+	var upstreamSigner *requestSigner
+	if apiSigner != nil && sameHost(upstream, c.Origin) {
+		upstreamSigner = apiSigner
 	}
 
 	return &localProxy{
-		engine:       engine,
-		scope:        scope,
-		upstream:     upstream,
-		name:         name,
-		label:        label,
-		tool:         tool,
-		chain:        label + "/" + name,
-		onDecision:   opts.onDecision,
-		onUsage:      opts.onUsage,
-		client:       &http.Client{Transport: &http.Transport{Proxy: nil}},
-		receiptsPath: receiptsPath,
-		sink:         sink,
-		keyID:        signer.KeyID(),
-		keyNote:      keyNote,
-		reporter:     reporter,
-		findings:     make(map[detect.Class]int),
-		tokens:       make(map[string]usage.TokenUsage),
+		engine:         engine,
+		scope:          scope,
+		upstream:       upstream,
+		name:           name,
+		label:          label,
+		tool:           tool,
+		chain:          label + "/" + name,
+		onDecision:     opts.onDecision,
+		onUsage:        opts.onUsage,
+		client:         &http.Client{Transport: &http.Transport{Proxy: nil}},
+		receiptsPath:   receiptsPath,
+		sink:           sink,
+		keyID:          signer.KeyID(),
+		keyNote:        keyNote,
+		reporter:       reporter,
+		upstreamSigner: upstreamSigner,
+		findings:       make(map[detect.Class]int),
+		tokens:         make(map[string]usage.TokenUsage),
 	}, nil
+}
+
+// sameHost reports whether the upstream is the origin this machine is
+// signed in to. Host and not scheme: a self-hosted deployment reached over
+// http on a private network is still the same service, and the question
+// here is only "is this ours".
+func sameHost(upstream *url.URL, origin string) bool {
+	if upstream == nil || strings.TrimSpace(origin) == "" {
+		return false
+	}
+	o, err := url.Parse(strings.TrimSuffix(strings.TrimSpace(origin), "/"))
+	if err != nil || o.Host == "" {
+		return false
+	}
+	return strings.EqualFold(upstream.Host, o.Host)
 }
 
 func (p *localProxy) close() {
@@ -768,6 +808,18 @@ func (p *localProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	req.Header.Del("Accept-Encoding")
 	req.Header.Del("Content-Length")
 	req.ContentLength = int64(len(outRes.Content))
+
+	// Last, because the signature covers @method, @authority, @path and
+	// the digest of the body being sent — which is the governed body, not
+	// the one that arrived. Signing earlier would sign a request that no
+	// longer exists.
+	if p.upstreamSigner != nil {
+		if err := p.upstreamSigner.sign(req, outRes.Content); err != nil {
+			p.writeProxyError(w, http.StatusInternalServerError, "lyntway_internal",
+				"the request could not be signed: "+err.Error(), outRes.Receipt.ID)
+			return
+		}
+	}
 
 	resp, err := p.client.Do(req)
 	if err != nil {

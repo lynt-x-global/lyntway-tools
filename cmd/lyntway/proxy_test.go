@@ -880,3 +880,141 @@ func TestRunProxyWritesThePIDFileAndRemovesIt(t *testing.T) {
 // receipt reference and a host:port. Both are random, both can contain any
 // run of digits, and neither is content.
 var identifiers = regexp.MustCompile(`rcpt_[0-9a-f]+|\b\d{1,3}(?:\.\d{1,3}){3}:\d+`)
+
+// Defect #2 of the October acceptance run: `lyntway guard` governed and
+// substituted correctly, then the gateway answered 401 bad_signature —
+// "must carry a valid web-bot-auth signature".
+//
+// A key that registered a signing key is held to it on every request. The
+// proxy signed its reports to /v1/attest and did not sign the traffic it
+// forwarded, so the moment somebody took the strongest step we offer —
+// `lyntway keys sign` — the headline command stopped working for them.
+//
+// Signing is conditional on the upstream being the service this machine is
+// signed in to. A signature on a request to api.openai.com means nothing
+// there, and handing a provider that checks its own a second one to argue
+// with is a defect of a different shape.
+func TestForwardedTrafficIsSignedWhenTheUpstreamIsOurs(t *testing.T) {
+	type seen struct {
+		sigInput string
+		sig      string
+		digest   string
+	}
+	var got seen
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = seen{
+			sigInput: r.Header.Get("Signature-Input"),
+			sig:      r.Header.Get("Signature"),
+			digest:   r.Header.Get("Content-Digest"),
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"ok"}}]}`)
+	}))
+	defer upstream.Close()
+
+	// A machine that has run `keys sign`, signed in to the same host the
+	// proxy forwards to — which is what routing a tool through the gateway
+	// means.
+	c, _ := signedMachine(t, "")
+	c.Origin = upstream.URL
+	if _, err := saveConfig(c); err != nil {
+		t.Fatal(err)
+	}
+
+	base, _ := startProxy(t, upstream.URL, proxyOptions{Name: "openai"})
+	res, err := http.Post(base+"/v1/chat/completions", "application/json",
+		strings.NewReader(`{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}`))
+	if err != nil {
+		t.Fatalf("posting through the proxy: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(res.Body)
+		t.Fatalf("status = %d: %s", res.StatusCode, body)
+	}
+
+	if got.sigInput == "" || got.sig == "" {
+		t.Fatalf("the forwarded request carried no signature, so a key registered with "+
+			"`lyntway keys sign` is refused 401 bad_signature:\n  Signature-Input: %q\n  Signature: %q",
+			got.sigInput, got.sig)
+	}
+	if got.digest == "" {
+		t.Error("no Content-Digest, so the signature does not cover the body")
+	}
+	if !strings.Contains(got.sigInput, "keyid=") {
+		t.Errorf("Signature-Input names no key: %q", got.sigInput)
+	}
+}
+
+// And a provider is never handed one.
+func TestForwardedTrafficToAProviderIsNotSigned(t *testing.T) {
+	var sigInput string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sigInput = r.Header.Get("Signature-Input")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"ok"}}]}`)
+	}))
+	defer upstream.Close()
+
+	// Signed in to one host, forwarding to another: the ordinary case,
+	// where the proxy sits in front of a provider directly.
+	c, _ := signedMachine(t, "")
+	c.Origin = "https://govern.example"
+	if _, err := saveConfig(c); err != nil {
+		t.Fatal(err)
+	}
+
+	base, _ := startProxy(t, upstream.URL, proxyOptions{Name: "openai"})
+	res, err := http.Post(base+"/v1/chat/completions", "application/json",
+		strings.NewReader(`{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}`))
+	if err != nil {
+		t.Fatalf("posting through the proxy: %v", err)
+	}
+	defer res.Body.Close()
+
+	if sigInput != "" {
+		t.Errorf("a provider was sent a web-bot-auth signature it did not ask for: %q", sigInput)
+	}
+}
+
+// The whole of defect #2, end to end: a gateway that actually verifies.
+//
+// The test above proves the headers are present. This one proves they are
+// right — it forwards through the proxy into the same webbotauth.Verify
+// the service uses, which is what answered the acceptance run's 401. The
+// Authorization header has to survive the hop too, since the gateway
+// checks the key before it checks the signature.
+func TestForwardedTrafficVerifiesAtAGatewayThatChecks(t *testing.T) {
+	c, svc := signedMachine(t, "")
+	gateway := httptest.NewServer(svc.handler())
+	defer gateway.Close()
+	c.Origin = gateway.URL
+	if _, err := saveConfig(c); err != nil {
+		t.Fatal(err)
+	}
+
+	base, _ := startProxy(t, gateway.URL, proxyOptions{Name: "lyntway"})
+
+	req, err := http.NewRequest(http.MethodPost, base+"/v1/log",
+		strings.NewReader(`{"tool":"test","reference":"hello"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.Key)
+
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("posting through the proxy: %v", err)
+	}
+	defer res.Body.Close()
+	body, _ := io.ReadAll(res.Body)
+
+	if res.StatusCode == http.StatusUnauthorized {
+		t.Fatalf("the gateway refused the forwarded request — this is the acceptance run's "+
+			"401 bad_signature, unchanged:\n%s", body)
+	}
+	if res.StatusCode >= 300 {
+		t.Fatalf("status = %d: %s", res.StatusCode, body)
+	}
+}

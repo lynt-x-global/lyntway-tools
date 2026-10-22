@@ -828,14 +828,41 @@ func readJSONObject(path string) (map[string]json.RawMessage, error) {
 		// move left was to send us the file. An editor writing JSON with
 		// comments, a trailing comma, or an array instead of an object
 		// are all different problems with different answers.
-		return nil, fmt.Errorf("%s: %s; nothing written. Open it and check — "+
-			"this reads a JSON object like {\"hooks\": …}", path, describeJSON(body, err))
+		// An empty array carries no configuration, so there is nothing to
+		// lose by replacing it, and this is the shape a scaffolded file
+		// most often has. Anything else is somebody's working
+		// configuration in a form we do not recognise, and the answer to
+		// that is instructions, never a rewrite.
+		if strings.TrimSpace(string(body)) == "[]" {
+			return map[string]json.RawMessage{}, nil
+		}
+		return nil, fmt.Errorf("%s: %s; nothing written.\n\n%s", path,
+			describeJSON(body, err), hookByHand(path))
 	}
 	return doc, nil
 }
 
 // describeJSON says what a file that is not a JSON object turned out to
 // be, in the words somebody would use to fix it.
+// hookByHand is the way out when the file cannot be edited safely.
+//
+// Refusing is right — an unrecognised shape is somebody's working
+// configuration, and a security tool that rewrites one has done more harm
+// than the hook prevents. But refusing and stopping leaves a person with
+// no hook and no next step, which is what the October acceptance run hit
+// on Cursor. The exact block is printed so the fix is a paste.
+func hookByHand(path string) string {
+	cursor := strings.Contains(path, ".cursor")
+	event, entry := "UserPromptSubmit", `{"hooks": [{"type": "command", "command": "`+hookCommand(false)+`", "timeout": 10}]}`
+	if cursor {
+		event, entry = "beforeSubmitPrompt", `{"command": "`+hookCommand(true)+`"}`
+	}
+	return "Add this to it by hand, inside the \"hooks\" object:\n\n" +
+		"  \"" + event + "\": [" + entry + "]\n\n" +
+		"If the file holds something this does not understand, move it aside and run this\n" +
+		"again — a backup is written either way, and `lyntway undo` puts everything back."
+}
+
 func describeJSON(body []byte, err error) string {
 	trimmed := strings.TrimSpace(string(body))
 	switch {

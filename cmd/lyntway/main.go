@@ -15,6 +15,7 @@
 //	lyntway scan           find provider keys in files or a diff
 //	lyntway guard -- CMD   run one command with its model traffic governed
 //	lyntway share          turn a receipt into a link anyone can check
+//	lyntway plan           what this account is on, and what it has used
 //	lyntway status         what is configured, and what is not covered
 //	lyntway undo           put everything back
 //
@@ -156,6 +157,9 @@ func main() {
 	case "readiness":
 		cliCommand = "readiness"
 		err = readiness(args[1:])
+	case "plan":
+		cliCommand = "plan"
+		err = planCommand(args[1:])
 	case "status":
 		err = status()
 	case "undo":
@@ -207,6 +211,7 @@ Usage:
   lyntway mcp-server     MCP tool server for AI agents (runs over stdio)
   lyntway readiness      ask the endpoints your AI reached what they answer with no key,
                          and (--mcp) whether an MCP server is safe for an agent to use
+  lyntway plan           what this account is on, and what it has used
   lyntway status         what is configured, and what is not covered
                          (before you sign in: what AI software is on this
                          machine, what your agents can reach, and which of

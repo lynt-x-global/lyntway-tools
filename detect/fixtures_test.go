@@ -67,7 +67,11 @@ func fakeAnthropicKey() string { return "sk" + "-ant-" + strings.Repeat("x", 24)
 // 19 Oct 2026 so a documented example key stops blocking a coding agent,
 // and a fixture under the floor matches nothing while every test using it
 // still passes.
-func fakeOpenAIKey() string { return "sk" + "-proj-" + strings.Repeat("q", 48) }
+// Varied, not a run of one character. notAPlaceholderKey refuses eight of
+// the same character in a row — that is what a README contains and what a
+// random key never is — and this fixture was 48 q's, so it stopped being
+// a credential the moment that check existed.
+func fakeOpenAIKey() string { return "sk" + "-proj-" + strings.Repeat("Qx7bR9mKp2Wv", 4) }
 
 // fakePEMBlock returns a synthetic private key block of the given type.
 func fakePEMBlock(kind string) string {

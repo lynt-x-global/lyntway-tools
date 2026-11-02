@@ -110,6 +110,22 @@ func run() int {
 
 	envUpstreams := os.Getenv("LYNTWAY_UPSTREAMS")
 
+	// The file `lyntway connect` writes, read first so the two sources
+	// below can override it.
+	//
+	// Lowest precedence of the three on purpose: the variable is what
+	// somebody typed for this one run and the console is what an
+	// administrator set for the fleet, so neither should lose to a file
+	// written weeks ago. Without this the gateway had no source a person
+	// could reach without an account, and `connect` had nowhere to put a
+	// database it had just been given — which is why the database half
+	// of that command was never wired up.
+	if lines := registeredUpstreams(); len(lines) > 0 {
+		parseEnvUpstreams(strings.Join(lines, ","), umap)
+		log.Printf("lyntway-dbgateway: read %d database(s) from %s",
+			len(lines), registeredUpstreamsPath())
+	}
+
 	// Fetch from the console API first — this is the primary source.
 	if origin != "" && key != "" {
 		if err := refreshUpstreams(origin, key, umap); err != nil {
@@ -616,3 +632,43 @@ It takes no other argument: an unrecognised one is refused rather than
 started, because a gateway that opens listeners on a typo is worse than
 one that prints this message.
 `
+
+// registeredUpstreamsPath is the file `lyntway connect` writes.
+//
+// Duplicated from the CLI rather than shared, because these are two
+// binaries in two directories and the root module takes no dependency it
+// does not need. The constant is the contract; a test in the CLI asserts
+// the two agree, so a rename cannot silently leave the gateway reading a
+// file nobody writes.
+func registeredUpstreamsPath() string {
+	h, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(h, ".lyntway", "upstreams")
+}
+
+// registeredUpstreams reads that file, ignoring comments and blanks.
+//
+// Every failure is silence: a gateway that refused to start because a
+// convenience file was unreadable would be a gateway that stops a
+// database working over something that is not the database's fault.
+func registeredUpstreams() []string {
+	path := registeredUpstreamsPath()
+	if path == "" {
+		return nil
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		out = append(out, line)
+	}
+	return out
+}

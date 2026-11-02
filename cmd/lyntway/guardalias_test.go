@@ -51,6 +51,21 @@ func TestTheFishWrapperUsesFishSyntax(t *testing.T) {
 	}
 }
 
+func TestThePowerShellWrapperUsesPowerShellSyntax(t *testing.T) {
+	block := guardAliasBlock("powershell", []string{"claude"})
+	for _, want := range []string{"function claude", "Get-Command lyntway", "@args"} {
+		if !strings.Contains(block, want) {
+			t.Errorf("powershell block has no %q:\n%s", want, block)
+		}
+	}
+	if strings.Contains(block, `"$@"`) {
+		t.Error("powershell block carries POSIX argument syntax")
+	}
+	if strings.Contains(block, "command -v") {
+		t.Error("powershell block uses bash's command -v instead of Get-Command")
+	}
+}
+
 // A shell profile may be the most personal file on somebody's machine.
 // Everything outside our fence comes back byte for byte.
 func TestRemovingTheBlockLeavesEverythingElseUntouched(t *testing.T) {

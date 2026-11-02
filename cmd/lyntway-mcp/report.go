@@ -2,13 +2,22 @@ package main
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 // Telling the account what this machine handled, without telling it what
@@ -52,6 +61,7 @@ import (
 type reporter struct {
 	origin string
 	key    string
+	signer *httpSigner
 	client *http.Client
 
 	// queue is bounded and lossy on purpose. A burst of tool calls while
@@ -62,6 +72,12 @@ type reporter struct {
 
 	wg   sync.WaitGroup
 	once sync.Once
+}
+
+// httpSigner signs HTTP requests with Ed25519 (RFC 9421, web-bot-auth).
+type httpSigner struct {
+	key   ed25519.PrivateKey
+	keyID string
 }
 
 // attestation is one governed message, reduced to what may leave.
@@ -75,8 +91,10 @@ type attestation struct {
 
 // localConfig is what `lyntway login` wrote.
 type localConfig struct {
-	Origin string `json:"origin"`
-	Key    string `json:"key"`
+	Origin     string `json:"origin"`
+	Key        string `json:"key"`
+	KeyID      string `json:"key_id"`
+	SigningKey string `json:"signing_key"`
 }
 
 // newReporter returns a reporter, or nil when this machine is not signed in.
@@ -98,9 +116,17 @@ func newReporter() *reporter {
 		return nil
 	}
 
+	var signer *httpSigner
+	if c.SigningKey != "" && c.KeyID != "" {
+		if priv, err := readPEMKey(c.SigningKey); err == nil {
+			signer = &httpSigner{key: priv, keyID: c.KeyID}
+		}
+	}
+
 	r := &reporter{
 		origin: c.Origin,
 		key:    c.Key,
+		signer: signer,
 		// Short. This runs beside an agent waiting on a tool call, and a
 		// slow reporter is worse than a missing row.
 		client: &http.Client{Timeout: 5 * time.Second},
@@ -169,6 +195,11 @@ func (r *reporter) send(a attestation) error {
 	}
 	req.Header.Set("Authorization", "Bearer "+r.key)
 	req.Header.Set("Content-Type", "application/json")
+	if r.signer != nil {
+		if err := r.signer.sign(req, body); err != nil {
+			return fmt.Errorf("signing: %w", err)
+		}
+	}
 
 	resp, err := r.client.Do(req)
 	if err != nil {
@@ -179,6 +210,115 @@ func (r *reporter) send(a attestation) error {
 		return fmt.Errorf("the service answered %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// readPEMKey opens the PKCS#8 PEM file `keys sign` wrote.
+func readPEMKey(path string) (ed25519.PrivateKey, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	block, _ := pem.Decode(raw)
+	if block == nil {
+		return nil, fmt.Errorf("%s is not a PEM private key", path)
+	}
+	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, err
+	}
+	priv, ok := parsed.(ed25519.PrivateKey)
+	if !ok {
+		return nil, fmt.Errorf("%s is not an Ed25519 key", path)
+	}
+	return priv, nil
+}
+
+// sign adds RFC 9421 web-bot-auth headers to req.
+func (s *httpSigner) sign(req *http.Request, body []byte) error {
+	nonce := make([]byte, 16)
+	if _, err := rand.Read(nonce); err != nil {
+		return err
+	}
+	nonceStr := base64.RawURLEncoding.EncodeToString(nonce)
+
+	authority, err := signedAuthority(req.URL)
+	if err != nil {
+		return err
+	}
+	path := req.URL.EscapedPath()
+	if path == "" {
+		path = "/"
+	}
+
+	type component struct{ name, value string }
+	components := []component{
+		{"@method", strings.ToUpper(req.Method)},
+		{"@authority", authority},
+		{"@path", path},
+	}
+	if len(body) > 0 {
+		sum := sha256.Sum256(body)
+		digest := "sha-256=:" + base64.StdEncoding.EncodeToString(sum[:]) + ":"
+		req.Header.Set("Content-Digest", digest)
+		components = append(components, component{"content-digest", digest})
+	}
+
+	names := make([]string, len(components))
+	for i, c := range components {
+		names[i] = `"` + c.name + `"`
+	}
+	created := time.Now().Unix()
+	nonceQ, err := quotedSignParam(nonceStr)
+	if err != nil {
+		return err
+	}
+	keyIDQ, err := quotedSignParam(s.keyID)
+	if err != nil {
+		return err
+	}
+	inner := fmt.Sprintf(`(%s);created=%d;expires=%d;nonce=%s;keyid=%s;alg="ed25519";tag="web-bot-auth"`,
+		strings.Join(names, " "), created, created+300, nonceQ, keyIDQ)
+
+	var base strings.Builder
+	for _, c := range components {
+		base.WriteString(`"` + c.name + `": ` + c.value + "\n")
+	}
+	base.WriteString(`"@signature-params": ` + inner)
+
+	sig := ed25519.Sign(s.key, []byte(base.String()))
+	req.Header.Set("Signature-Input", "sig1="+inner)
+	req.Header.Set("Signature", "sig1=:"+base64.StdEncoding.EncodeToString(sig)+":")
+	return nil
+}
+
+func signedAuthority(u *url.URL) (string, error) {
+	host := strings.ToLower(u.Hostname())
+	if host == "" {
+		return "", fmt.Errorf("url has no host")
+	}
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	port := u.Port()
+	switch {
+	case port == "":
+		return host, nil
+	case u.Scheme == "https" && port == "443", u.Scheme == "http" && port == "80":
+		return host, nil
+	}
+	return host + ":" + port, nil
+}
+
+func quotedSignParam(value string) (string, error) {
+	if value == "" || strings.ContainsAny(value, `"\`) {
+		return "", fmt.Errorf("value contains characters that cannot appear in a signature parameter")
+	}
+	for _, r := range value {
+		if !unicode.IsPrint(r) {
+			return "", fmt.Errorf("value contains characters that cannot appear in a signature parameter")
+		}
+	}
+	return `"` + value + `"`, nil
 }
 
 // close drains what is queued and stops.

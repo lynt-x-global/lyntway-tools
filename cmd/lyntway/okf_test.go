@@ -116,7 +116,7 @@ func TestScanFindsACredentialInAnOKFBundleAndSaysWhatItIs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	hits, _, err := scanPaths([]string{dir})
+	hits, _, _, err := scanPaths([]string{dir})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestScanOfAPlainEnvSaysNothingAboutOKF(t *testing.T) {
 		[]byte("DATABASE_URL=postgres://appuser:S3cretPassw0rd@db.internal:5432/prod\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	hits, _, err := scanPaths([]string{dir})
+	hits, _, _, err := scanPaths([]string{dir})
 	if err != nil {
 		t.Fatal(err)
 	}

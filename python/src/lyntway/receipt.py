@@ -308,7 +308,17 @@ def verify(
 #: outside the three matched neither branch below, produced no warning, and
 #: so read exactly like ``observed`` -- the strongest of the three.
 KNOWN_MODES = ("full", "degraded", "bypassed")
-KNOWN_DECISIONS = ("allow", "block", "transform", "tokenize", "log_only", "hold")
+#: The decisions receipt.Decision in the Go module defines, and only those.
+#:
+#: This list said ``transform`` and ``hold`` -- which the engine has never
+#: emitted and no receipt has ever carried -- and left out ``redact`` and
+#: ``require_approval``, which it does emit. So a genuine receipt recording
+#: that values were removed irreversibly, or that an action was held for a
+#: person, arrived here as a decision this SDK did not recognise and was
+#: reported with a warning. A reader who is told a receipt is unrecognised
+#: hears that something is wrong with it, which is exactly the overclaim the
+#: rest of this file exists to prevent, pointed the other way.
+KNOWN_DECISIONS = ("allow", "log_only", "tokenize", "redact", "require_approval", "block")
 KNOWN_PROVENANCE = ("observed", "attested", "asserted")
 KNOWN_SURFACES = ("model", "mcp", "database", "http", "primitive", "email")
 

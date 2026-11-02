@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -19,6 +20,9 @@ import (
 func TestReceiptsVerifyAcrossRestarts(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	if runtime.GOOS == "windows" {
+		t.Setenv("USERPROFILE", home)
+	}
 	path := filepath.Join(t.TempDir(), "receipts.jsonl")
 
 	message := `{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"hello"}]}}`

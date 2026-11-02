@@ -12,7 +12,6 @@ package main
 // then the agent does the platform-specific work it already knows how to do.
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -76,21 +75,34 @@ func knownInstallFlag(a string) bool {
 	return false
 }
 
+// deviceUsage writes to the package's stdout rather than calling
+// fmt.Println, so a test can read it. It is the only place the offline
+// escape from a lockout is documented, which makes it the one piece of
+// help text worth asserting on.
 func deviceUsage() {
-	fmt.Println(`lyntway device — install and manage the on-device governance agent
+	fmt.Fprintln(stdout, `lyntway device — install and manage the on-device governance agent
 
 Usage:
   lyntway device [--key KEY] [--url URL] [--no-proxy]   install and enrol
   lyntway device start | stop | restart | status        control a running agent
   lyntway device doctor                                 check its health
   lyntway device uninstall                              remove it
+  lyntway device uninstall --local                      remove it with no network
 
 Options:
   --key KEY    an enrollment key from the console at /on-device. Single-use,
                and it expires. Without one, and with nothing already signed in,
                the install stops rather than leaving an agent that cannot report.
   --url URL    a self-hosted Lyntway (default https://lyntway.com)
-  --no-proxy   install without changing this machine's system proxy`)
+  --no-proxy   install without changing this machine's system proxy
+  --local      remove the agent without an uninstall token. For a machine
+               whose network the agent itself has broken, which is the one
+               case where asking the server for permission cannot work. Does
+               the same thing locally; cannot report it, so the removal will
+               not appear in the console.
+
+"lyntway off" removes the agent and everything else this tool changed, and
+never needs a network.`)
 }
 
 func deviceStart() error {
@@ -127,19 +139,24 @@ func deviceStop() error {
 }
 
 func deviceStatus() error {
-	resp, err := http.Get("http://127.0.0.1:9090/health")
-	if err != nil {
-		fmt.Println("  Agent: not running")
-	} else {
-		resp.Body.Close()
-		fmt.Println("  Agent: running")
+	if firstRunWanted() {
+		fmt.Fprintln(stdout, "\nNot set up. Run `lyntway setup` first, then `lyntway device install`.")
+		return nil
 	}
-	resp, err = http.Get("http://127.0.0.1:8092/health")
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get("http://127.0.0.1:9090/health")
 	if err != nil {
-		fmt.Println("  Sidecar: not running")
+		fmt.Fprintln(stdout, "  Agent: not running")
 	} else {
 		resp.Body.Close()
-		fmt.Println("  Sidecar: running")
+		fmt.Fprintln(stdout, "  Agent: running")
+	}
+	resp, err = client.Get("http://127.0.0.1:8092/health")
+	if err != nil {
+		fmt.Fprintln(stdout, "  Sidecar: not running")
+	} else {
+		resp.Body.Close()
+		fmt.Fprintln(stdout, "  Sidecar: running")
 	}
 	return nil
 }
@@ -262,9 +279,7 @@ func deviceInstall(args []string) error {
 				prefix = prefix[:12]
 			}
 			fmt.Fprintf(stdout, "  This machine is already signed in (%s…).\n", prefix)
-			fmt.Fprint(stdout, "  Use the existing key? [Y/n] ")
-			line, _ := bufio.NewReader(stdin).ReadString('\n')
-			answer := strings.TrimSpace(strings.ToLower(line))
+			answer := askLine("  Use the existing key? [Y/n] ")
 			if answer == "" || answer == "y" || answer == "yes" {
 				apiKey, keyID = c.Key, c.KeyID
 				origin = c.Origin
@@ -273,9 +288,7 @@ func deviceInstall(args []string) error {
 
 		// If still no key, prompt interactively.
 		if apiKey == "" {
-			fmt.Fprint(stdout, "  Enter your enrollment key: ")
-			line, _ := bufio.NewReader(stdin).ReadString('\n')
-			enrollKey = strings.TrimSpace(line)
+			enrollKey = askRaw("  Enter your enrollment key: ")
 		}
 	}
 
@@ -456,8 +469,9 @@ func deviceUninstall(args []string) error {
 	fmt.Fprintln(stdout, "Lyntway On-Device Agent — Uninstall")
 	fmt.Fprintln(stdout, strings.Repeat("─", 50))
 
-	// Parse --url flag.
+	// Parse --url and --local.
 	origin := defaultOrigin
+	localOnly := false
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "--url" && i+1 < len(args):
@@ -465,6 +479,8 @@ func deviceUninstall(args []string) error {
 			i++
 		case strings.HasPrefix(args[i], "--url="):
 			origin = strings.TrimRight(strings.TrimPrefix(args[i], "--url="), "/")
+		case args[i] == "--local":
+			localOnly = true
 		}
 	}
 
@@ -473,49 +489,77 @@ func deviceUninstall(args []string) error {
 		origin = c.Origin
 	}
 
-	// Prompt for the uninstall token from the admin.
-	fmt.Fprintln(stdout)
-	fmt.Fprintln(stdout, "  An uninstall token is required. Ask your administrator to")
-	fmt.Fprintln(stdout, "  generate one from the dashboard: On-Device → device menu → Uninstall.")
-	fmt.Fprintln(stdout)
-	fmt.Fprint(stdout, "  Enter uninstall token: ")
-	line, _ := bufio.NewReader(stdin).ReadString('\n')
-	token := strings.TrimSpace(line)
-	if token == "" {
-		return fmt.Errorf("no uninstall token provided")
-	}
+	// The token gate, and the one way past it.
+	//
+	// Asking an administrator for a token is right: an agent an employee
+	// can remove is not a control. But every step below this point is
+	// local, and verifying the token needs the network — so the agent
+	// that has broken the network is the agent that cannot be removed.
+	// It has broken the network twice (an untrusted CA on 1 October,
+	// stranded HTTP_PROXY exports on 26 October), and on both days this
+	// command was the recovery path and could not run.
+	//
+	// A machine nobody can recover is a worse outcome for the
+	// organisation than an agent removed without a token, so when the
+	// server cannot be reached the removal proceeds and says so. The
+	// control survives as the record rather than as the lock: the
+	// removal is unreported, this prints that in those words, and
+	// `lyntway device doctor` reports it again afterwards.
+	if !localOnly {
+		fmt.Fprintln(stdout)
+		fmt.Fprintln(stdout, "  An uninstall token is required. Ask your administrator to")
+		fmt.Fprintln(stdout, "  generate one from the dashboard: On-Device → device menu → Uninstall.")
+		fmt.Fprintln(stdout)
+		token := askRaw("  Enter uninstall token: ")
+		if token == "" {
+			return fmt.Errorf("no uninstall token provided")
+		}
 
-	// Verify the token with the server.
-	fmt.Fprintln(stdout, "  Verifying token…")
-	payload, _ := json.Marshal(map[string]string{"token": token})
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Post(origin+"/v1/on-device/verify-uninstall", "application/json", strings.NewReader(string(payload)))
-	if err != nil {
-		return fmt.Errorf("could not reach %s: %w", origin, err)
+		// Verify the token with the server.
+		fmt.Fprintln(stdout, "  Verifying token…")
+		payload, _ := json.Marshal(map[string]string{"token": token})
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, err := client.Post(origin+"/v1/on-device/verify-uninstall", "application/json", strings.NewReader(string(payload)))
+		if err != nil {
+			// Not a dead end. This is the lockout case, and the way out
+			// has to be printed here where somebody is already stuck.
+			fmt.Fprintf(stdout, "  Could not reach %s: %v\n\n", origin, err)
+			fmt.Fprint(stdout, "  If this machine has no working network, the agent itself may be why.\n"+
+				"  Remove it without a token:\n\n"+
+				"    lyntway device uninstall --local\n\n"+
+				"  That does exactly the same thing to this machine. It cannot tell your\n"+
+				"  administrator, so the removal will not appear in the console.\n")
+			return fmt.Errorf("could not reach %s", origin)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+			fmt.Fprintln(stdout, "  Token was not accepted. It may have expired or already been used.")
+			return fmt.Errorf("server returned %d: %s", resp.StatusCode, string(raw))
+		}
+		fmt.Fprintln(stdout, "  Token verified.")
+		fmt.Fprintln(stdout)
+	} else {
+		fmt.Fprintln(stdout)
+		fmt.Fprintln(stdout, "  Removing locally, without a token.")
+		fmt.Fprintln(stdout, "  This will not be reported to your administrator.")
+		fmt.Fprintln(stdout)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
-		fmt.Fprintln(stdout, "  Token was not accepted. It may have expired or already been used.")
-		return fmt.Errorf("server returned %d: %s", resp.StatusCode, string(raw))
-	}
-	fmt.Fprintln(stdout, "  Token verified.")
-	fmt.Fprintln(stdout)
 
 	// Step 1: Stop the agent — gracefully first, then force-kill the ports.
-	fmt.Fprintln(stdout, "Step 1/5: Stopping agent")
+	fmt.Fprintln(stdout, "Step 1/6: Stopping agent")
 	killExistingAgent()
 	fmt.Fprintln(stdout, "  Agent stopped.")
 
 	// Step 2: Stop and remove the AI sidecar.
-	fmt.Fprintln(stdout, "Step 2/5: Removing sidecar")
+	fmt.Fprintln(stdout, "Step 2/6: Removing sidecar")
 	removeSidecar()
 	fmt.Fprintln(stdout, "  Sidecar removed.")
 
 	// Step 3: Remove system configuration (proxy, CA, autostart).
 	// Done directly instead of via --uninstall because the token has
 	// already been consumed by the verify call above.
-	fmt.Fprintln(stdout, "Step 3/5: Removing system configuration")
+	fmt.Fprintln(stdout, "Step 3/6: Removing system configuration")
 	agentBin := agentBinaryPath()
 	if exists(agentBin) {
 		// Disable system proxy first — most critical, keeps internet working.
@@ -540,13 +584,19 @@ func deviceUninstall(args []string) error {
 		fmt.Fprintln(stdout, "  Agent binary not found, proxy cleaned up directly.")
 	}
 
+	// Flush the WinHTTP proxy cache so browsers that read it (Edge, Chrome)
+	// pick up the cleared setting without a restart.
+	if runtime.GOOS == "windows" {
+		_ = exec.Command("netsh", "winhttp", "reset", "proxy").Run()
+	}
+
 	// Always clean up CA env vars directly — even when the binary is gone
 	// or --uninstall-ca failed. A stale NODE_EXTRA_CA_CERTS pointing at a
 	// deleted cert file breaks Node.js apps (Claude Code, Cursor, etc.).
 	clearCAEnvVarsDirect()
 
 	// Step 4: Remove the agent binary.
-	fmt.Fprintln(stdout, "Step 4/5: Removing agent binary")
+	fmt.Fprintln(stdout, "Step 4/6: Removing agent binary")
 	if exists(agentBin) {
 		if err := os.Remove(agentBin); err != nil {
 			fmt.Fprintf(stdout, "  Warning: could not remove %s: %v\n", agentBin, err)
@@ -558,7 +608,7 @@ func deviceUninstall(args []string) error {
 	}
 
 	// Step 5: Remove config.
-	fmt.Fprintln(stdout, "Step 5/5: Removing credentials")
+	fmt.Fprintln(stdout, "Step 5/6: Removing credentials")
 	cfgPath, err := configPath()
 	if err == nil && exists(cfgPath) {
 		if err := os.Remove(cfgPath); err != nil {
@@ -569,6 +619,16 @@ func deviceUninstall(args []string) error {
 	} else {
 		fmt.Fprintln(stdout, "  No credentials found.")
 	}
+
+	// Step 6: Undo everything `setup` and `init` changed — MCP wrapping,
+	// shell env blocks, hooks, PATH entries. Without this, an uninstalled
+	// agent leaves broken hooks and dead proxy references behind, and every
+	// tool that read those settings (Claude Code, Cursor) shows errors on
+	// the next launch. This was the single worst user experience this
+	// product has produced: the person saw dozens of errors, concluded the
+	// uninstall was broken, and had to clean up by hand.
+	fmt.Fprintln(stdout, "Step 6: Restoring editor and shell configuration")
+	_ = undo()
 
 	// Clean up empty directories.
 	h := home()
@@ -583,6 +643,10 @@ func deviceUninstall(args []string) error {
 
 	fmt.Fprintln(stdout)
 	fmt.Fprintln(stdout, "Done. The Lyntway agent has been removed from this device.")
+	fmt.Fprintln(stdout)
+	fmt.Fprintln(stdout, "If your browser shows \"No internet\" or a proxy error, close it")
+	fmt.Fprintln(stdout, "completely (check Task Manager for remaining processes) and reopen it.")
+	fmt.Fprintln(stdout, "Browsers cache proxy settings and may not pick up the change until restarted.")
 	return nil
 }
 
@@ -633,9 +697,123 @@ var (
 	agentReachable = agentHealthy
 )
 
+// strandedExport is a proxy the agent exported into a login profile that
+// nothing is listening on any more.
+type strandedExport struct {
+	Path string // the profile carrying it
+	Addr string // host:port it points at
+}
+
+// shellProfileProxies reports the agent's proxy exports that now point
+// nowhere.
+//
+// The address comes out of the profile rather than from the agent's
+// config, and that is the whole point. On the machine this was found on
+// there was no config file at all, so agentProxyAddr() answered the
+// built-in default of 127.0.0.1:9090 while the profiles exported 19090 —
+// a check keyed on the configured port would have compared against a port
+// nobody was using and reported the machine healthy. What is broken is
+// whatever the shell is being told, so that is what gets probed.
+func shellProfileProxies() []strandedExport {
+	h := home()
+	if h == "" {
+		return nil
+	}
+	var found []strandedExport
+	seen := map[string]bool{}
+	for _, rc := range shellProfiles {
+		rcPath := filepath.Join(h, rc)
+		data, err := os.ReadFile(rcPath)
+		if err != nil {
+			continue
+		}
+		for _, addr := range proxyAddrsInBlock(string(data)) {
+			if listeningAt(addr) {
+				continue
+			}
+			if seen[rcPath+addr] {
+				continue
+			}
+			seen[rcPath+addr] = true
+			found = append(found, strandedExport{Path: rcPath, Addr: addr})
+		}
+	}
+	return found
+}
+
+// proxyAddrsInBlock pulls the host:port out of the export lines under the
+// agent's marker. Separate from the file reading so the parsing is
+// testable without a home directory.
+func proxyAddrsInBlock(contents string) []string {
+	var addrs []string
+	inBlock := false
+	for _, line := range strings.Split(contents, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == proxyRCMarker {
+			inBlock = true
+			continue
+		}
+		if !inBlock {
+			continue
+		}
+		if !strings.HasPrefix(trimmed, "export ") {
+			inBlock = false
+			continue
+		}
+		name, value, ok := strings.Cut(strings.TrimPrefix(trimmed, "export "), "=")
+		if !ok {
+			continue
+		}
+		// NO_PROXY is a list of exemptions, not an address to reach.
+		switch strings.ToUpper(strings.TrimSpace(name)) {
+		case "HTTP_PROXY", "HTTPS_PROXY":
+		default:
+			continue
+		}
+		value = strings.Trim(strings.TrimSpace(value), `"'`)
+		value = strings.TrimPrefix(strings.TrimPrefix(value, "http://"), "https://")
+		value = strings.TrimSuffix(value, "/")
+		if host, port, err := net.SplitHostPort(value); err == nil && host != "" && port != "" {
+			addrs = append(addrs, value)
+		}
+	}
+	return addrs
+}
+
+// listeningAt reports whether anything accepts a connection at addr. A
+// variable so a test can decide the answer without opening a port.
+var listeningAt = func(addr string) bool {
+	conn, err := net.DialTimeout("tcp", addr, 300*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
 func clearStrandedProxy() {
 	addr := agentProxyAddr()
-	if !proxyPointsAt(addr) {
+	system := proxyPointsAt(addr)
+	exported := shellProfileProxies()
+	if !system && len(exported) == 0 {
+		return
+	}
+
+	// Reported and cleared separately, because a machine can be in either
+	// state alone and the one that was missed for a week was the second.
+	if len(exported) > 0 {
+		for _, e := range exported {
+			fmt.Fprintf(stdout, "\n  %s exports a proxy at %s and nothing is listening there.\n",
+				filepath.Base(e.Path), e.Addr)
+		}
+		fmt.Fprintln(stdout, "  Every command-line tool in a new shell would have no network —")
+		fmt.Fprintln(stdout, "  curl, git, pip, npm, az, gh. Taking it back out.")
+		removeShellMarkerBlock(proxyRCMarker)
+		fmt.Fprintln(stdout, "  Done. Open a new terminal, or run:")
+		fmt.Fprintln(stdout, "    unset HTTP_PROXY HTTPS_PROXY NO_PROXY")
+	}
+
+	if !system {
 		return
 	}
 	fmt.Fprintf(stdout, "\n  The system proxy still points at %s and nothing is listening there.\n", addr)
@@ -644,19 +822,31 @@ func clearStrandedProxy() {
 	bin := agentBinaryPath()
 	if exists(bin) {
 		if err := exec.Command(bin, "--disable-system-proxy").Run(); err == nil {
+			flushProxyCache()
 			fmt.Fprintln(stdout, "  Done — the system proxy is off.")
+			fmt.Fprintln(stdout, "  If your browser still shows a proxy error, close it completely and reopen it.")
 			return
 		}
 	}
 	// No agent binary, or it failed. Do it directly rather than leave somebody
 	// offline with an explanation.
 	if clearProxy() {
+		flushProxyCache()
 		fmt.Fprintln(stdout, "  Done — the system proxy is off.")
+		fmt.Fprintln(stdout, "  If your browser still shows a proxy error, close it completely and reopen it.")
 		return
 	}
 	fmt.Fprintln(stdout, "  Could not change it automatically. On a Mac:")
 	fmt.Fprintln(stdout, "    networksetup -setwebproxystate Wi-Fi off")
 	fmt.Fprintln(stdout, "    networksetup -setsecurewebproxystate Wi-Fi off")
+}
+
+// flushProxyCache clears the WinHTTP proxy cache so that browsers pick up
+// a cleared system proxy without a full restart.
+func flushProxyCache() {
+	if runtime.GOOS == "windows" {
+		_ = exec.Command("netsh", "winhttp", "reset", "proxy").Run()
+	}
 }
 
 func deviceDoctor() error {
@@ -888,9 +1078,7 @@ func activateEnrollKey(origin, token string) (enrollResult, error) {
 	if result.Status == "verify_email" {
 		fmt.Fprintln(stdout)
 		fmt.Fprintf(stdout, "  A verification code has been sent to %s\n", result.EmailHint)
-		fmt.Fprint(stdout, "  Enter code: ")
-		line, _ := bufio.NewReader(stdin).ReadString('\n')
-		code := strings.TrimSpace(line)
+		code := askRaw("  Enter code: ")
 		if code == "" {
 			return enrollResult{}, fmt.Errorf("no verification code entered")
 		}
@@ -1047,7 +1235,8 @@ func startAgent(agentPath string) error {
 func removeAutoStart() {
 	switch runtime.GOOS {
 	case "windows":
-		_ = exec.Command("schtasks", "/delete", "/tn", "LyntwayAgent", "/f").Run()
+		_ = exec.Command("schtasks", "/Delete", "/TN", "Lyntway Agent", "/F").Run()
+		_ = exec.Command("schtasks", "/Delete", "/TN", "LyntwayProxyGuardian", "/F").Run()
 		_ = exec.Command("reg", "delete",
 			`HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Run`,
 			"/v", "LyntwayAgent", "/f").Run()
@@ -1123,37 +1312,61 @@ func clearCAEnvVarsDirect() {
 				fmt.Sprintf(`[Environment]::SetEnvironmentVariable("%s", $null, "User")`, name)).Run()
 		}
 	case "darwin", "linux":
-		// Remove the marker block from shell RC files.
-		h := home()
-		if h == "" {
-			return
+		removeShellMarkerBlock(caRCMarker)
+	}
+}
+
+// The comment the agent writes above each block it appends to a login
+// profile, and the only handle anything has for taking it back out again.
+// Named here as constants because three separate places used to spell them
+// as literals and one of them — the proxy block — was never spelled at all.
+const (
+	caRCMarker    = "# lyntway-agent ca"
+	proxyRCMarker = "# lyntway-agent proxy"
+)
+
+// removeShellMarkerBlock deletes a marker comment and the exports under it
+// from every login profile that carries it.
+//
+// The block has to go rather than be commented out: the agent decides
+// whether to append by looking for the marker anywhere in the file, so a
+// commented-out marker would stop the proxy ever being set up again and
+// the symptom would be a proxy that silently never comes back.
+func removeShellMarkerBlock(marker string) {
+	h := home()
+	if h == "" {
+		return
+	}
+	for _, rc := range shellProfiles {
+		rcPath := filepath.Join(h, rc)
+		data, err := os.ReadFile(rcPath)
+		if err != nil {
+			continue
 		}
-		marker := "# lyntway-agent ca"
-		for _, rc := range []string{".zprofile", ".bash_profile", ".profile", ".bashrc"} {
-			rcPath := filepath.Join(h, rc)
-			data, err := os.ReadFile(rcPath)
-			if err != nil {
+		if !strings.Contains(string(data), marker) {
+			continue
+		}
+		lines := strings.Split(string(data), "\n")
+		var out []string
+		skip := false
+		for _, line := range lines {
+			if strings.TrimSpace(line) == marker {
+				skip = true
 				continue
 			}
-			if !strings.Contains(string(data), marker) {
+			if skip && strings.HasPrefix(strings.TrimSpace(line), "export ") {
 				continue
 			}
-			lines := strings.Split(string(data), "\n")
-			var out []string
-			skip := false
-			for _, line := range lines {
-				if strings.TrimSpace(line) == marker {
-					skip = true
-					continue
-				}
-				if skip && strings.HasPrefix(strings.TrimSpace(line), "export ") {
-					continue
-				}
-				skip = false
-				out = append(out, line)
-			}
-			_ = os.WriteFile(rcPath, []byte(strings.Join(out, "\n")), 0o644)
+			skip = false
+			out = append(out, line)
 		}
+		// Preserve the mode the file already had. 0o644 was hard-coded here
+		// and a profile the user had tightened would silently be widened.
+		mode := os.FileMode(0o644)
+		if info, err := os.Stat(rcPath); err == nil {
+			mode = info.Mode().Perm()
+		}
+		_ = os.WriteFile(rcPath, []byte(strings.Join(out, "\n")), mode)
 	}
 }
 
@@ -1177,8 +1390,17 @@ func disableProxyDirect() {
 			_ = exec.Command("networksetup", "-setwebproxystate", svc, "off").Run()
 			_ = exec.Command("networksetup", "-setsecurewebproxystate", svc, "off").Run()
 		}
+		// The agent sets the proxy two ways, because they reach different
+		// software: the system setting is what browsers read, and the
+		// exports in the login profiles are what curl, git, pip, npm and
+		// the cloud CLIs read. Turning off only the first left every
+		// command-line tool on the machine pointed at a dead port, which
+		// is how this was found on 26 Oct 2026 — az could not reach Azure
+		// and nothing in the product could explain why.
+		removeShellMarkerBlock(proxyRCMarker)
 	case "linux":
 		_ = exec.Command("gsettings", "set", "org.gnome.system.proxy", "mode", "none").Run()
+		removeShellMarkerBlock(proxyRCMarker)
 	}
 }
 

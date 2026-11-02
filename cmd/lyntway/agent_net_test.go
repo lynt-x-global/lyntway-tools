@@ -187,7 +187,7 @@ func TestDestinationsAreAttributedAndCounted(t *testing.T) {
 		t.Fatalf("got %d rows, want %d: %+v", len(rows), len(want), rows)
 	}
 	for _, row := range rows {
-		if n, ok := want[destKey{row.Host, row.App}]; !ok || n != row.Connections {
+		if n, ok := want[destKey{Host: row.Host, App: row.App, Unrecognised: row.Unrecognised}]; !ok || n != row.Connections {
 			t.Errorf("unexpected row %+v", row)
 		}
 	}
@@ -205,8 +205,8 @@ func TestDestinationsAreAttributedAndCounted(t *testing.T) {
 
 func TestAnExtensionsBundledBinaryIsTheExtension(t *testing.T) {
 	p := procInfo{PID: 5023, Name: "codex", Path: "/Users/someone/.vscode/extensions/openai.chatgpt-26.908.40401-darwin-arm64/bin/macos-aarch64/codex"}
-	if name, ok := appForProcess("darwin", p); name != "Codex in VS Code" || !ok {
-		t.Errorf("appForProcess = %q, %v", name, ok)
+	if name, isAI, known := appForProcess("darwin", p); name != "Codex in VS Code" || !isAI || !known {
+		t.Errorf("appForProcess = %q, isAI=%v, known=%v", name, isAI, known)
 	}
 	for _, d := range aiApps {
 		if d.Name == "Codex CLI" && d.procMatches("darwin", p) {

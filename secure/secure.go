@@ -36,6 +36,47 @@ import (
 	"github.com/lynt-x-global/lyntway-tools/agentsecrets"
 )
 
+// InFile is a credential sitting in the project's own files — a .env, a
+// committed config, a source file — rather than in an agent's history.
+//
+// Reported apart from the history findings because the fix is different
+// and a reader who is given one list cannot tell which advice applies.
+// A key in a transcript has already left: the only move is to revoke it.
+// A key in a .env is still in play, so revoking it is one option and
+// moving it behind the gateway with `keys migrate` is the other.
+type InFile struct {
+	// Path as the walk found it, relative to where the command ran.
+	Path string
+	Line int // 1-based
+
+	// Label is what to call it to a person: "OpenAI key", "Stripe key".
+	Label string
+
+	// Last4 lets somebody tell a live key from a fixture without this
+	// printing the value. Empty when the match was too short to trim.
+	Last4 string
+
+	// Migratable is true only when `keys migrate` could actually hold
+	// this one. A provider key can be moved behind the gateway; a
+	// database password in a connection URL, a GitHub token and a
+	// private key cannot, and the first version of this report offered
+	// the command for all of them — which is the advice the scanner's
+	// own type warns must never be printed beside a key that cannot
+	// take it.
+	Migratable bool
+}
+
+// Migratable counts the findings `keys migrate` could move.
+func migratableCount(in []InFile) int {
+	n := 0
+	for _, f := range in {
+		if f.Migratable {
+			n++
+		}
+	}
+	return n
+}
+
 // Step is one thing this command did, or refused to do.
 //
 // Collected rather than printed as it goes, so the summary at the end can
@@ -51,10 +92,37 @@ type Step struct {
 	Why  string
 }
 
+// Input is everything the run reads. A struct rather than parameters
+// because the two scans are independent — the history scan is fast and
+// the project walk is bounded by the repository — and a later third
+// source should not change this signature again.
+type Input struct {
+	// Scan is the agent-history result.
+	Scan agentsecrets.Result
+
+	// InFiles is what the project walk found. Nil when no project was
+	// read, which is different from a project that was read and was
+	// clean: ReadProject says which.
+	InFiles []InFile
+
+	// ReadProject is true when a project directory was walked at all.
+	// Without it "no keys in your files" would be printed over a run
+	// that never opened one — the sentence this repository's readiness
+	// check treats as a failure.
+	ReadProject bool
+
+	// ProjectDir is what was walked, for the report to name.
+	ProjectDir string
+}
+
 // Outcome is everything the run did.
 type Outcome struct {
 	// Found is what the scan saw, before anything was changed.
 	Found []agentsecrets.Credential
+
+	// InFiles is what the project walk found, carried through so a
+	// caller can set an exit code on the total.
+	InFiles []InFile
 
 	// Scan carries the counts, so the report can say what was read and
 	// whether the look was complete.
@@ -98,13 +166,18 @@ type Installer interface {
 // ask is called at most once and only when something was found: there is
 // nothing to consent to on a clean machine, and asking anyway trains
 // somebody to press y without reading.
-func Run(out io.Writer, res agentsecrets.Result, inst Installer,
+func Run(out io.Writer, in Input, inst Installer,
 	ask func(string) bool, assumeYes bool) Outcome {
 
-	o := Outcome{Found: res.Credentials(), Scan: res}
-	writeFound(out, o)
+	res := in.Scan
+	o := Outcome{Found: res.Credentials(), InFiles: in.InFiles, Scan: res}
+	writeFound(out, o, in)
 
-	if len(o.Found) == 0 {
+	// Either source is a reason to offer the hook. Gating on the history
+	// scan alone printed "nothing to close here" to somebody whose .env
+	// had just been listed above it, which reads as the tool not having
+	// understood its own output.
+	if len(o.Found) == 0 && len(o.InFiles) == 0 {
 		// Nothing to close. The hook is still worth having, and is still
 		// a change to the machine, so it is offered as a sentence rather
 		// than done — somebody whose machine is clean did not come here
@@ -120,8 +193,16 @@ func Run(out io.Writer, res agentsecrets.Result, inst Installer,
 	} else {
 		editors := inst.Editors()
 		if len(editors) == 0 {
-			fmt.Fprint(out, "No editor here that can take a prompt hook, so there is nothing to install.\n"+
-				"Revoking the credentials above is the whole of the fix on this machine.\n\n")
+			fmt.Fprint(out, "No editor here that can take a prompt hook, so there is nothing to install.\n")
+			// The remaining advice differs by source, and saying
+			// "revoking is the whole of the fix" over a list that had
+			// just offered `keys migrate` contradicted the section
+			// above it.
+			if len(o.InFiles) > 0 {
+				fmt.Fprint(out, "What is left is the moves above.\n\n")
+			} else {
+				fmt.Fprint(out, "Revoking the credentials above is the whole of the fix on this machine.\n\n")
+			}
 			return o
 		}
 		fmt.Fprintf(out, "This can stop the next one. %s would refuse a prompt carrying a\n"+

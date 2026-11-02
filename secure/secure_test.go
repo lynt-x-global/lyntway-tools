@@ -48,7 +48,7 @@ func TestNothingIsInstalledWithoutConsent(t *testing.T) {
 	var buf bytes.Buffer
 
 	asked := 0
-	o := Run(&buf, found(2), inst, func(string) bool { asked++; return false }, false)
+	o := Run(&buf, Input{Scan: found(2)}, inst, func(string) bool { asked++; return false }, false)
 
 	if asked != 1 {
 		t.Errorf("asked %d times, want exactly one question", asked)
@@ -74,7 +74,7 @@ func TestOneQuestionThenEveryEditorPresent(t *testing.T) {
 	var buf bytes.Buffer
 
 	asked := 0
-	o := Run(&buf, found(1), inst, func(string) bool { asked++; return true }, false)
+	o := Run(&buf, Input{Scan: found(1)}, inst, func(string) bool { asked++; return true }, false)
 
 	if asked != 1 {
 		t.Errorf("asked %d times; the whole point of this command is one question", asked)
@@ -93,7 +93,7 @@ func TestAssumeYesIsRecordedAsNotAsked(t *testing.T) {
 	inst := &fakeInstaller{editors: []string{"Claude Code"}}
 	var buf bytes.Buffer
 
-	o := Run(&buf, found(1), inst, func(string) bool {
+	o := Run(&buf, Input{Scan: found(1)}, inst, func(string) bool {
 		t.Error("--yes still asked")
 		return false
 	}, true)
@@ -112,7 +112,7 @@ func TestACleanMachineIsNotAsked(t *testing.T) {
 	inst := &fakeInstaller{editors: []string{"Claude Code"}}
 	var buf bytes.Buffer
 
-	o := Run(&buf, found(0), inst, func(string) bool {
+	o := Run(&buf, Input{Scan: found(0)}, inst, func(string) bool {
 		t.Error("a machine with no findings was asked to change its configuration")
 		return true
 	}, false)
@@ -131,7 +131,7 @@ func TestACleanMachineIsNotAsked(t *testing.T) {
 // A machine with no agent on it is not a clean machine.
 func TestNoAgentFilesIsNotReportedAsClean(t *testing.T) {
 	var buf bytes.Buffer
-	Run(&buf, agentsecrets.Result{}, &fakeInstaller{}, func(string) bool { return true }, false)
+	Run(&buf, Input{Scan: agentsecrets.Result{}}, &fakeInstaller{}, func(string) bool { return true }, false)
 
 	out := buf.String()
 	if !strings.Contains(out, "nothing to read") {
@@ -151,7 +151,7 @@ func TestAFailedInstallIsNamedNotSwallowed(t *testing.T) {
 	}
 	var buf bytes.Buffer
 
-	o := Run(&buf, found(1), inst, func(string) bool { return true }, false)
+	o := Run(&buf, Input{Scan: found(1)}, inst, func(string) bool { return true }, false)
 	out := buf.String()
 
 	if !strings.Contains(out, "Cursor") || !strings.Contains(out, errFake.Error()) {
@@ -179,7 +179,7 @@ func TestAnIncompleteLookIsSaidSo(t *testing.T) {
 	res.Unread = []agentsecrets.Unread{{Tool: "Claude Code", Path: "/x", Reason: "larger than 2048 MB"}}
 	var buf bytes.Buffer
 
-	Run(&buf, res, &fakeInstaller{editors: []string{"Claude Code"}}, func(string) bool { return true }, false)
+	Run(&buf, Input{Scan: res}, &fakeInstaller{editors: []string{"Claude Code"}}, func(string) bool { return true }, false)
 	if !strings.Contains(buf.String(), "not in\nthe count above") {
 		t.Errorf("an unread file is not reflected in the report:\n%s", buf.String())
 	}
@@ -189,7 +189,7 @@ func TestAnIncompleteLookIsSaidSo(t *testing.T) {
 // the number and stops has to have been told.
 func TestTheFixtureCaveatComesBeforeTheList(t *testing.T) {
 	var buf bytes.Buffer
-	Run(&buf, found(2), &fakeInstaller{}, func(string) bool { return false }, false)
+	Run(&buf, Input{Scan: found(2)}, &fakeInstaller{}, func(string) bool { return false }, false)
 	out := buf.String()
 
 	caveat := strings.Index(out, "test fixtures")
@@ -220,7 +220,7 @@ func TestSecureNamesWhereToRevokeAndWhatTheHookMisses(t *testing.T) {
 		}},
 		Files: 1, Bytes: 10, Sources: 1,
 	}
-	o := Run(&out, res, &fakeInstaller{editors: []string{"Claude Code"}}, func(string) bool { return true }, true)
+	o := Run(&out, Input{Scan: res}, &fakeInstaller{editors: []string{"Claude Code"}}, func(string) bool { return true }, true)
 	got := out.String()
 
 	if !o.Protected() {
@@ -254,8 +254,77 @@ func TestTheCaveatReachesTheReportOnAnUncheckedPlatform(t *testing.T) {
 		}},
 		Files: 1, Bytes: 10, Sources: 1,
 	}
-	Run(&out, res, &fakeInstaller{editors: []string{"Claude Code"}}, func(string) bool { return true }, true)
+	Run(&out, Input{Scan: res}, &fakeInstaller{editors: []string{"Claude Code"}}, func(string) bool { return true }, true)
 	if !strings.Contains(out.String(), "clean machine") {
 		t.Errorf("a Windows reader is not warned that a low count is unverified:\n%s", out.String())
+	}
+}
+
+// The advice beside a key must never offer a command that cannot move it.
+//
+// `keys migrate` holds provider keys. A database password in a connection
+// URL, a GitHub token and a private key have no gateway to sit behind, and
+// the scanner's own type says the advice printed beside one "must not say
+// otherwise". The first version of this report offered the command over
+// every finding, which told somebody with five keys that one command
+// handled all five when it could move one.
+func TestMigrateIsNotOfferedForKeysItCannotMove(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		in         []InFile
+		wantOffer  bool
+		wantCannot bool
+	}{
+		{
+			name:      "all migratable",
+			in:        []InFile{{Label: "OpenAI key", Migratable: true}},
+			wantOffer: true,
+		},
+		{
+			name:       "none migratable",
+			in:         []InFile{{Label: "Password in a connection URL"}},
+			wantCannot: true,
+		},
+		{
+			name: "mixed",
+			in: []InFile{
+				{Label: "OpenAI key", Migratable: true},
+				{Label: "Password in a connection URL"},
+			},
+			wantOffer:  true,
+			wantCannot: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			Run(&buf, Input{
+				Scan:        agentsecrets.Result{Sources: 1, Files: 1},
+				InFiles:     tc.in,
+				ReadProject: true,
+				ProjectDir:  "this project",
+			}, &fakeInstaller{}, func(string) bool { return false }, false)
+			got := buf.String()
+
+			if offered := strings.Contains(got, "keys migrate"); offered != tc.wantOffer {
+				t.Errorf("offered `keys migrate` = %v, want %v\n--- output ---\n%s",
+					offered, tc.wantOffer, got)
+			}
+			if said := strings.Contains(got, "cannot be moved"); said != tc.wantCannot {
+				t.Errorf("said a key cannot be moved = %v, want %v\n--- output ---\n%s",
+					said, tc.wantCannot, got)
+			}
+		})
+	}
+}
+
+// A project that was never read must not be reported as a project with
+// no keys in it. Same rule as the history scan's Complete(): the claim is
+// about what was read, and silence is not a clean result.
+func TestUnreadProjectIsNotReportedAsClean(t *testing.T) {
+	var buf bytes.Buffer
+	Run(&buf, Input{Scan: agentsecrets.Result{Sources: 1, Files: 1}},
+		&fakeInstaller{}, func(string) bool { return false }, false)
+	if got := buf.String(); strings.Contains(got, "no keys in its own files") {
+		t.Errorf("claimed a clean project without reading one:\n%s", got)
 	}
 }

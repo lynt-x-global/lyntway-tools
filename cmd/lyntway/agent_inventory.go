@@ -210,6 +210,22 @@ type aiApp struct {
 	Running   bool            `json:"running"`
 	Version   string          `json:"version"`
 	Endpoints []aiAppEndpoint `json:"endpoints,omitempty"`
+
+	// Publisher is the operating system's verdict on who signed this, and
+	// is filled in by agent_publisher.go. Identity, never safety: see the
+	// note at the top of that file for why the absent case is reported as
+	// an absent publisher rather than as a warning.
+	//
+	// Zero when the inventory was taken without asking — the fixture
+	// tests do, because a signature is a property of this machine and not
+	// of the tree being walked.
+	Publisher *appPublisher `json:"publisher,omitempty"`
+
+	// path is where this was found, kept only long enough to ask the OS
+	// who signed it. Unexported on purpose: a filesystem path is a fact
+	// about somebody's machine, and the contract for this type is that
+	// nothing which is not reported can be carried off it.
+	path string
 }
 
 // aiAppDef is how to recognise one application on each OS.
@@ -394,18 +410,25 @@ func nameMatches(goos, name string, want []string) bool {
 func inventory(h agentHost, procs []procInfo) []aiApp {
 	var out []aiApp
 	for _, d := range aiApps {
-		installed, version := d.installed(h)
+		installed, version, path := d.installed(h)
 		running := false
 		for _, p := range procs {
 			if d.procMatches(h.GOOS, p) {
 				running = true
+				// The running executable is the better thing to ask about
+				// than the install location: it is what is actually
+				// executing, and on macOS a bundle and the binary inside
+				// it can carry different signatures.
+				if p.Path != "" {
+					path = p.Path
+				}
 				break
 			}
 		}
 		if !installed && !running {
 			continue
 		}
-		out = append(out, aiApp{Name: d.Name, Kind: d.Kind, Running: running, Version: version})
+		out = append(out, aiApp{Name: d.Name, Kind: d.Kind, Running: running, Version: version, path: path})
 	}
 
 	for _, ed := range editors {
@@ -417,6 +440,10 @@ func inventory(h agentHost, procs []procInfo) []aiApp {
 			}
 		}
 		for _, ext := range installedExtensions(h.join(filepath.FromSlash(ed.ExtDir))) {
+			// No path: an editor extension is JavaScript inside an editor
+			// the OS signed, so there is no separate binary to ask about
+			// and a publisher read from the editor would name the wrong
+			// party.
 			out = append(out, aiApp{Name: ext.Name + " in " + ed.Name, Kind: "desktop", Running: edRunning, Version: ext.Version})
 		}
 	}
@@ -436,9 +463,30 @@ func inventory(h agentHost, procs []procInfo) []aiApp {
 	return out
 }
 
+// withPublishers asks the operating system who signed each entry.
+//
+// Separate from inventory() rather than inside it because the inventory is
+// exercised against fixture trees for every OS, and a signature is a
+// property of the machine running the test rather than of the tree. A
+// caller that wants the publishers asks for them.
+//
+// Entries with no binary of their own — an editor extension, a JetBrains
+// plugin — are left with no publisher rather than given the editor's,
+// which would name the wrong party.
+func withPublishers(goos string, apps []aiApp) []aiApp {
+	for i := range apps {
+		if apps[i].path == "" {
+			continue
+		}
+		p := readPublisher(goos, apps[i].path)
+		apps[i].Publisher = &p
+	}
+	return apps
+}
+
 // installed reports whether the application is on disk, and its version
 // when that is readable without running it.
-func (d aiAppDef) installed(h agentHost) (bool, string) {
+func (d aiAppDef) installed(h agentHost) (bool, string, string) {
 	switch h.GOOS {
 	case "darwin":
 		if d.MacBundle != "" {
@@ -448,21 +496,21 @@ func (d aiAppDef) installed(h agentHost) (bool, string) {
 				}
 				bundle := filepath.Join(root, d.MacBundle)
 				if info, err := os.Stat(bundle); err == nil && info.IsDir() {
-					return true, bundleVersion(bundle)
+					return true, bundleVersion(bundle), bundle
 				}
 			}
 		}
 	case "windows":
 		for _, rel := range d.WinPaths {
 			for _, root := range append([]string{h.LocalAppData}, h.ProgramFiles...) {
-				if root != "" && exists(filepath.Join(root, filepath.FromSlash(rel))) {
-					return true, ""
+				if full := filepath.Join(root, filepath.FromSlash(rel)); root != "" && exists(full) {
+					return true, "", full
 				}
 			}
 		}
 		if d.WinPackage != "" && h.LocalAppData != "" {
 			if m, _ := filepath.Glob(filepath.Join(h.LocalAppData, "Packages", d.WinPackage+"*")); len(m) > 0 {
-				return true, ""
+				return true, "", m[0]
 			}
 		}
 	default:
@@ -473,19 +521,21 @@ func (d aiAppDef) installed(h agentHost) (bool, string) {
 				p = filepath.Join(h.Root, filepath.FromSlash(p))
 			}
 			if p != "" && pathExists(p) {
-				return true, ""
+				return true, "", p
 			}
 		}
 	}
-	if len(d.Bins) > 0 && findBinary(h, d.Bins) != "" {
-		return true, d.versionFromDir(h)
+	if len(d.Bins) > 0 {
+		if bin := findBinary(h, d.Bins); bin != "" {
+			return true, d.versionFromDir(h), bin
+		}
 	}
 	if d.VersionDir != "" {
 		if v := d.versionFromDir(h); v != "" {
-			return true, v
+			return true, v, ""
 		}
 	}
-	return false, ""
+	return false, "", ""
 }
 
 func (d aiAppDef) versionFromDir(h agentHost) string {

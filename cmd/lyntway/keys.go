@@ -130,13 +130,59 @@ var (
 )
 
 func ask(prompt string) bool {
+	a := askLine(prompt)
+	return a == "y" || a == "yes"
+}
+
+// askYes is ask for a prompt whose default is yes — "[Y/n]".
+//
+// Separate rather than a parameter so the shape of the prompt and the
+// shape of the answer cannot disagree: every [Y/n] in this tool calls
+// this and every [y/N] calls ask, and a reader checking one against the
+// other has only two things to look at.
+func askYes(prompt string) bool {
+	a := askLine(prompt)
+	return a == "" || a == "y" || a == "yes"
+}
+
+// askLine reads one answer, lowercased and trimmed.
+//
+// # Why there is exactly one reader
+//
+// Every prompt in this tool used to call bufio.NewReader(stdin) for
+// itself. A bufio.Reader fills its buffer from the underlying file — up
+// to four kilobytes — hands back the first line, and when it goes out of
+// scope the rest of that buffer goes with it. At a terminal that is
+// invisible, because a person types one line at a time and there is
+// never a second line to lose.
+//
+// Piped, it eats the answers. `printf 'y\nm\nn\n' | lyntway setup`
+// read the "y", discarded "m" and "n" with the reader, and every prompt
+// after the first got an empty line and took its default — so a run that
+// answered "just me" was recorded as an organisation. Silently, and in
+// the direction that offers more rather than less.
+//
+// That is anything scripted: a Dockerfile, a CI step, an install script,
+// somebody piping answers to save time. One reader for the process keeps
+// what it buffered.
+func askLine(prompt string) string {
 	if input == nil || inputFrom != stdin {
 		input, inputFrom = bufio.NewReader(stdin), stdin
 	}
 	fmt.Fprint(stdout, prompt)
 	line, _ := input.ReadString('\n')
-	a := strings.ToLower(strings.TrimSpace(line))
-	return a == "y" || a == "yes"
+	return strings.ToLower(strings.TrimSpace(line))
+}
+
+// askRaw is askLine without lowercasing, for an answer whose case
+// matters — an API key, a path, an address.
+func askRaw(prompt string) string {
+	if input == nil || inputFrom != stdin {
+		input, inputFrom = bufio.NewReader(stdin), stdin
+	}
+	fmt.Fprint(stdout, prompt)
+	line, _ := input.ReadString('\n')
+	return strings.TrimSpace(line)
 }
 
 type migrateOptions struct {
@@ -424,7 +470,7 @@ func runMigrate(dir string, c config, opts migrateOptions) error {
 
 	// Suggest the git hook when the project is a git repo and the hook
 	// is not already installed, so a key pasted back is caught at commit.
-	if gitDir := findGitDir(dir); gitDir != "" && !gitHookInstalled(gitDir) {
+	if gitDir := findGitDir(dir); gitDir != "" && !gitHookInstalled(gitDir, "pre-commit", gitHookStart) {
 		fmt.Fprintln(stdout, "\nTip: run `lyntway hook install --git` to block commits that carry a provider key.")
 	}
 	return nil

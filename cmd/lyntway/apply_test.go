@@ -414,7 +414,7 @@ func TestTheShellBlockPairsTheProviderKeyWhenTheShellStarts(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			want := "lyk_test~sk-real\nlyk_test\nsk-ant-real\n"
+			want := "lyk_test~sk-real\n"
 			if got := sourced(t, shell, dir, profile, 1); got != want {
 				t.Errorf("after sourcing once:\n got %q\nwant %q", got, want)
 			}
@@ -443,17 +443,17 @@ func TestAShellWithNoProviderKeyIsNotGivenABrokenOne(t *testing.T) {
 	if _, err := writeEnv(profile, config{Origin: "https://lyntway.example", Key: "lyk_test"}); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := sourced(t, "sh", dir, profile, 1), "\nlyk_test\n\n"; got != want {
+	if got, want := sourced(t, "sh", dir, profile, 1), "\n"; got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
 
-// sourced reads the profile in a clean environment and reports the three
-// variables that decide whether a call reaches the gateway authenticated.
+// sourced reads the profile in a clean environment and reports the
+// variable that decides whether a call reaches the gateway authenticated.
 func sourced(t *testing.T, shell, home, profile string, times int) string {
 	t.Helper()
 	script := strings.Repeat(". "+profile+"; ", times) +
-		`printf '%s\n%s\n%s\n' "$OPENAI_API_KEY" "$ANTHROPIC_AUTH_TOKEN" "$ANTHROPIC_API_KEY"`
+		`printf '%s\n' "$OPENAI_API_KEY"`
 	cmd := exec.Command(shell, "-c", script)
 	cmd.Env = []string{"HOME=" + home, "PATH=/usr/bin:/bin"}
 	out, err := cmd.CombinedOutput()
@@ -559,13 +559,19 @@ func TestAPowerShellProfileIsWrittenInPowerShell(t *testing.T) {
 	}
 	for _, want := range []string{
 		`$env:OPENAI_BASE_URL = "https://lyntway.com/gw/openai/v1"`,
-		`$env:ANTHROPIC_BASE_URL = "https://lyntway.com/gw/anthropic"`,
 		`$env:LYNTWAY_KEY = "lynt_sk_windowstest0000"`,
 		`$env:LYNTWAY_SIGNING_KEY = "sk-sign-test"`,
-		`$env:ANTHROPIC_AUTH_TOKEN = $env:LYNTWAY_KEY`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q from:\n%s", want, got)
+		}
+	}
+	for _, absent := range []string{
+		`ANTHROPIC_BASE_URL`,
+		`ANTHROPIC_AUTH_TOKEN`,
+	} {
+		if strings.Contains(got, absent) {
+			t.Errorf("profile must not set %s (breaks Claude Code):\n%s", absent, got)
 		}
 	}
 	// And undo still finds its own block, since the markers are comments
@@ -724,5 +730,63 @@ func TestAnUnreplaceableDestinationIsStillAnError(t *testing.T) {
 
 	if err := copyFile(src, dst); err == nil {
 		t.Error("copyFile reported success on a destination it could neither write nor rename")
+	}
+}
+
+// Undo must strip the "lyntway" tool server entry from MCP configs, even
+// when no backup exists. The entry was added beside the wrapped servers,
+// and a missing backup left it behind — every tool that read the config
+// (Claude Desktop, Cursor) then tried to call a binary that no longer
+// existed.
+func TestRemoveLyntwayMCPEntryStripsOurEntryAndKeepsTheRest(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mcp.json")
+	original := `{
+  "mcpServers": {
+    "github": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"]},
+    "lyntway": {"command": "lyntway.exe", "args": ["mcp-server"]}
+  }
+}`
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ok, err := removeLyntwayMCPEntry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("removeLyntwayMCPEntry said nothing changed")
+	}
+
+	body, _ := os.ReadFile(path)
+	var doc struct {
+		Servers map[string]json.RawMessage `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatalf("result is not valid JSON: %v\n%s", err, body)
+	}
+	if _, has := doc.Servers["lyntway"]; has {
+		t.Error("the lyntway entry survived")
+	}
+	if _, has := doc.Servers["github"]; !has {
+		t.Error("the github entry was lost")
+	}
+}
+
+func TestRemoveLyntwayMCPEntryIsANoOpWhenAbsent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mcp.json")
+	original := `{"mcpServers": {"github": {"command": "npx"}}}`
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ok, err := removeLyntwayMCPEntry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Error("removeLyntwayMCPEntry said it changed a file with no lyntway entry")
 	}
 }

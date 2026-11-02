@@ -187,6 +187,35 @@ func NewEd25519Signer(keyID string, priv ed25519.PrivateKey) (*Ed25519Signer, er
 		return nil, fmt.Errorf("receipt: private key must be %d bytes, got %d",
 			ed25519.PrivateKeySize, len(priv))
 	}
+	// An Ed25519 private key is a seed followed by the public key derived
+	// from it, and nothing about the encoding forces the two halves to
+	// agree. Sixty-four random bytes satisfy every length check here and
+	// are what `openssl rand -base64 64` produces, so it is the obvious
+	// thing for an operator to paste into the signing key variable.
+	//
+	// Such a key signs with the seed and publishes the other half, so the
+	// deployment starts clean, serves a key file, issues receipts all
+	// week, and every one of them fails verification — not as a signature
+	// that is wrong, but as a signature by a key nobody can establish. The
+	// failure appears only in front of whoever the evidence was produced
+	// for, which is the one audience it must never fail in front of.
+	//
+	// Refused here rather than in the server so the CLI, the device agent
+	// and anything embedding this package are covered by the same check,
+	// and for the reason loadES256Signer already refuses a bare scalar: a
+	// key for the wrong curve is indistinguishable from a valid one until
+	// signatures start failing.
+	// Derived from the seed rather than read back through priv.Public(),
+	// which copies the stored half and would therefore compare it with
+	// itself. Sign uses the seed, so the seed is what the comparison has
+	// to start from.
+	derived := ed25519.NewKeyFromSeed(priv.Seed())
+	if !ed25519.PublicKey(derived[ed25519.SeedSize:]).Equal(ed25519.PublicKey(priv[ed25519.SeedSize:])) {
+		return nil, errors.New("receipt: this private key's two halves disagree — " +
+			"the public key it carries is not the one its seed derives, so every receipt it signs " +
+			"would be published under a key that cannot verify it. An Ed25519 private key is a " +
+			"32-byte seed followed by its own public key, not 64 random bytes; pass the 32-byte seed instead")
+	}
 	return &Ed25519Signer{keyID: keyID, priv: priv}, nil
 }
 

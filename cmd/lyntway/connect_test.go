@@ -65,7 +65,7 @@ func projectWithKeys(t *testing.T) string {
 func TestConnectShowsEveryKeyTheScannerFound(t *testing.T) {
 	dir := projectWithKeys(t)
 
-	scanned, _, err := scanPaths([]string{dir})
+	scanned, _, _, err := scanPaths([]string{dir})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -84,6 +84,12 @@ func writeEnv(path string, c config) (string, error) {
 	// else: no `export`, and variables live under the env: drive. Keyed on
 	// the file's own suffix, like fish below, so the syntax follows the
 	// profile being written rather than the machine writing it.
+	// ANTHROPIC_BASE_URL is deliberately absent. Claude Code reads it
+	// and routes its own API calls through the gateway, where the default
+	// policy blocks the secrets that appear in any conversation. The
+	// result is a 403 on every prompt after a restart. Anthropic SDK
+	// traffic is routed per-app: `lyntway guard`, the .env migration, or
+	// a manual ANTHROPIC_BASE_URL in the application's own environment.
 	var lines []string
 	if isPowerShell(path) {
 		lines = []string{
@@ -92,12 +98,11 @@ func writeEnv(path string, c config) (string, error) {
 			"# Your AI traffic is routed through Lyntway so it can be recorded.",
 			`$env:PATH = "$HOME\.lyntway\bin;$env:PATH"`,
 			fmt.Sprintf(`$env:OPENAI_BASE_URL = %q`, origin+"/gw/openai/v1"),
-			fmt.Sprintf(`$env:ANTHROPIC_BASE_URL = %q`, origin+"/gw/anthropic"),
 			fmt.Sprintf(`$env:LYNTWAY_KEY = %q`, key),
 			"# The gateway authenticates the Lyntway key and forwards yours. OpenAI's",
 			"# SDK has one field for both, so they are joined with a tilde — only when",
 			"# your own key is set, and only once, so a profile read twice is not",
-			"# paired twice. Anthropic's SDK sends its bearer token separately.",
+			"# paired twice.",
 		}
 	} else {
 		lines = []string{
@@ -106,12 +111,11 @@ func writeEnv(path string, c config) (string, error) {
 			"# Your AI traffic is routed through Lyntway so it can be recorded.",
 			`export PATH="$HOME/.lyntway/bin:$PATH"`,
 			fmt.Sprintf("export OPENAI_BASE_URL=%q", origin+"/gw/openai/v1"),
-			fmt.Sprintf("export ANTHROPIC_BASE_URL=%q", origin+"/gw/anthropic"),
 			fmt.Sprintf("export LYNTWAY_KEY=%q", key),
 			"# The gateway authenticates the Lyntway key and forwards yours. OpenAI's",
 			"# SDK has one field for both, so they are joined with a tilde — only when",
 			"# your own key is set, and only once, so a profile read twice is not",
-			"# paired twice. Anthropic's SDK sends its bearer token separately.",
+			"# paired twice.",
 		}
 	}
 	lines = append(lines, pairingLines(path)...)
@@ -156,18 +160,15 @@ func pairingLines(profile string) []string {
 	if isPowerShell(profile) {
 		return []string{
 			`if ($env:OPENAI_API_KEY -and $env:OPENAI_API_KEY -notlike "*~*") { $env:OPENAI_API_KEY = "$env:LYNTWAY_KEY~$env:OPENAI_API_KEY" }`,
-			`$env:ANTHROPIC_AUTH_TOKEN = $env:LYNTWAY_KEY`,
 		}
 	}
 	if strings.HasSuffix(profile, ".fish") {
 		return []string{
 			`if set -q OPENAI_API_KEY; and not string match -q '*~*' -- $OPENAI_API_KEY; set -gx OPENAI_API_KEY "$LYNTWAY_KEY~$OPENAI_API_KEY"; end`,
-			`set -gx ANTHROPIC_AUTH_TOKEN "$LYNTWAY_KEY"`,
 		}
 	}
 	return []string{
 		`if [ -n "$OPENAI_API_KEY" ]; then case "$OPENAI_API_KEY" in *~*) ;; *) export OPENAI_API_KEY="$LYNTWAY_KEY~$OPENAI_API_KEY" ;; esac; fi`,
-		`export ANTHROPIC_AUTH_TOKEN="$LYNTWAY_KEY"`,
 	}
 }
 
@@ -327,6 +328,59 @@ func addToUserPath(dir string) error {
 			` [Environment]::SetEnvironmentVariable('PATH', ($p.TrimEnd(';') + ';' + $d), 'User')`,
 		dir)
 	return exec.Command("powershell", "-NoProfile", "-Command", script).Run()
+}
+
+// removeFromUserPath removes dir from the user-level PATH on Windows.
+// Called by undo so ~/.lyntway/bin does not outlive the install.
+func removeFromUserPath(dir string) error {
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+	script := fmt.Sprintf(
+		`$p = [Environment]::GetEnvironmentVariable('PATH','User');`+
+			` if (-not $p) { exit 0 };`+
+			` $d = '%s';`+
+			` $parts = $p -split ';' | Where-Object { $_.Trim() -ine $d -and $_.Trim() -ne '' };`+
+			` [Environment]::SetEnvironmentVariable('PATH', ($parts -join ';'), 'User')`,
+		dir)
+	return exec.Command("powershell", "-NoProfile", "-Command", script).Run()
+}
+
+// removeLyntwayMCPEntry removes the "lyntway" tool server entry from an
+// MCP config file. wrapMCP adds this entry beside the wrapped servers, and
+// undo's backup restore usually takes it out — but when the backup is
+// missing or was taken after the entry was added, it survives.
+func removeLyntwayMCPEntry(path string) (bool, error) {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return false, nil
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return false, nil
+	}
+	raw, ok := doc["mcpServers"]
+	if !ok {
+		return false, nil
+	}
+	var servers map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &servers); err != nil {
+		return false, nil
+	}
+	if _, has := servers["lyntway"]; !has {
+		return false, nil
+	}
+	delete(servers, "lyntway")
+	encoded, err := json.Marshal(servers)
+	if err != nil {
+		return false, err
+	}
+	doc["mcpServers"] = encoded
+	out, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return false, err
+	}
+	return true, os.WriteFile(path, append(out, '\n'), 0o600)
 }
 
 // shimPath returns the absolute path to the lyntway-mcp binary.

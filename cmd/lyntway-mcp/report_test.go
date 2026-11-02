@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -19,6 +20,9 @@ func signedInHome(t *testing.T, origin string) {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	if runtime.GOOS == "windows" {
+		t.Setenv("USERPROFILE", home)
+	}
 	dir := filepath.Join(home, ".lyntway")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -112,6 +116,9 @@ func TestOnlyClassesAndCountsEverLeaveTheMachine(t *testing.T) {
 func TestAnUnconfiguredMachineReportsNothingAndSaysNothing(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	if runtime.GOOS == "windows" {
+		t.Setenv("USERPROFILE", home)
+	}
 
 	if rep := newReporter(); rep != nil {
 		t.Error("a machine with no config produced a reporter")

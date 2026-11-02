@@ -3,17 +3,23 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/lynt-x-global/lyntway-tools/detect"
 )
@@ -62,6 +68,91 @@ type keyHit struct {
 	// names a provider; it never means the key can be moved, which is why
 	// it is separate from Upstream rather than folded into it.
 	Catalog string
+
+	// Declared names the secret-scanner configuration this value sits in,
+	// when it sits in one: a gitleaks allowlist, a detect-secrets
+	// baseline, a git-secrets allowed list. Those files exist to say
+	// "these strings are not secrets", and a value in one is a claim the
+	// repository already made in a reviewable place.
+	//
+	// Reported and not counted, rather than skipped. Skipping would make
+	// adding a leaked key to a gitleaks allowlist a way to silence this
+	// scanner, which is the exact move that must never work. Counting
+	// would put 73 findings in front of somebody on their first run of
+	// `lyntway scan` in this very repository, 68 of which are its own
+	// test fixtures — and a first screen that is mostly wrong is a tool
+	// nobody runs twice.
+	Declared string
+
+	// Live is what the provider said about this credential when --check
+	// asked, and livenessUnknown — the zero value — when nothing asked.
+	// That the default is "unknown" rather than "revoked" is the point:
+	// see checklive.go.
+	Live liveness
+
+	// value is the credential itself, and it is empty unless --check is
+	// going to need it.
+	//
+	// Unexported deliberately. Every report this tool writes — text,
+	// JSON, SARIF, the receipt — is built from the fields beside it, and
+	// an encoder cannot reach this one however somebody later extends
+	// them. The scanner has never retained a credential and the default
+	// has to stay that way; retainValues is what turns it on, for the one
+	// run that is about to present it to its issuer.
+	value string
+}
+
+// retainValues says whether findKeys should keep the credential it found.
+//
+// A switch rather than a parameter: findKeys has eight call sites, one of
+// them the hook that runs inside Claude Code's prompt path, and all but
+// one of them must never hold a value. Threading a false through all of
+// them to serve a single flag would put the dangerous option in every
+// signature. It is set once in scanCommand before any scanning starts and
+// never written again, which is what makes it safe beside the worker pool.
+var retainValues bool
+
+// skipped records files a scan did not read, and why.
+//
+// # Why this is not an implementation detail
+//
+// scanPaths skips two kinds of file: anything with a NUL byte in its
+// first 8 KB, which is how a binary is told from text, and anything over
+// four megabytes. Both are the right call — scanning a PNG produces
+// nothing but noise, and reading a 2 GB log to look for a key is how a
+// pre-commit hook becomes something people remove.
+//
+// Neither was ever mentioned. On 2 November 2026 a directory holding
+// three files, each with a live OpenAI key in it, produced:
+//
+//	No provider keys in 0 files.
+//
+// and exit 0, which passes a CI gate. One file had a single NUL byte on
+// its first line; one had a NUL at byte 7,999; one was 4.2 MB. Writing
+// a NUL at the top of a .env is a one-character way to hide every secret
+// in it from this scanner, and nothing in the output suggested anything
+// had been passed over.
+//
+// The skipping stays. What changes is that "no provider keys" is now a
+// claim about a number of files the reader can see, with the rest named
+// — the same rule the receipts are built on, applied to the tool that
+// writes them.
+type skippedFile struct {
+	Path   string
+	Reason string
+}
+
+// declaringFiles are the secret-scanner configurations whose whole point
+// is to list strings that are not secrets.
+//
+// Matched by name because that is what the tools match by. The value is
+// what to call the file to a person, and is printed, so somebody reading
+// the output can go and check the claim rather than take it.
+var declaringFiles = map[string]string{
+	".gitleaks.toml":    "gitleaks allowlist",
+	"gitleaks.toml":     "gitleaks allowlist",
+	".secrets.baseline": "detect-secrets baseline",
+	".gitallowed":       "git-secrets allowed list",
 }
 
 // allowMarker on a line means the author has looked and this is not a
@@ -79,6 +170,13 @@ var credentialRules = detect.Default()
 var classUpstreams = map[detect.Class]string{
 	detect.ClassOpenAIKey:    "openai",
 	detect.ClassAnthropicKey: "anthropic",
+	// Google and xAI were found by the prefix list in dotenv.go until
+	// 2 November 2026, when detect gained rules for them. The ruleset now
+	// claims the span first, so without these two lines `keys migrate`
+	// stopped recognising a key it had been able to move into the gateway
+	// — the finding was still correct and the remedy silently went away.
+	detect.ClassGoogleAPIKey: "gemini",
+	detect.ClassXAIKey:       "xai",
 }
 
 // shapePatterns are the value prefixes from providerShapes that the
@@ -155,13 +253,17 @@ func findKeys(text string, firstLine int) []keyHit {
 		if allowed(line) || looksLikePlaceholder(sp.Value) {
 			continue
 		}
-		hits = append(hits, keyHit{
+		hit := keyHit{
 			Line:     firstLine + line,
 			Label:    detect.Label(sp.Class),
 			Class:    string(sp.Class),
 			Last4:    last4(sp.Value),
 			Upstream: classUpstreams[sp.Class],
-		})
+		}
+		if retainValues {
+			hit.value = sp.Value
+		}
+		hits = append(hits, hit)
 		covered[line] = append(covered[line], [2]int{sp.Start - starts[line], sp.End - starts[line]})
 	}
 
@@ -280,7 +382,9 @@ func scanCommand(args []string) error {
 	fs := flag.NewFlagSet("scan", flag.ExitOnError)
 	base := fs.String("diff", "", "scan only the lines added since this git revision (a branch, tag or commit)")
 	staged := fs.Bool("staged", false, "scan only what is staged for the next commit")
-	format := fs.String("format", "text", "text, or github for ::error annotations a workflow shows inline")
+	history := fs.Bool("history", false, "scan every commit, not the files on disk")
+	check := fs.Bool("check", false, "ask each provider whether the key it issued still works (sends it to that provider, never to Lyntway)")
+	format := fs.String("format", "text", "text, json, sarif, or github for ::error annotations a workflow shows inline")
 	fs.Usage = func() {
 		fmt.Fprint(os.Stderr, "lyntway scan — find provider keys before they are committed\n"+
 			"\n"+
@@ -288,23 +392,85 @@ func scanCommand(args []string) error {
 			"  lyntway scan [paths...]              scan files (default: the current directory)\n"+
 			"  lyntway scan --diff origin/main      scan the lines added since a revision\n"+
 			"  lyntway scan --staged                scan only what is about to be committed\n"+
+			"  lyntway scan --history               scan every commit this repository still carries\n"+
+			"  lyntway scan --check                 and ask each provider whether the key still works\n"+
 			"\n"+
 			"Prints file:line, what the key is, and its last four characters — never\n"+
 			"the key. Exits 1 when anything is found, so it can gate a commit or a\n"+
 			"pull request. A line carrying the word "+allowMarker+" is skipped.\n"+
+			"\n"+
+			"--history answers a different question: not what is about to leave, but\n"+
+			"what is still in here. Deleting a key from a file does not remove it from\n"+
+			"the commit that added it, and every other view reports that repository\n"+
+			"clean. One line per credential, however many commits carry it.\n"+
+			"\n"+
+			"--format sarif writes a SARIF 2.1.0 document for GitHub code scanning,\n"+
+			"which keeps a finding against its line across runs and shows it in the\n"+
+			"pull request's diff. Upload it with github/codeql-action/upload-sarif.\n"+
 			"\n"+
 			"Flags:\n")
 		fs.PrintDefaults()
 	}
 	_ = fs.Parse(flagsFirst(fs, args))
 
-	if *format != "text" && *format != "github" {
-		return fmt.Errorf("--format is text or github, not %q", *format)
+	switch *format {
+	case "text", "github", "json", "sarif":
+	default:
+		return fmt.Errorf("--format is text, json, sarif or github, not %q", *format)
+	}
+
+	// The value is kept only for the run that is about to present it to
+	// its issuer, and this is set before anything scans.
+	retainValues = *check
+
+	// History answers a different question from the other three — what is
+	// still in here, rather than what is about to leave — so it reports in
+	// its own shape rather than being folded into a file:line list that
+	// would have to invent a file for a commit nobody has checked out.
+	if *history {
+		if *check {
+			return errCheckNeedsValues
+		}
+		if *base != "" || *staged {
+			return fmt.Errorf("--history scans every commit; --diff and --staged choose a narrower view")
+		}
+		if fs.NArg() > 1 {
+			return fmt.Errorf("--history takes at most one revision")
+		}
+		rev := ""
+		if fs.NArg() == 1 {
+			rev = fs.Arg(0)
+		}
+		found, commits, err := scanHistory(".", rev)
+		if err != nil {
+			return err
+		}
+		if *format == "sarif" {
+			// SARIF anchors a result to a file and a line in the checked
+			// -out tree, and a key in an old commit has neither. Reporting
+			// it against the path it used to live at would put a finding
+			// on a file that is not there, or worse, on a line of whatever
+			// is there now. Refused rather than approximated.
+			return fmt.Errorf("--format sarif needs a file and a line to anchor each result, " +
+				"and --history reports commits; use --format json")
+		}
+		if *format == "json" {
+			if err := printHistoryJSON(found, commits); err != nil {
+				return err
+			}
+		} else {
+			printHistory(found, commits)
+		}
+		if len(found) == 0 {
+			return nil
+		}
+		return &scanFindings{n: len(found)}
 	}
 
 	var (
 		hits    []keyHit
 		scanned int
+		skips   []skippedFile
 		unit    string
 		err     error
 	)
@@ -328,28 +494,111 @@ func scanCommand(args []string) error {
 		if len(paths) == 0 {
 			paths = []string{"."}
 		}
-		hits, scanned, err = scanPaths(paths)
+		hits, scanned, skips, err = scanPaths(paths)
 		unit = "file"
 	}
 	if err != nil {
 		return err
 	}
 
-	for _, h := range hits {
+	found, declared := splitDeclared(hits)
+
+	if *check && len(found) > 0 {
+		// Said before anything leaves, not after. Stderr, so a JSON or
+		// SARIF document on stdout stays a document.
+		fmt.Fprintln(os.Stderr, liveNotice())
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		checkHits(ctx, found)
+		cancel()
+	}
+
+	if *format == "json" || *format == "sarif" {
+		var err error
+		if *format == "json" {
+			err = printScanJSON(found, declared, scanned, unit, skips)
+		} else {
+			// A clean SARIF run still uploads: code scanning closes a
+			// finding when the run that would report it comes back empty,
+			// and a tool that prints nothing on success leaves every
+			// fixed key open forever.
+			err = printScanSARIF(found, version)
+		}
+		if err != nil {
+			return err
+		}
+		if len(found) == 0 {
+			return nil
+		}
+		return &scanFindings{n: len(found)}
+	}
+
+	for _, h := range found {
 		if *format == "github" {
 			fmt.Fprintln(stdout, githubAnnotation(h))
 			continue
 		}
+		if *check {
+			fmt.Fprintf(stdout, "%s:%d\t%s\t…%s\t%s\n", h.File, h.Line, h.Label, h.Last4, h.Live)
+			continue
+		}
 		fmt.Fprintf(stdout, "%s:%d\t%s\t…%s\n", h.File, h.Line, h.Label, h.Last4)
 	}
-	if len(hits) == 0 {
+	if len(found) == 0 {
 		fmt.Fprintf(stdout, "No provider keys in %d %s%s.\n", scanned, unit, pluralS(scanned))
+	}
+	printSkipped(skips, *format)
+	printDeclared(declared, *format)
+	if len(found) == 0 {
 		return nil
 	}
 
 	fmt.Fprintln(stdout)
-	fmt.Fprintln(stdout, scanAdvice(hits))
-	return &scanFindings{n: len(hits)}
+	if *check {
+		if summary := liveSummary(found); summary != "" {
+			fmt.Fprintln(stdout, summary)
+			fmt.Fprintln(stdout)
+		}
+	}
+	fmt.Fprintln(stdout, scanAdvice(found))
+	return &scanFindings{n: len(found)}
+}
+
+// printSkipped names the files a scan did not read.
+//
+// After the findings and before the advice, because it qualifies both: a
+// reader who has just been told "no provider keys" needs the next
+// sentence to say how much of the directory that covers, and a reader
+// looking at six findings needs to know whether there might be a
+// seventh somewhere nothing opened.
+//
+// Named individually up to a handful. A count alone — "4 files skipped"
+// — tells somebody there is a gap and not where, which is the shape of a
+// warning people learn to scroll past.
+func printSkipped(skips []skippedFile, format string) {
+	if len(skips) == 0 {
+		return
+	}
+	// In a workflow the only thing read is the annotation stream, and a
+	// plain line in the middle of it is a line GitHub discards. The
+	// warning level is deliberate: a file nobody opened is not an error
+	// — nothing was found in it — and it is not nothing either.
+	if format == "github" {
+		for _, s := range skips {
+			fmt.Fprintf(stdout, "::warning file=%s::Not read, so no finding here means nothing: %s\n",
+				s.Path, s.Reason)
+		}
+		return
+	}
+	fmt.Fprintf(stdout, "\n%d file%s could not be read, so nothing above is a claim about %s:\n",
+		len(skips), pluralS(len(skips)), map[bool]string{true: "it", false: "them"}[len(skips) == 1])
+	const show = 10
+	for i, s := range skips {
+		if i == show {
+			fmt.Fprintf(stdout, "  … and %d more\n", len(skips)-show)
+			break
+		}
+		fmt.Fprintf(stdout, "  %s — %s\n", s.Path, s.Reason)
+	}
 }
 
 // scanFindings is the error `scan` returns when it found something. It
@@ -366,6 +615,59 @@ func pluralS(n int) string {
 		return ""
 	}
 	return "s"
+}
+
+// splitDeclared separates the hits that are findings from the ones a
+// secret-scanner configuration already declares are not.
+func splitDeclared(hits []keyHit) (found, declared []keyHit) {
+	for _, h := range hits {
+		if h.Declared != "" {
+			declared = append(declared, h)
+			continue
+		}
+		found = append(found, h)
+	}
+	return found, declared
+}
+
+// printDeclared writes the values a scanner configuration vouches for,
+// below the findings and never counted among them.
+//
+// Printed at all because the alternative is a scanner that can be
+// silenced by editing a file in the repository it is scanning. The
+// sentence says whose claim it is and that we have not checked it, which
+// is the whole of what we honestly know: we can see that the repository
+// says these are fixtures, and we cannot see whether that is true.
+func printDeclared(declared []keyHit, format string) {
+	if len(declared) == 0 {
+		return
+	}
+	if format == "github" {
+		for _, h := range declared {
+			fmt.Fprintln(stdout, githubNotice(h))
+		}
+		return
+	}
+	files := map[string]string{}
+	for _, h := range declared {
+		files[h.File] = h.Declared
+	}
+	names := make([]string, 0, len(files))
+	for f := range files {
+		names = append(names, f)
+	}
+	sort.Strings(names)
+
+	fmt.Fprintf(stdout, "\n%d value%s in a secret scanner's own configuration, not counted above:\n",
+		len(declared), pluralS(len(declared)))
+	for _, h := range declared {
+		fmt.Fprintf(stdout, "  %s:%d\t%s\t…%s\n", h.File, h.Line, h.Label, h.Last4)
+	}
+	for _, f := range names {
+		fmt.Fprintf(stdout, "\n%s is a %s: it exists to list strings that are not secrets.\n", f, files[f])
+	}
+	fmt.Fprint(stdout, "That is the repository's claim, not a check we ran. If a real key was put\n"+
+		"there to quiet a scanner, it is still a real key.\n")
 }
 
 // scanAdvice says what to do, and says it once rather than per hit.
@@ -412,18 +714,49 @@ func githubAnnotation(h keyHit) string {
 	return fmt.Sprintf("::error file=%s,line=%d,title=%s::%s", prop(h.File), h.Line, prop(h.Label+" in source"), esc(msg))
 }
 
+// githubNotice is a declared value, rendered as a notice rather than an
+// error so it appears on the pull request without failing the check.
+func githubNotice(h keyHit) string {
+	prop := func(s string) string {
+		return strings.NewReplacer("%", "%25", "\r", "%0D", "\n", "%0A", ":", "%3A", ",", "%2C").Replace(s)
+	}
+	esc := func(s string) string {
+		return strings.NewReplacer("%", "%25", "\r", "%0D", "\n", "%0A").Replace(s)
+	}
+	return fmt.Sprintf("::notice file=%s,line=%d,title=%s::%s", prop(h.File), h.Line,
+		prop("Declared not a secret"),
+		esc(fmt.Sprintf("%s ending …%s, in a %s. Not counted as a finding; this repository says it is not a secret.",
+			h.Label, h.Last4, h.Declared)))
+}
+
 // scanPaths walks files. Directories are descended; .git and node_modules
 // are not, and anything that looks binary or is over the size limit is
 // counted as skipped rather than scanned, so "no keys" is a claim about
 // what was read.
-func scanPaths(paths []string) ([]keyHit, int, error) {
+//
+// # Why this is two passes and a worker pool
+//
+// Walking and scanning in one sequential pass took 87 seconds over this
+// repository's 32,000 files on one core, with the other cores idle. The
+// work is seventy-odd compiled patterns against each file's bytes, which
+// is the kind of work that divides perfectly — and a scanner somebody
+// runs before every push is a scanner whose speed decides whether they
+// keep running it.
+//
+// The order of the result must not depend on which worker finished
+// first. A report whose lines move between runs cannot be diffed, and a
+// test that asserts on the first finding would pass or fail by luck. So
+// the walk collects paths in the order it met them, the pool fills a slot
+// per path, and the slots are flattened in that same order afterwards.
+func scanPaths(paths []string) ([]keyHit, int, []skippedFile, error) {
 	const maxSize = 4 << 20
-	var hits []keyHit
-	var scanned int
+
+	var files []string
+	var oversize []skippedFile
 	for _, root := range paths {
 		info, err := os.Stat(root)
 		if err != nil {
-			return nil, 0, err
+			return nil, 0, nil, err
 		}
 		walk := func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
@@ -439,42 +772,107 @@ func scanPaths(paths []string) ([]keyHit, int, error) {
 				return nil
 			}
 			fi, err := d.Info()
-			if err != nil || fi.Size() > maxSize {
-				return nil
-			}
-			body, err := os.ReadFile(path)
 			if err != nil {
-				return err
-			}
-			if isBinary(body) {
 				return nil
 			}
-			scanned++
-			// Recognised, not scanned differently. The file was already
-			// read by the walk above; this only says what kind of file it
-			// turned out to be, so the report can say why a key here
-			// travels further than a key in a .env.
-			concept, isConcept := okfConceptOf(path, body)
-			for _, h := range findKeys(string(body), 1) {
-				h.File = filepath.ToSlash(path)
-				if isConcept {
-					h.Concept = &concept
-				}
-				hits = append(hits, h)
+			if fi.Size() > maxSize {
+				oversize = append(oversize, skippedFile{
+					Path:   filepath.ToSlash(path),
+					Reason: fmt.Sprintf("%d bytes, over the %d MB limit", fi.Size(), maxSize>>20),
+				})
+				return nil
 			}
+			files = append(files, path)
 			return nil
 		}
 		if !info.IsDir() {
 			if err := walk(root, fs.FileInfoToDirEntry(info), nil); err != nil {
-				return nil, 0, err
+				return nil, 0, nil, err
 			}
 			continue
 		}
 		if err := filepath.WalkDir(root, walk); err != nil {
-			return nil, 0, err
+			return nil, 0, nil, err
 		}
 	}
-	return hits, scanned, nil
+
+	type slot struct {
+		hits    []keyHit
+		counted bool
+		binary  bool
+		err     error
+	}
+	slots := make([]slot, len(files))
+
+	workers := runtime.NumCPU()
+	if workers > len(files) {
+		workers = len(files)
+	}
+	if workers < 1 {
+		workers = 1
+	}
+	var next atomic.Int64
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				i := int(next.Add(1)) - 1
+				if i >= len(files) {
+					return
+				}
+				path := files[i]
+				body, err := os.ReadFile(path)
+				if err != nil {
+					slots[i].err = err
+					continue
+				}
+				if isBinary(body) {
+					slots[i].binary = true
+					continue
+				}
+				slots[i].counted = true
+				// Recognised, not scanned differently. The file was
+				// already read above; this only says what kind of file it
+				// turned out to be, so the report can say why a key here
+				// travels further than a key in a .env.
+				concept, isConcept := okfConceptOf(path, body)
+				declared := declaringFiles[filepath.Base(path)]
+				for _, h := range findKeys(string(body), 1) {
+					h.File = filepath.ToSlash(path)
+					if isConcept {
+						h.Concept = &concept
+					}
+					h.Declared = declared
+					slots[i].hits = append(slots[i].hits, h)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	var hits []keyHit
+	var scanned int
+	skips := oversize
+	for i := range slots {
+		if slots[i].err != nil {
+			return nil, 0, nil, slots[i].err
+		}
+		if slots[i].binary {
+			skips = append(skips, skippedFile{
+				Path:   filepath.ToSlash(files[i]),
+				Reason: "a NUL byte in the first 8 KB, so it reads as binary",
+			})
+			continue
+		}
+		if slots[i].counted {
+			scanned++
+		}
+		hits = append(hits, slots[i].hits...)
+	}
+	sort.Slice(skips, func(a, b int) bool { return skips[a].Path < skips[b].Path })
+	return hits, scanned, skips, nil
 }
 
 func isBinary(body []byte) bool {
@@ -566,8 +964,14 @@ func parseDiff(diff []byte) ([]keyHit, int) {
 		if len(block) == 0 {
 			return
 		}
+		// The same recognition the directory walk does. Without it a pull
+		// request that adds one fixture to .gitleaks.toml fails the
+		// GitHub Action, which is the one change nobody should have to
+		// argue with a secret scanner about.
+		declared := declaringFiles[path.Base(file)]
 		for _, h := range findKeys(strings.Join(block, "\n"), blockAt) {
 			h.File = file
+			h.Declared = declared
 			hits = append(hits, h)
 		}
 		block = nil

@@ -505,7 +505,15 @@ func (r *hostResolver) name(addr netip.Addr, byAIApp bool) string {
 }
 
 // destKey is one row of the destinations list.
-type destKey struct{ Host, App string }
+//
+// Unrecognised is part of the key rather than a field decided afterwards,
+// because the same process name can be both: a catalogued application
+// matched by one of its paths and an unrelated binary of the same name
+// matched by neither should not merge into one row that is half true.
+type destKey struct {
+	Host, App    string
+	Unrecognised bool
+}
 
 // destAggregator counts distinct connections per host and application
 // over a reporting window.
@@ -536,7 +544,7 @@ func (a *destAggregator) add(conns []tcpConn, procs map[int]procInfo, goos strin
 		} else if p.Name == "" {
 			p.Name = c.Proc
 		}
-		app, isAI := appForProcess(goos, p)
+		app, isAI, known := appForProcess(goos, p)
 
 		var host string
 		if c.Remote.Addr().IsLoopback() {
@@ -549,7 +557,8 @@ func (a *destAggregator) add(conns []tcpConn, procs map[int]procInfo, goos strin
 		if host == "" {
 			continue
 		}
-		hits = append(hits, hit{destKey{Host: host, App: app}, fmt.Sprintf("%d|%s|%s", c.PID, c.Local, c.Remote)})
+		hits = append(hits, hit{destKey{Host: host, App: app, Unrecognised: !known},
+			fmt.Sprintf("%d|%s|%s", c.PID, c.Local, c.Remote)})
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -574,6 +583,17 @@ type destination struct {
 	Host        string `json:"host"`
 	App         string `json:"app"`
 	Connections int    `json:"connections"`
+
+	// Unrecognised says the process holding this connection is not in the
+	// catalogue of AI software — so this is a thing reaching an AI service
+	// that nobody here has a name for.
+	//
+	// appForProcess has always computed this and the row always dropped
+	// it, which left the console unable to tell a known tool apart from
+	// something nobody has heard of talking to the same host. That is the
+	// finding people actually want from an inventory, and it was the one
+	// fact being discarded.
+	Unrecognised bool `json:"unrecognised,omitempty"`
 }
 
 func (a *destAggregator) rows() []destination {
@@ -581,7 +601,7 @@ func (a *destAggregator) rows() []destination {
 	defer a.mu.Unlock()
 	out := make([]destination, 0, len(a.seen))
 	for k, ids := range a.seen {
-		out = append(out, destination{Host: k.Host, App: k.App, Connections: len(ids)})
+		out = append(out, destination{Host: k.Host, App: k.App, Connections: len(ids), Unrecognised: k.Unrecognised})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Connections != out[j].Connections {
@@ -595,18 +615,58 @@ func (a *destAggregator) rows() []destination {
 	return out
 }
 
-// appForProcess names the application a process belongs to, and whether
-// it is one of the AI applications in the catalogue.
-func appForProcess(goos string, p procInfo) (string, bool) {
-	if name, ok := extensionForPath(p.Path); ok {
-		return name, true
+// browsers are the processes a person uses an AI website through.
+//
+// They are named here so a browser reaching claude.ai is reported as a
+// browser and not as something nobody has a name for. It is still a
+// finding — a chat in a tab is traffic the CLI cannot redirect, which
+// /v1/coverage says plainly — but it is a person using a website, and
+// putting Chrome in a list headed "we do not recognise this" is the kind
+// of false alarm that makes somebody stop reading the list.
+//
+// Matched on the process name only. A browser's helper processes are named
+// after it and are the ones that actually hold the sockets.
+var browsers = []struct {
+	Name  string
+	Procs []string
+}{
+	{"Google Chrome", []string{"Google Chrome", "chrome", "Google Chrome Helper"}},
+	{"Safari", []string{"Safari", "com.apple.WebKit.Networking"}},
+	{"Firefox", []string{"firefox", "Firefox"}},
+	{"Microsoft Edge", []string{"Microsoft Edge", "msedge", "Microsoft Edge Helper"}},
+	{"Brave", []string{"Brave Browser", "brave", "Brave Browser Helper"}},
+	{"Arc", []string{"Arc", "Arc Helper"}},
+	{"Opera", []string{"Opera", "opera"}},
+	{"Vivaldi", []string{"Vivaldi", "vivaldi"}},
+}
+
+// appForProcess names the application a process belongs to, and answers
+// two different questions about it that must not be collapsed into one.
+//
+// isAI means the process is AI software from the catalogue. It is what
+// decides whether a reverse lookup is worth spending on an address, and it
+// must stay narrow: a browser opens connections to thousands of hosts, so
+// reverse-looking those up would be slow and would tell this machine's
+// resolver which sites the person visits. A test enforces that.
+//
+// known means some list here has a name for it — AI software, an editor,
+// or a browser. It is what decides whether a sighting is reported as
+// something nobody recognises, and it must stay broad, because Chrome in a
+// list headed "we have never heard of this" is a false alarm.
+//
+// The two were one return value until the browsers list was added, at
+// which point making browsers known would have silently enabled reverse
+// lookups for every site anybody visits.
+func appForProcess(goos string, p procInfo) (name string, isAI bool, known bool) {
+	if n, ok := extensionForPath(p.Path); ok {
+		return n, true, true
 	}
 	for _, d := range aiApps {
 		if d.procMatches(goos, p) {
-			return d.Name, true
+			return d.Name, true, true
 		}
 	}
-	name := p.Name
+	name = p.Name
 	if name == "" && p.Path != "" {
 		name = filepath.Base(p.Path)
 	}
@@ -618,11 +678,20 @@ func appForProcess(goos string, p procInfo) (string, bool) {
 	}
 	for _, ed := range editors {
 		if nameMatches(goos, name, ed.Procs) || (goos == "darwin" && strings.Contains(p.Path, "/"+ed.MacBundle+"/")) {
-			return ed.Name, true
+			// An editor is where coding agents run, so an address it holds
+			// is worth attributing.
+			return ed.Name, true, true
+		}
+	}
+	for _, b := range browsers {
+		if nameMatches(goos, name, b.Procs) {
+			// Known, so never reported as unrecognised; not AI, so no
+			// reverse lookup is spent on the rest of the web.
+			return b.Name, false, true
 		}
 	}
 	if name == "" {
-		return "unknown process", false
+		return "unknown process", false, false
 	}
-	return name, false
+	return name, false, false
 }

@@ -164,6 +164,9 @@ func main() {
 		err = status()
 	case "undo":
 		err = undo()
+	case "off":
+		cliCommand = "off"
+		err = offCommand(args[1:])
 	case "version":
 		fmt.Println(version)
 	case "help":
@@ -193,11 +196,13 @@ Usage:
   lyntway setup          sign in, scan, migrate keys, route tools — all in one
   lyntway login          connect this machine to an account
   lyntway connect        find the keys and tools that are here, and route them
+  lyntway connect URL    put Lyntway in front of one database or API
   lyntway init           find what is installed and route it through us
   lyntway keys migrate   move provider keys out of a project's .env files
   lyntway keys sign      give this key a signing keypair
   lyntway hook install   have Claude Code or Cursor refuse a prompt that carries a key
-  lyntway scan           find provider keys in files, or in a diff before it is pushed
+  lyntway scan           find provider keys in files, in a diff before it is pushed,
+                         or (--history) in every commit the repository still carries
   lyntway secure         one command: find what your AI tools have already seen, and
                          stop the next one reaching a model
   lyntway history        the same look, report only — never changes anything
@@ -217,6 +222,7 @@ Usage:
                          machine, what your agents can reach, and which of
                          those have a credential sitting in the config)
   lyntway undo           put everything back
+  lyntway off            remove everything this tool did, with no network needed
   lyntway version        which build this is
 
 Running lyntway with no arguments reports what is on this machine, and
@@ -246,6 +252,16 @@ type config struct {
 	// path, never the key: the key is on disk under 0600 and this file
 	// is read by `status`, which must not need it.
 	SigningKey string `json:"signing_key,omitempty"`
+
+	// Audience is "organisation" or "personal", answered once during
+	// setup and remembered so nothing asks twice.
+	//
+	// It changes what is offered, never what is enforced: a team is
+	// offered invitations and a fleet agent, one person is not, and both
+	// get the same governance. Kept here rather than on the server
+	// because it shapes this machine's prompts and the server has no use
+	// for it — a field nobody reads is a field that goes stale.
+	Audience string `json:"audience,omitempty"`
 }
 
 func configPath() (string, error) {
@@ -352,9 +368,7 @@ func login(args []string) error {
 				prefix = prefix[:12]
 			}
 			fmt.Fprintf(stdout, "\nThis machine already has a key (%s…) pointed at %s.\n", prefix, prev.Origin)
-			fmt.Fprint(stdout, "Use the existing key? [Y/n] ")
-			line, _ := bufio.NewReader(stdin).ReadString('\n')
-			answer := strings.TrimSpace(strings.ToLower(line))
+			answer := askLine("Use the existing key? [Y/n] ")
 			if answer == "" || answer == "y" || answer == "yes" {
 				fmt.Fprintf(stdout, "Keeping the existing key.\n")
 				return nil
@@ -385,9 +399,7 @@ func login(args []string) error {
 		// person just copied from their own console, and a hidden field
 		// somebody cannot see they have pasted into causes more failed
 		// logins than it prevents shoulder surfing.
-		fmt.Fprint(stdout, "API key: ")
-		line, _ := bufio.NewReader(stdin).ReadString('\n')
-		c.Key = strings.TrimSpace(line)
+		c.Key = askRaw("API key: ")
 	}
 	if c.Key == "" {
 		return fmt.Errorf("a key is needed")
@@ -493,7 +505,7 @@ func initialise(args []string) error {
 				fmt.Println("      No OPENAI_API_KEY is set in this shell. When you set one, pair it:")
 				fmt.Printf("        %s\n", setEnvLine("OPENAI_API_KEY", c.Key+"~YOUR_OPENAI_KEY"))
 			}
-			fmt.Println("      ANTHROPIC_AUTH_TOKEN carries your Lyntway key; ANTHROPIC_API_KEY stays your own.")
+			fmt.Println("      Anthropic SDK traffic: use `lyntway guard` or set ANTHROPIC_BASE_URL per-app.")
 			fmt.Println("      Run `lyntway status` in a new terminal to confirm before relying on it.")
 
 		case kindMCP:
@@ -560,14 +572,8 @@ func printManual(c config, targets []target) {
 func status() error {
 	c, err := loadConfig()
 	if err != nil {
-		// Not signed in is not an error to report back at somebody: the
-		// question `status` answers — what is on this machine — can be
-		// answered in full without an account, and refusing to answer it
-		// was how this command used to behave. Settings that exist and
-		// are unreadable are still an error, and still said out loud.
 		if firstRunWanted() {
-			dir, _ := os.Getwd()
-			return firstRun(dir)
+			return firstRun("")
 		}
 		return err
 	}
@@ -811,6 +817,37 @@ func undo() error {
 	// predates `hook install` has no hook in it, and one written after it
 	// has, so the entry is taken out of whatever was just put back.
 	restored += removeHooksEverywhere()
+
+	// The "lyntway" tool server entry was added beside the wrapped
+	// servers, and backup restore usually takes it out — but a missing
+	// backup leaves it behind, so strip it directly.
+	for _, t := range scan() {
+		if t.Kind != kindMCP || t.Path == "" || !exists(t.Path) {
+			continue
+		}
+		if ok, err := removeLyntwayMCPEntry(t.Path); err != nil {
+			fmt.Printf("  ✗ %s — %v\n", t.Name, err)
+		} else if ok {
+			fmt.Printf("  ✓ %s — removed lyntway tool server\n", t.Name)
+			restored++
+		}
+	}
+
+	// Remove ~/.lyntway/bin from PATH so it does not outlive the install.
+	if h := home(); h != "" {
+		binDir := filepath.Join(h, ".lyntway", "bin")
+		if err := removeFromUserPath(binDir); err == nil {
+			fmt.Println("  ✓ PATH — removed ~/.lyntway/bin")
+			restored++
+		}
+	}
+
+	// Remove scheduled tasks that the on-device agent or its proxy
+	// guardian created. Without this, a person who runs `lyntway undo`
+	// instead of `lyntway device uninstall` is left with tasks that fire
+	// into binaries that no longer exist, producing an error popup on
+	// every login.
+	removeAutoStart()
 
 	if restored == 0 {
 		fmt.Println("  Nothing to put back.")

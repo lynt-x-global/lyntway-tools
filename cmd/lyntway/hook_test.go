@@ -189,6 +189,9 @@ func TestHookInstallKeepsWhatWasThereAndUninstallTakesOnlyOurs(t *testing.T) {
 func TestHookInstallCreatesTheFileAndLeavesNoEmptyKeys(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	if runtime.GOOS == "windows" {
+		t.Setenv("USERPROFILE", home)
+	}
 
 	// Cursor, from nothing: the file is created with its version field.
 	path := cursorHooksFile()
@@ -234,15 +237,20 @@ func TestHookInstallCreatesTheFileAndLeavesNoEmptyKeys(t *testing.T) {
 		t.Errorf("undo output: %q", out)
 	}
 
-	// A file that is not a JSON object is refused, not overwritten.
+	// An array of primitives is not a hooks config — accept it like [].
 	if err := os.WriteFile(path, []byte("[1,2]"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := writeHook(path, true); err == nil {
-		t.Error("an array should be refused")
+	if _, _, err := writeHook(path, true); err != nil {
+		t.Errorf("an array of primitives should be accepted: %v", err)
 	}
-	if body, _ := os.ReadFile(path); string(body) != "[1,2]" {
-		t.Error("the refused file was changed")
+
+	// An array of objects might be someone's real config — refuse it.
+	if err := os.WriteFile(path, []byte(`[{"command":"something"}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := writeHook(path, true); err == nil {
+		t.Error("an array of objects should be refused")
 	}
 }
 
@@ -385,7 +393,7 @@ func TestGitHookInstallAndUninstall(t *testing.T) {
 	}
 
 	// Install into an empty hooks directory.
-	if err := writeGitHook(gitDir); err != nil {
+	if err := writeGitHook(gitDir, "pre-commit", gitHookBlock, gitHookStart); err != nil {
 		t.Fatal(err)
 	}
 	hookPath := filepath.Join(gitDir, "hooks", "pre-commit")
@@ -410,7 +418,7 @@ func TestGitHookInstallAndUninstall(t *testing.T) {
 	}
 
 	// Idempotent: a second install changes nothing.
-	if err := writeGitHook(gitDir); err != nil {
+	if err := writeGitHook(gitDir, "pre-commit", gitHookBlock, gitHookStart); err != nil {
 		t.Fatal(err)
 	}
 	body2, _ := os.ReadFile(hookPath)
@@ -419,7 +427,7 @@ func TestGitHookInstallAndUninstall(t *testing.T) {
 	}
 
 	// Uninstall removes the block and the file (only shebang remains).
-	removed, err := removeGitHook(gitDir)
+	removed, err := removeGitHook(gitDir, "pre-commit", gitHookStart, gitHookEnd)
 	if err != nil || !removed {
 		t.Fatalf("uninstall: removed=%v err=%v", removed, err)
 	}
@@ -428,7 +436,7 @@ func TestGitHookInstallAndUninstall(t *testing.T) {
 	}
 
 	// Uninstall on a missing file is a no-op.
-	removed, err = removeGitHook(gitDir)
+	removed, err = removeGitHook(gitDir, "pre-commit", gitHookStart, gitHookEnd)
 	if err != nil || removed {
 		t.Errorf("second uninstall: removed=%v err=%v", removed, err)
 	}
@@ -448,7 +456,7 @@ func TestGitHookPreservesExistingHooks(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := writeGitHook(gitDir); err != nil {
+	if err := writeGitHook(gitDir, "pre-commit", gitHookBlock, gitHookStart); err != nil {
 		t.Fatal(err)
 	}
 	body, _ := os.ReadFile(hookPath)
@@ -461,7 +469,7 @@ func TestGitHookPreservesExistingHooks(t *testing.T) {
 	}
 
 	// Uninstall removes only our block, leaving the original.
-	removed, err := removeGitHook(gitDir)
+	removed, err := removeGitHook(gitDir, "pre-commit", gitHookStart, gitHookEnd)
 	if err != nil || !removed {
 		t.Fatalf("uninstall: removed=%v err=%v", removed, err)
 	}
@@ -508,58 +516,49 @@ func TestGitHookInstalledReportsCorrectly(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(gitDir, "hooks"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if gitHookInstalled(gitDir) {
+	if gitHookInstalled(gitDir, "pre-commit", gitHookStart) {
 		t.Error("should report not installed before writeGitHook")
 	}
-	if err := writeGitHook(gitDir); err != nil {
+	if err := writeGitHook(gitDir, "pre-commit", gitHookBlock, gitHookStart); err != nil {
 		t.Fatal(err)
 	}
-	if !gitHookInstalled(gitDir) {
+	if !gitHookInstalled(gitDir, "pre-commit", gitHookStart) {
 		t.Error("should report installed after writeGitHook")
 	}
 }
 
-// A .env in a directory whose name has a space must still be scanned.
+// The hook has to ask the scanner about everything staged, not a subset.
 //
-// The block interpolated the file list unquoted, so the shell split
-// "My Project/.env" into "My" and "Project/.env". The scanner was handed
-// two paths that do not exist, failed to stat the first, and exited
-// non-zero — which blocked the commit, so the hook looked like it worked.
-// It had not scanned anything. The key went unexamined and the developer
-// got "stat My: no such file or directory", which reads like a broken
-// hook and invites them to remove it.
+// It filtered the staged list to paths matching `\.env` until 2 November
+// 2026. A Stripe key in src/billing.py and an AWS secret in
+// terraform.tfvars both committed cleanly through an installed hook,
+// while `lyntway scan` found each one instantly when pointed at the same
+// file — the scanner was there and was never asked. That is worse than no
+// hook: a check that refuses some commits is read as a check that refuses
+// the wrong ones, and it is why somebody stops looking by hand.
 //
-// Windows makes this the common case rather than the awkward one:
-// C:\Users\Your Name\project is where a default install puts things, and
-// P10.2 of the acceptance protocol asks exactly this question.
-func TestTheGitHookScansPathsThatContainSpaces(t *testing.T) {
+// This asserts the shell the hook writes, not the scanner's behaviour,
+// because the bug was in which paths the shell chose to pass on.
+func TestTheGitHookScansEverythingStaged(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("no sh on this machine")
 	}
 	dir := t.TempDir()
-
-	// A stub on PATH that records the arguments it was handed, so the test
-	// observes what the shell actually passed rather than trusting the
-	// block's text.
 	binDir := filepath.Join(dir, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+
+	// A stub on PATH that records what it was handed, so the test observes
+	// what the shell actually passed rather than trusting the block's text.
 	record := filepath.Join(dir, "args.txt")
-	stub := "#!/bin/sh\nshift\nfor a in \"$@\"; do printf '%s\\n' \"$a\" >> " + shellQuote(record) + "; done\nexit 0\n"
+	stub := "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\" >> " + shellQuote(record) + "; done\nexit 0\n"
 	if err := os.WriteFile(filepath.Join(binDir, "lyntway"), []byte(stub), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
 	script := filepath.Join(dir, "hook.sh")
 	if err := os.WriteFile(script, []byte("#!/bin/sh\n"+gitHookBlock+"\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	// Stand in for `git diff --cached`, which the block calls to list what
-	// is staged. One path with a space is the whole point.
-	gitStub := "#!/bin/sh\nprintf '%s\\n' 'My Project/.env'\n"
-	if err := os.WriteFile(filepath.Join(binDir, "git"), []byte(gitStub), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -573,9 +572,46 @@ func TestTheGitHookScansPathsThatContainSpaces(t *testing.T) {
 		t.Fatalf("the scanner was never called at all: %v\noutput: %s", err, out)
 	}
 	args := strings.Split(strings.TrimSpace(string(got)), "\n")
-	if len(args) != 1 || args[0] != "My Project/.env" {
-		t.Errorf("the scanner was handed %q, want exactly [\"My Project/.env\"].\n"+
-			"An unquoted expansion split the path, so the file was never scanned.", args)
+	if len(args) != 2 || args[0] != "scan" || args[1] != "--staged" {
+		t.Errorf("the hook ran the scanner with %q, want exactly [\"scan\" \"--staged\"].\n"+
+			"Anything that selects paths here can select the wrong ones.", args)
+	}
+
+	// Nothing in the block may narrow what is scanned.
+	for _, narrowing := range []string{".env", "grep", "diff-filter"} {
+		if strings.Contains(gitHookBlock, narrowing) {
+			t.Errorf("the hook block contains %q, which filters what reaches the scanner", narrowing)
+		}
+	}
+}
+
+// A refusal has to carry the scanner's exit status, or the hook is
+// decoration.
+func TestTheGitHookRefusesWhenTheScannerDoes(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no sh on this machine")
+	}
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "lyntway"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(dir, "hook.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\n"+gitHookBlock+"\necho reached-the-end\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sh", script)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Error("the hook exited 0 while the scanner refused; the commit would have gone through")
+	}
+	if strings.Contains(string(out), "reached-the-end") {
+		t.Error("the block fell through to whatever follows it instead of exiting")
 	}
 }
 
@@ -690,5 +726,59 @@ func TestNoConsentTextWhenNobodyIsBeingAsked(t *testing.T) {
 	// It still reports what it did.
 	if !strings.Contains(out, "✓") {
 		t.Errorf("the install said nothing about what it wrote:\n%s", out)
+	}
+}
+
+// Every hook this tool writes must be removable by the command that
+// promises to put everything back.
+//
+// install and undo keep their own list of what exists, and a hook added
+// to one and forgotten in the other is a block in somebody's repository
+// that `lyntway undo` reports success over and leaves behind. gitHooks is
+// the single list both read; this is the assertion that it is used.
+func TestEveryGitHookWeWriteCanBeRemoved(t *testing.T) {
+	dir := t.TempDir()
+	gitDir := filepath.Join(dir, ".git")
+	if err := os.MkdirAll(filepath.Join(gitDir, "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, h := range gitHooks {
+		if err := writeGitHook(gitDir, h.Name, h.Block, h.Start); err != nil {
+			t.Fatalf("%s: %v", h.Name, err)
+		}
+		if !gitHookInstalled(gitDir, h.Name, h.Start) {
+			t.Fatalf("%s was written and does not report as installed", h.Name)
+		}
+	}
+
+	for _, h := range gitHooks {
+		removed, err := removeGitHook(gitDir, h.Name, h.Start, h.End)
+		if err != nil {
+			t.Fatalf("%s: %v", h.Name, err)
+		}
+		if !removed {
+			t.Errorf("%s was written and could not be removed", h.Name)
+		}
+		if gitHookInstalled(gitDir, h.Name, h.Start) {
+			t.Errorf("%s still reports as installed after removal", h.Name)
+		}
+	}
+}
+
+// The two blocks must not share a marker, or removing one takes the
+// other's text with it.
+func TestTheGitHookMarkersAreDistinct(t *testing.T) {
+	seen := map[string]string{}
+	for _, h := range gitHooks {
+		for _, m := range []string{h.Start, h.End} {
+			if other, dup := seen[m]; dup {
+				t.Errorf("%s and %s share the marker %q", h.Name, other, m)
+			}
+			seen[m] = h.Name
+		}
+		if !strings.Contains(h.Block, h.Start) || !strings.Contains(h.Block, h.End) {
+			t.Errorf("%s's block is not fenced by its own markers, so it cannot be found again", h.Name)
+		}
 	}
 }

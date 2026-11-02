@@ -1460,6 +1460,7 @@ type proxyReporter struct {
 	queue  chan proxyAttestation
 	wg     sync.WaitGroup
 	once   sync.Once
+	quiet  bool // after one connection-refused, stop printing until it works
 }
 
 // proxyAttestation is one governed message, reduced to what may leave.
@@ -1511,9 +1512,25 @@ func (r *proxyReporter) run() {
 	defer r.wg.Done()
 	for a := range r.queue {
 		if err := r.send(a); err != nil {
-			fmt.Fprintf(os.Stderr, "lyntway: a summary was not reported: %v\n", err)
+			if isConnectionRefused(err) {
+				if !r.quiet {
+					r.quiet = true
+					fmt.Fprintf(os.Stderr, "lyntway: the gateway at %s is not reachable; summaries will be sent when it is\n", r.c.Origin)
+				}
+			} else {
+				fmt.Fprintf(os.Stderr, "lyntway: a summary was not reported: %v\n", err)
+			}
+		} else {
+			r.quiet = false
 		}
 	}
+}
+
+func isConnectionRefused(err error) bool {
+	s := err.Error()
+	return strings.Contains(s, "connection refused") ||
+		strings.Contains(s, "connectex: No connection could be made") ||
+		strings.Contains(s, "connect: connection refused")
 }
 
 func (r *proxyReporter) send(a proxyAttestation) error {

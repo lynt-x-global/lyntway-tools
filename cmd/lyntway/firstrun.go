@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // The first thing a person sees.
@@ -46,6 +47,11 @@ type firstRunReport struct {
 	Keys         []keyHit
 	ScannedFiles int
 	KeyScanError error
+
+	// Agents is what was reaching an AI service when this looked, which is
+	// the only part of this report that can name something the person did
+	// not already know was on their machine.
+	Agents agentDiscovery
 }
 
 // credentialCount is how many configured MCP servers have a credential
@@ -69,8 +75,12 @@ func takeFirstRunReport(dir string) firstRunReport {
 		Hostname: hostname(),
 		OS:       reportOS(h.GOOS),
 		User:     h.User,
-		Apps:     inventory(h, procs),
+		Apps:     withPublishers(h.GOOS, inventory(h, procs)),
 		MCP:      discoverMCP(mcpSources(h, projectRoots(h))),
+		// Bounded, because resolving the AI hosts is the one step here
+		// that can be slow on a cold cache or behind a captive portal,
+		// and a first run that stalls is a first run nobody finishes.
+		Agents: discoverAgents(h.GOOS, 4*time.Second),
 	}
 	if v := osVersion(h.GOOS); v != "" {
 		r.OS += " " + v
@@ -80,7 +90,7 @@ func takeFirstRunReport(dir string) firstRunReport {
 	// A first run that walked everything would take minutes and read
 	// files nobody asked us to open.
 	if dir != "" {
-		hits, scanned, err := scanPaths([]string{dir})
+		hits, scanned, _, err := scanPaths([]string{dir})
 		for i := range hits {
 			hits[i].File = relativePath(dir, hits[i].File)
 		}
@@ -101,6 +111,7 @@ func printFirstRun(r firstRunReport) {
 	fmt.Fprintf(stdout, "  %s\n", where)
 
 	printFirstRunApps(r)
+	writeAgentSightings(stdout, r.Agents)
 	printFirstRunMCP(r)
 	printFirstRunKeys(r)
 
@@ -155,7 +166,31 @@ func printFirstRunApps(r firstRunReport) {
 		if version == "" {
 			version = "version unknown"
 		}
-		fmt.Fprintf(stdout, "  %-40s %-10s %s\n", a.Name, state, version)
+		fmt.Fprintf(stdout, "  %-40s %-10s %-22s %s\n", a.Name, state, version, publisherColumn(a))
+	}
+	fmt.Fprint(stdout, "\n  \"publisher not established\" is normal for anything a package manager\n"+
+		"  built, and is not a finding on its own. A signature names who built\n"+
+		"  something; it never says what it does.\n")
+}
+
+// publisherColumn is the publisher as one short cell.
+//
+// An entry with no publisher at all prints nothing rather than a dash: an
+// editor extension has no binary of its own to ask about, and a column
+// saying "none" would be a verdict on something that was never examined.
+func publisherColumn(a aiApp) string {
+	if a.Publisher == nil {
+		return ""
+	}
+	switch a.Publisher.State {
+	case publisherSigned:
+		return a.Publisher.Name
+	case publisherBroken:
+		return "SIGNATURE DOES NOT VERIFY"
+	case publisherNone:
+		return "publisher not established"
+	default:
+		return "publisher not checked"
 	}
 }
 
@@ -236,20 +271,36 @@ func printFirstRunKeys(r firstRunReport) {
 			"  Run `lyntway scan` in a directory you can read.\n", r.KeyScanError)
 		return
 	}
-	if len(r.Keys) == 0 {
+	// Values a secret scanner's own configuration vouches for are left out
+	// of the count and out of the list. This is the first screen anybody
+	// sees, and in a repository with a gitleaks allowlist it was almost
+	// entirely that allowlist — 73 keys here, 68 of them this repository's
+	// own test fixtures, with the top five all from .gitleaks.toml. A
+	// first impression that is mostly false is worse than no scan.
+	// `lyntway scan` still prints them, below the findings and labelled.
+	found, declared := splitDeclared(r.Keys)
+	if len(found) == 0 {
 		fmt.Fprintf(stdout, "\nProvider keys in this directory\n  None in the %d file%s read.\n",
 			r.ScannedFiles, pluralS(r.ScannedFiles))
+		if len(declared) > 0 {
+			fmt.Fprintf(stdout, "  %d more sit in a secret scanner's own configuration; `lyntway scan` lists them.\n",
+				len(declared))
+		}
 		return
 	}
 
-	fmt.Fprintf(stdout, "\nProvider keys in this directory (%d)\n", len(r.Keys))
+	fmt.Fprintf(stdout, "\nProvider keys in this directory (%d)\n", len(found))
 	const shown = 5
-	for i, h := range r.Keys {
+	for i, h := range found {
 		if i == shown {
-			fmt.Fprintf(stdout, "  …and %d more — `lyntway scan` lists them all.\n", len(r.Keys)-shown)
+			fmt.Fprintf(stdout, "  …and %d more — `lyntway scan` lists them all.\n", len(found)-shown)
 			break
 		}
 		fmt.Fprintf(stdout, "  %s:%d\t%s\t…%s\n", h.File, h.Line, h.Label, h.Last4)
+	}
+	if len(declared) > 0 {
+		fmt.Fprintf(stdout, "  %d more sit in a secret scanner's own configuration and are not counted here.\n",
+			len(declared))
 	}
 }
 

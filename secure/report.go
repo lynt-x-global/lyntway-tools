@@ -14,13 +14,25 @@ import (
 // warning in this package that a macOS test run would never see.
 var goos = func() string { return runtime.GOOS }
 
-// writeFound is the first thing anybody sees.
+// writeFound is the first thing anybody sees: what the agents saw, then
+// what is still sitting in the project.
+//
+// Two sections rather than one list. They are different findings with
+// different fixes, and the earlier single-list version made the more
+// actionable half — a key still in a .env, which can be moved rather
+// than only revoked — read as though it were already spent.
+func writeFound(out io.Writer, o Outcome, in Input) {
+	writeHistory(out, o)
+	writeInFiles(out, o, in)
+}
+
+// writeHistory reports the agent-history scan.
 //
 // Grouped by credential and ordered by how far each one spread, because
 // the number that matters is how many things have to be revoked and not
 // how many lines a scanner can print. One key in twenty-one files is one
 // revocation.
-func writeFound(out io.Writer, o Outcome) {
+func writeHistory(out io.Writer, o Outcome) {
 	res := o.Scan
 	size := fmt.Sprintf("%d file%s", res.Files, plural(res.Files))
 	switch {
@@ -113,6 +125,67 @@ func writeFound(out io.Writer, o Outcome) {
 		}
 	}
 	fmt.Fprintln(out)
+}
+
+// writeInFiles reports the credentials still sitting in the project.
+//
+// Silent when no project was read, and explicit when one was read and was
+// clean. Those are different facts and the difference is the whole of
+// this repository's honesty rule: "no keys in your files" printed over a
+// run that never opened a file claims more than happened.
+func writeInFiles(out io.Writer, o Outcome, in Input) {
+	if !in.ReadProject {
+		return
+	}
+	if len(o.InFiles) == 0 {
+		fmt.Fprintf(out, "Also read %s and found no keys in its own files.\n\n", in.ProjectDir)
+		return
+	}
+
+	fmt.Fprintf(out, "And %d key%s still in %s.\n\n",
+		len(o.InFiles), plural(len(o.InFiles)), in.ProjectDir)
+
+	for i, f := range o.InFiles {
+		if i == 12 {
+			fmt.Fprintf(out, "  … and %d more. `lyntway scan` lists them all.\n", len(o.InFiles)-12)
+			break
+		}
+		where := f.Path
+		if f.Line > 0 {
+			where = fmt.Sprintf("%s:%d", f.Path, f.Line)
+		}
+		fmt.Fprintf(out, "  %-28s …%-5s  %s\n", f.Label, f.Last4, where)
+	}
+
+	// The difference from the section above, stated rather than implied.
+	// A key here has not necessarily gone anywhere yet, so there can be
+	// two moves and not one — but only for the ones the gateway can
+	// actually hold, and the count says which.
+	fmt.Fprint(out, "\nThese have not necessarily left the machine yet.\n")
+
+	switch m := migratableCount(o.InFiles); {
+	case m == len(o.InFiles):
+		fmt.Fprint(out, "Revoke them, or move them behind the gateway and let the SDKs read a\n"+
+			"reference instead:\n"+
+			"  lyntway keys migrate      rewrites each file, with a backup beside it\n\n")
+	case m > 0:
+		// The split is the point. Offering one command over a list half
+		// of which it cannot touch leaves somebody believing the other
+		// half was handled.
+		verb := "is a provider key"
+		if m > 1 {
+			verb = "are provider keys"
+		}
+		fmt.Fprintf(out, "%d of them "+verb+" the gateway can hold:\n"+
+			"  lyntway keys migrate      rewrites each file, with a backup beside it\n\n"+
+			"The other %d cannot be moved — a database password, a token or a private\n"+
+			"key has no gateway to sit behind. Those have to be rotated where they are\n"+
+			"issued.\n\n", m, len(o.InFiles)-m)
+	default:
+		fmt.Fprint(out, "These cannot be moved behind the gateway — a database password, a\n"+
+			"token or a private key has nothing to sit behind. Rotate them where\n"+
+			"they are issued.\n\n")
+	}
 }
 
 // writeDone says what changed, in the words of what it now prevents.

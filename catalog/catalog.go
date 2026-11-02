@@ -41,10 +41,12 @@ import (
 //
 // # Where the entries live
 //
-// In httpapi/catalog/<vertical>.json, embedded and validated at start by
-// catalogload.go. They left this file when the list stopped being sixteen
-// long: a file per vertical is a thing two people can fill at once, and
-// what a reviewer reads is the entry rather than Go syntax around it.
+// In data/<vertical>.json beside this file, embedded by load.go and
+// validated at start. They left this file when the list stopped being
+// sixteen long: a file per vertical is a thing two people can fill at
+// once, and what a reviewer reads is the entry rather than Go syntax
+// around it. They left httpapi/ when the catalog had to reach the public
+// mirror, which may not import httpapi.
 //
 // # The rule the entries are held to
 //

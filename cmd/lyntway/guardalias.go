@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -62,6 +63,16 @@ func guardAliasBlock(shell string, tools []string) string {
 			fmt.Fprintf(&b, "    command %s $argv\n", t)
 			b.WriteString("  end\n")
 			b.WriteString("end\n")
+			continue
+		}
+		if shell == "powershell" {
+			fmt.Fprintf(&b, "function %s {\n", t)
+			b.WriteString("  if (Get-Command lyntway -ErrorAction SilentlyContinue) {\n")
+			fmt.Fprintf(&b, "    lyntway guard -- %s @args\n", t)
+			b.WriteString("  } else {\n")
+			fmt.Fprintf(&b, "    & (Get-Command %s -CommandType Application | Select-Object -First 1).Source @args\n", t)
+			b.WriteString("  }\n")
+			b.WriteString("}\n")
 			continue
 		}
 		fmt.Fprintf(&b, "%s() {\n", t)
@@ -137,6 +148,9 @@ func installGuardAlias(out io.Writer) error {
 		return fmt.Errorf("the shell in $SHELL is not one this knows how to edit; add the function by hand, or run `lyntway guard -- claude` as it is")
 	}
 	shell := filepath.Base(os.Getenv("SHELL"))
+	if runtime.GOOS == "windows" {
+		shell = "powershell"
+	}
 
 	tools := guardAliasTools()
 	if len(tools) == 0 {

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/base32"
@@ -810,9 +809,7 @@ func (a *agent) offerProxy(ctx context.Context) {
 		return
 	}
 	fmt.Fprintf(stdout, "%s is running with nothing in front of it, so its prompts are not inspected.\n", strings.Join(s.Servers, " and "))
-	fmt.Fprintf(stdout, "Start `lyntway proxy` in the background now? It governs apps pointed at http://%s/v1; apps that call the model server directly are still not covered. [y/N] ", defaultProxyListen)
-	line, _ := bufio.NewReader(stdin).ReadString('\n')
-	if a := strings.ToLower(strings.TrimSpace(line)); a != "y" && a != "yes" {
+	if a := askLine(fmt.Sprintf("Start `lyntway proxy` in the background now? It governs apps pointed at http://%s/v1; apps that call the model server directly are still not covered. [y/N] ", defaultProxyListen)); a != "y" && a != "yes" {
 		fmt.Fprintln(stdout, "Left as it is.")
 		return
 	}

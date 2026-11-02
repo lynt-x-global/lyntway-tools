@@ -93,11 +93,14 @@ type planReport struct {
 }
 
 func planFetch(c config) ([]byte, error) {
-	req, err := http.NewRequest(http.MethodGet, strings.TrimSuffix(c.Origin, "/")+"/v1/plan", nil)
+	signer, err := loadRequestSigner(c)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.Key)
+	req, err := newAPIRequest(c, signer, http.MethodGet, "/v1/plan", nil, "")
+	if err != nil {
+		return nil, err
+	}
 
 	res, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
 	if err != nil {

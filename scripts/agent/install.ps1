@@ -64,7 +64,7 @@ if (-not [Environment]::Is64BitOperatingSystem) { Fail 'lyntway is built for 64-
 
 # Which Windows this is. Until 18 October 2026 both of this script's modes
 # assumed amd64, so on a Copilot+ PC the x64 binary was fetched and run
-# under emulation, and the machine then reported amd64 to the console —
+# under emulation, and the machine then reported amd64 to the console --
 # a fleet inventory that disagreed with the hardware it was describing.
 #
 # PROCESSOR_ARCHITECTURE describes *this process*, so a 32-bit PowerShell on
@@ -142,7 +142,7 @@ if ($Token) {
 
     # What the signature says, said exactly. signing.json is published
     # beside the binaries, so it describes this download rather than a
-    # claim made elsewhere — and where it says the set is unsigned, that is
+    # claim made elsewhere -- and where it says the set is unsigned, that is
     # printed. An installer silent about signing reads as signed, which is
     # the strongest reading of an absent value and so the wrong one.
     $signed = $false
@@ -319,8 +319,8 @@ LYNTWAY_MACHINE_ID=$machineId
     if (-not $NoSidecar -and $ramGB -ge 12) {
       Step 7 "AI sidecar (on-device ML)"
 
-      $profile = if ($ramGB -ge 16) { 'full' } else { 'lean' }
-      Info "RAM profile: $profile ($ramGB GB)"
+      $sidecarProfile = if ($ramGB -ge 16) { 'full' } else { 'lean' }
+      Info "RAM profile: $sidecarProfile ($ramGB GB)"
 
       $sidecarDir = Join-Path $stateDir 'sidecar'
       New-Item -ItemType Directory -Force -Path $sidecarDir | Out-Null
@@ -342,7 +342,7 @@ LYNTWAY_MACHINE_ID=$machineId
         # Check for Python, and for a new enough one.
         #
         # The first interpreter on PATH was used, and gliner, transformers and
-        # onnxruntime need 3.10 or newer — so on a machine with an older Python
+        # onnxruntime need 3.10 or newer -- so on a machine with an older Python
         # the venv was built on an interpreter that cannot install the
         # requirements, pip failed quietly behind --quiet, and the install
         # reported success with no model tier on the machine.
@@ -360,7 +360,7 @@ LYNTWAY_MACHINE_ID=$machineId
 
         if ($pythonExe) {
           $pyVer = (& $pythonExe.Source --version 2>&1)
-          Info "creating Python environment with $pyVer — this may take a few minutes..."
+          Info "creating Python environment with $pyVer -- this may take a few minutes..."
           & $pythonExe.Source -m venv "$sidecarDir\venv"
           # Not quiet, and not forgiven: a model tier that failed to install is
           # the difference between detecting a name and not.
@@ -372,7 +372,7 @@ LYNTWAY_MACHINE_ID=$machineId
           }
 
           # Write a profile marker so the sidecar knows which tier to load.
-          Set-Content -Path "$sidecarDir\.profile" -Value $profile -NoNewline
+          Set-Content -Path "$sidecarDir\.profile" -Value $sidecarProfile -NoNewline
 
           # Register as Windows Scheduled Task (runs at logon, restarts on failure).
           $taskName = 'LyntwaySidecar'
@@ -389,16 +389,16 @@ LYNTWAY_MACHINE_ID=$machineId
             -DontStopIfGoingOnBatteries
           Register-ScheduledTask -TaskName $taskName -Action $action `
             -Trigger @($triggerStartup, $triggerLogon) `
-            -Settings $settings -Description "Lyntway AI Sidecar ($profile profile)" `
+            -Settings $settings -Description "Lyntway AI Sidecar ($sidecarProfile profile)" `
             -Force | Out-Null
 
           # Set environment variable for profile.
-          [Environment]::SetEnvironmentVariable('LYNTWAY_SIDECAR_PROFILE', $profile, 'Machine')
+          [Environment]::SetEnvironmentVariable('LYNTWAY_SIDECAR_PROFILE', $sidecarProfile, 'Machine')
 
           # Start immediately.
           Start-ScheduledTask -TaskName $taskName
 
-          # Wait for health — models download on first startup, so 15 s may
+          # Wait for health -- models download on first startup, so 15 s may
           # not be enough. Report status either way.
           $sidecarOk = $false
           for ($i = 0; $i -lt 5; $i++) {
@@ -519,7 +519,7 @@ if ($version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') { Fail "'$version' i
 
 # Windows on ARM runs x64 under emulation, and releases up to v0.7.0
 # published no arm64 archive. Fall back rather than refuse a machine that can
-# run the tool — but say which binary was taken, because somebody debugging
+# run the tool -- but say which binary was taken, because somebody debugging
 # slow behaviour on a Copilot+ PC needs to know it is a translated one.
 $assetArch = $arch
 if ($arch -ne 'amd64') {

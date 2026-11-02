@@ -12,13 +12,22 @@ import (
 
 // Values used by the tests. Every test that prints ends by asserting none
 // of these reached the output: last4 is what a person sees.
+// Bodies are varied rather than padded with a run of zeros.
+//
+// notAPlaceholderKey refuses eight of one character in a row, because
+// npm_example0000000000000000 and hf_xxxxxxxxxxxxxxxx are what a README
+// contains and a random key never is. These fixtures were padded exactly
+// that way, so every one of them stopped being a credential the moment
+// that check existed — a fixture that does not look like the thing it
+// stands for tests the wrong code. The distinctive tails are kept,
+// because the tests assert on them as last4.
 const (
-	tOpenAI    = "sk-proj-openai00000000000000000000000000ABCD"
-	tAnthropic = "sk-ant-api03-anthropic00000000WXYZ"
-	tGemini    = "AIzaSyGemini000000000000000000000QRST"
-	tXAI       = "xai-xai000000000000000000000000EFGH"
-	tMistral   = "mistral0000000000000MNOP"
-	tGitHub    = "ghp_github000000000000000000000000000IJKL"
+	tOpenAI    = "sk-proj-Qx7bR9mKp2Wv4Nc8Td1Ys6Hf3Jg0LuABCD"
+	tAnthropic = "sk-ant-api03-Qx7bR9mKp2Wv4Nc8Td1YsWXYZ"
+	tGemini    = "AIzaSyQx7bR9mKp2Wv4Nc8Td1Ys6Hf3JgQRST"
+	tXAI       = "xai-Qx7bR9mKp2Wv4Nc8Td1Ys6Hf3JgEFGH"
+	tMistral   = "mistralQx7bR9mKp2Wv4NcMNOP"
+	tGitHub    = "ghp_Qx7bR9mKp2Wv4Nc8Td1Ys6Hf3Jg0Lu5AeIJKL"
 	tPEM       = "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIGx0000000000000000000000000000000000000\n-----END PRIVATE KEY-----"
 )
 
@@ -55,7 +64,11 @@ func TestFindKeysNamesTheProviderAndKeepsTheValue(t *testing.T) {
 	}{
 		{2, "OpenAI key", "ABCD", "openai"},
 		{3, "Anthropic key", "WXYZ", "anthropic"},
-		{4, "Gemini key", "QRST", "gemini"},
+		// "Google API key", not "Gemini key": Google issues one key shape
+		// for Gemini, Maps and everything else, so the label says what
+		// the value is while the upstream says where the gateway would
+		// hold it. Those are different facts and the row carries both.
+		{4, "Google API key", "QRST", "gemini"},
 		{5, "xAI key", "EFGH", "xai"},
 		{6, "Mistral key", "MNOP", "mistral"},
 		{7, "GitHub token", "IJKL", ""},
@@ -153,8 +166,21 @@ func TestScanCommandAnnotatesAndExitsNonZero(t *testing.T) {
 	if !strings.Contains(out, "Slack token ending …0000") {
 		t.Errorf("no annotation for the slack token:\n%s", out)
 	}
-	if strings.Contains(out, "node_modules") || strings.Contains(out, "blob.bin") {
-		t.Errorf("node_modules or a binary was scanned:\n%s", out)
+	// Neither may produce a finding. A binary may be *named* — since
+	// 2 November 2026 a file nothing opened is reported as unread, so
+	// "no finding here" cannot be mistaken for "nothing is here" — so
+	// what is asserted is the absence of an ::error for them, not the
+	// absence of the name.
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.HasPrefix(line, "::error") {
+			continue
+		}
+		if strings.Contains(line, "node_modules") || strings.Contains(line, "blob.bin") {
+			t.Errorf("node_modules or a binary was scanned:\n%s", line)
+		}
+	}
+	if !strings.Contains(out, "::warning file=") || !strings.Contains(out, "blob.bin") {
+		t.Errorf("the binary was passed over without being named:\n%s", out)
 	}
 	if !strings.Contains(out, "lyntway keys migrate") {
 		t.Errorf("the advice should name keys migrate for a provider key:\n%s", out)
@@ -204,7 +230,7 @@ func TestFindKeysOnTheLastLineOfAHunkDoesNotPanic(t *testing.T) {
 	want := []string{
 		"a/.env:1 OpenAI key …ABCD",
 		"b/config.yml:9 GitHub token …IJKL",
-		"b/config.yml:34 Gemini key …QRST",
+		"b/config.yml:34 Google API key …QRST",
 	}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Errorf("got %v\nwant %v", got, want)
@@ -384,4 +410,120 @@ func TestScanStagedScansTheIndex(t *testing.T) {
 	if len(after) != len(hits) {
 		t.Errorf("an unstaged file changed the staged result: %d then %d", len(hits), len(after))
 	}
+}
+
+// A key inside a secret scanner's own configuration is the repository
+// saying it is a fixture. Counting those was how `lyntway scan` greeted a
+// developer in this very repository with 73 findings whose top five were
+// all .gitleaks.toml allowlist lines — a first screen that is mostly wrong
+// is a tool nobody runs twice.
+//
+// Not skipped, though, and this test pins both halves. Skipping would make
+// "add it to the gitleaks allowlist" a way to silence this scanner, which
+// is the one move that must never work.
+func TestScanDoesNotCountWhatAScannerConfigDeclares(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(".gitleaks.toml", "[allowlist]\nregexes = [\n  '''"+tOpenAI+"''',\n]\n")
+	write(".env", "OPENAI_API_KEY="+tOpenAI+"\n")
+
+	var err error
+	out := capture(t, "", func() { err = scanCommand([]string{dir}) })
+
+	// The .env key is the finding, and it is the only one counted.
+	var findings *scanFindings
+	if !errors.As(err, &findings) || findings.n != 1 {
+		t.Fatalf("got err %v, want exactly one finding — the .env key", err)
+	}
+	if !strings.Contains(out, "1 value in a secret scanner's own configuration, not counted above") {
+		t.Errorf("the allowlist value should still be reported, below the findings:\n%s", out)
+	}
+	if !strings.Contains(out, ".gitleaks.toml is a gitleaks allowlist") {
+		t.Errorf("the output should name the file and what it is:\n%s", out)
+	}
+	if !strings.Contains(out, "it is still a real key") {
+		t.Errorf("the output must not vouch for the claim it is repeating:\n%s", out)
+	}
+	assertNoValue(t, out)
+
+	// A tree whose only keys are declared exits zero: a gitleaks allowlist
+	// must not fail somebody's CI for ever.
+	if err := os.Remove(filepath.Join(dir, ".env")); err != nil {
+		t.Fatal(err)
+	}
+	out = capture(t, "", func() { err = scanCommand([]string{dir}) })
+	if err != nil {
+		t.Errorf("a tree with only declared values should exit zero, got %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "No provider keys in") {
+		t.Errorf("want a clean result with the declared value noted:\n%s", out)
+	}
+	if !strings.Contains(out, "not counted above") {
+		t.Errorf("the declared value should still be listed on a clean scan:\n%s", out)
+	}
+}
+
+// The GitHub Action scans a diff, and a pull request that adds one fixture
+// to .gitleaks.toml must not fail it. The walk and the diff reader find
+// keys by two different routes, and only the walk knew about scanner
+// configurations — so the check passed locally and failed in CI, which is
+// the worst place for the two to disagree.
+func TestScanDiffDoesNotCountWhatAScannerConfigDeclares(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	dir := t.TempDir()
+	// The deploy's image build re-runs this suite as root with no global
+	// git configuration, so identity and config come from the environment
+	// rather than from whatever the host happens to have.
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com",
+			"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	write := func(name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git("init", "-q")
+	write("README.md", "start\n")
+	git("add", "-A")
+	git("commit", "-qm", "first")
+
+	write(".gitleaks.toml", "[allowlist]\nregexes = [\n  '''"+tOpenAI+"''',\n]\n")
+	git("add", "-A")
+	git("commit", "-qm", "allowlist a fixture")
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(cwd) })
+
+	var scanErr error
+	out := capture(t, "", func() { scanErr = scanCommand([]string{"--diff", "HEAD~1"}) })
+	if scanErr != nil {
+		t.Errorf("adding a fixture to a gitleaks allowlist should not fail the check, got %v\n%s", scanErr, out)
+	}
+	if !strings.Contains(out, "not counted above") {
+		t.Errorf("the added value should still be reported:\n%s", out)
+	}
+	assertNoValue(t, out)
 }

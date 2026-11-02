@@ -54,16 +54,86 @@ const (
 	ClassUserMarked Class = "pii.user_marked"
 
 	ClassAWSAccessKey Class = "secret.aws_access_key"
-	ClassGitHubToken  Class = "secret.github_token"
-	ClassSlackToken   Class = "secret.slack_token"
-	ClassStripeKey    Class = "secret.stripe_key"
-	ClassOpenAIKey    Class = "secret.openai_key"
-	ClassAnthropicKey Class = "secret.anthropic_key"
-	ClassPrivateKey   Class = "secret.private_key"
-	ClassJWT          Class = "secret.jwt"
-	ClassSupabaseKey  Class = "secret.supabase_key"
-	ClassLyntwayKey   Class = "secret.lyntway_key"
-	ClassAzureConnStr Class = "secret.azure_connection_string"
+
+	// The other half of an AWS credential, and the half that matters.
+	//
+	// An access key id is published in logs, CloudTrail and error
+	// messages; it is an identifier, not a secret. The forty-character
+	// secret beside it is the credential, and nothing here matched it
+	// until 1 Nov 2026 — so `lyntway secure` could report "AWS access
+	// key" ninety-seven times over a machine and never once name the
+	// thing an attacker would actually use.
+	//
+	// It has no prefix and no checksum: forty characters of base64, which
+	// is also what a SHA-1 digest, a nonce and half the opaque strings in
+	// a config file look like. So it is found by context rather than by
+	// shape, which is the only honest way to find it, and the limits of
+	// that are written on the rules themselves.
+	ClassAWSSecretKey Class = "secret.aws_secret_key"
+
+	ClassGitHubToken Class = "secret.github_token"
+	ClassSlackToken  Class = "secret.slack_token"
+
+	// Vendor credentials carrying a prefix their issuer allocated.
+	//
+	// Grouped because they are one argument, not twenty: the prefix is
+	// the detection. Nobody else may mint a value beginning dop_v1_ or
+	// shpat_, so a match is not a guess, and the class names exactly
+	// which console to revoke it in — which is the whole job of a
+	// finding.
+	//
+	// They were absent until 2 November 2026, and the CLI had been
+	// finding two of them — Google and xAI — through a prefix list of its
+	// own in cmd/lyntway. So `lyntway scan` refused a commit carrying a
+	// Gemini key while the gateway passed the same key to a model: one
+	// product disagreeing with itself about what a secret is.
+	ClassGoogleAPIKey    Class = "secret.google_api_key"
+	ClassXAIKey          Class = "secret.xai_key"
+	ClassNPMToken        Class = "secret.npm_token"
+	ClassSendGridKey     Class = "secret.sendgrid_key"
+	ClassDigitalOceanKey Class = "secret.digitalocean_token"
+	ClassShopifyToken    Class = "secret.shopify_token"
+	ClassHuggingFaceKey  Class = "secret.huggingface_token"
+	ClassGroqKey         Class = "secret.groq_key"
+	ClassResendKey       Class = "secret.resend_key"
+	ClassReplicateKey    Class = "secret.replicate_token"
+	ClassLinearKey       Class = "secret.linear_key"
+	ClassDockerToken     Class = "secret.docker_token"
+	ClassPlanetScaleKey  Class = "secret.planetscale_token"
+	ClassNewRelicKey     Class = "secret.newrelic_key"
+	ClassAtlassianToken  Class = "secret.atlassian_token"
+	ClassSentryToken     Class = "secret.sentry_token"
+	ClassGrafanaToken    Class = "secret.grafana_token"
+	ClassDopplerToken    Class = "secret.doppler_token"
+	ClassSquareToken     Class = "secret.square_token"
+	ClassFigmaToken      Class = "secret.figma_token"
+
+	// Incoming webhooks, where the whole URL is the credential.
+	//
+	// Anyone holding the address can post into the channel as the
+	// integration, so it is a bearer token that happens to be spelled as a
+	// URL — and it travels in prose, in runbooks and in the config an
+	// agent is asked to debug, which is exactly the traffic this service
+	// sees. Nothing matched them until 1 Nov 2026: the Slack rule covered
+	// xox* tokens only, and a drill sent an incoming-webhook URL through
+	// /v1/govern and was told the request was clean.
+	//
+	// One class per vendor rather than a single secret.webhook_url,
+	// because the receipt's job is to name what to revoke and the three
+	// are revoked in three different places — and because a reader
+	// scanning a list of findings needs the vendor in the label, not in a
+	// value the receipt does not carry.
+	ClassSlackWebhook   Class = "secret.slack_webhook"
+	ClassDiscordWebhook Class = "secret.discord_webhook"
+	ClassTeamsWebhook   Class = "secret.teams_webhook"
+	ClassStripeKey      Class = "secret.stripe_key"
+	ClassOpenAIKey      Class = "secret.openai_key"
+	ClassAnthropicKey   Class = "secret.anthropic_key"
+	ClassPrivateKey     Class = "secret.private_key"
+	ClassJWT            Class = "secret.jwt"
+	ClassSupabaseKey    Class = "secret.supabase_key"
+	ClassLyntwayKey     Class = "secret.lyntway_key"
+	ClassAzureConnStr   Class = "secret.azure_connection_string"
 
 	// A password sitting inside a URL — postgres://user:pw@host,
 	// mongodb+srv://admin:pw@cluster, redis://:pw@cache, and the
@@ -121,7 +191,7 @@ func Default() *Ruleset {
 }
 
 func defaultRules() []Rule {
-	return []Rule{
+	rules := []Rule{
 		// --- Credentials -------------------------------------------------
 		//
 		// Vendor-prefixed credentials are the highest-value detections
@@ -183,11 +253,114 @@ func defaultRules() []Rule {
 			Priority: 80,
 		},
 		{
+			// The secret half of an AWS credential, found by the word next
+			// to it.
+			//
+			// Forty characters of base64 with no prefix and no checksum
+			// cannot be matched on shape: a Git SHA, a base64 nonce and a
+			// hash digest are all the same shape, and a rule that matched
+			// them would report a finding — and on a blocking route refuse
+			// a request — over a commit id. So the name of the field is
+			// required, which is how the credential is actually written
+			// everywhere it is written down: .env files, ~/.aws/credentials,
+			// JSON dumps, Terraform variables, a chat message pasting any
+			// of those.
+			//
+			// Both separators are needed and neither covers the other.
+			// cueGap carries the sentence form — "the aws secret access
+			// key is …", which is how it arrives in a chat message — and
+			// the character class after it carries the config form, where
+			// what sits between the field and the value is punctuation and
+			// quotes that cueGap's connectives do not include.
+			//
+			// What this deliberately does not catch: a bare forty
+			// characters with no field name anywhere near it. There is no
+			// way to tell that from any other base64 string, and guessing
+			// would cost more than it saves.
+			ID:    "aws-secret-key",
+			Class: ClassAWSSecretKey,
+			Pattern: regexp.MustCompile(`(?i)\b(?:(?:aws[_.\- ]?)?secret[_.\- ]?access[_.\- ]?key|aws[_.\- ]?secret[_.\- ]?key)\b` +
+				cueGap + `[\s:=,>"'\]\[]{0,12}(?P<target>[A-Za-z0-9/+=]{40})(?P<reject>[A-Za-z0-9/+=])?`),
+			Confidence: ConfidenceHigh,
+			Validate:   plausibleAWSSecretKey,
+			PrefilterFold: []string{"secret_access_key", "secretaccesskey", "secret-access-key",
+				"secret access key", "aws_secret_key", "awssecretkey", "aws secret key", "aws-secret-key"},
+			Priority: 100,
+		},
+		{
+			// The same secret, found by the id it travels with.
+			//
+			// A credential pair is pasted as a pair — the id on one line
+			// and the secret on the next — and in that form the field
+			// names are often gone, which is exactly the shape somebody
+			// pastes into a chat window. An access key id has a prefix and
+			// is unmistakable, so it is the context.
+			//
+			// The window is a few lines, not a document: an AKIA id
+			// mentioned in a paragraph and an unrelated base64 string four
+			// hundred bytes later are not a credential pair. The validator
+			// does the rest, and does most of the work here — without it
+			// this rule would report the Git SHA in a commit message
+			// written under an access key id.
+			ID:    "aws-secret-key-beside-its-id",
+			Class: ClassAWSSecretKey,
+			Pattern: regexp.MustCompile(`(?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}[\s\S]{0,240}?` +
+				`(?P<target>[A-Za-z0-9/+=]{40})(?P<reject>[A-Za-z0-9/+=])?`),
+			Confidence: ConfidenceHigh,
+			Validate:   plausibleAWSSecretKey,
+			Prefilter:  []string{"AKIA", "ASIA", "ABIA", "ACCA"},
+			Priority:   95,
+		},
+		{
 			ID:         "slack-token",
 			Class:      ClassSlackToken,
 			Pattern:    regexp.MustCompile(`\b(xox[baprs]-[0-9A-Za-z-]{10,})\b`),
 			Confidence: ConfidenceExact,
 			Prefilter:  []string{"xox"},
+			Priority:   100,
+		},
+		{
+			// The host is the whole of the discipline here, and it is
+			// enough: hooks.slack.com serves nothing but webhooks, so a
+			// URL on it with a path of the right shape is a credential
+			// with no ambiguity to resolve. That is why these three are
+			// Exact while the generic url-password rule next door needs a
+			// validator — there is no honest reading of this string in
+			// which it is not a secret.
+			//
+			// /services is the classic incoming webhook; /workflows and
+			// /triggers are Workflow Builder's, which post into a channel
+			// the same way and are handed out the same way.
+			ID:         "slack-webhook",
+			Class:      ClassSlackWebhook,
+			Pattern:    regexp.MustCompile(`https://hooks\.slack\.com/(?:services|workflows|triggers)/[A-Za-z0-9+/_-]{15,}`),
+			Confidence: ConfidenceExact,
+			Prefilter:  []string{"hooks.slack.com"},
+			Priority:   100,
+		},
+		{
+			// discordapp.com is the old host and still works, so a webhook
+			// written years ago in a runbook still posts today and still
+			// has to be found.
+			ID:         "discord-webhook",
+			Class:      ClassDiscordWebhook,
+			Pattern:    regexp.MustCompile(`https://(?:ptb\.|canary\.)?discord(?:app)?\.com/api(?:/v\d{1,2})?/webhooks/\d{17,20}/[A-Za-z0-9._-]{30,}`),
+			Confidence: ConfidenceExact,
+			Prefilter:  []string{"/api/webhooks/", "/webhooks/"},
+			Priority:   100,
+		},
+		{
+			// Only the Office connector form. The Power Automate
+			// replacement lives on logic.azure.com, where the host is
+			// shared with every other Logic App a tenant runs and the
+			// secret is a query parameter — so matching it by host would
+			// report ordinary workflow URLs as credentials. That one is
+			// deliberately not covered rather than covered badly.
+			ID:         "teams-webhook",
+			Class:      ClassTeamsWebhook,
+			Pattern:    regexp.MustCompile(`https://[A-Za-z0-9.-]+\.webhook\.office\.com/webhookb2/[A-Za-z0-9@/-]{20,}`),
+			Confidence: ConfidenceExact,
+			Prefilter:  []string{"webhook.office.com"},
 			Priority:   100,
 		},
 		{
@@ -980,7 +1153,25 @@ func defaultRules() []Rule {
 			// data in context, and this pattern matches plenty of
 			// non-personal infrastructure addresses. Never enforce on this
 			// alone.
-			Pattern:    regexp.MustCompile(`\b((?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))\b`),
+			//
+			// The reject group is a URI's authority, for the reason the
+			// email rule next door carries the same guard: the host half
+			// of a connection string is where the credential is going, not
+			// a person. On 1 Nov 2026 a drill sent
+			// mysql://root:p%40ssw0rd%21X9@10.0.0.4:3306/prod and the
+			// receipt named pii.ip_address for 10.0.0.4 and nothing for
+			// the password — the one span the url-password rule's own
+			// comment calls context, reported, while the secret beside it
+			// went out clean. Under redact mode the host would have been
+			// substituted too, which breaks the connection string and puts
+			// "personal data was protected" on a receipt about a database
+			// address.
+			//
+			// RE2 has no lookbehind, so the authority is matched and
+			// refused. An address in a query string, a log line or prose
+			// still matches: those are where an address does mean a
+			// person, and are exactly where it should be reported.
+			Pattern:    regexp.MustCompile(`(?P<reject>:/{2}[^\s/]*?)?\b((?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))\b`),
 			Confidence: ConfidenceLow,
 			Priority:   30,
 		},
@@ -1047,6 +1238,7 @@ func defaultRules() []Rule {
 			Priority: 45,
 		},
 	}
+	return append(rules, vendorPrefixRuleset()...)
 }
 
 // validUSSSN rejects structurally impossible Social Security numbers.
@@ -1469,7 +1661,28 @@ func realURLPassword(pw string) bool {
 	}
 	// A value something else will substitute: ${DB_PASS}, $PASSWORD,
 	// {{ password }}, <password>, %PASSWORD%.
-	if strings.ContainsAny(pw, "${}<>%") {
+	if strings.ContainsAny(pw, "${}<>") {
+		return false
+	}
+	// A percent sign used to be in that set, and it cost us the passwords
+	// most worth catching. Any password containing a character reserved in
+	// a URI — @ : / ? # — has to be percent-encoded to sit in the userinfo
+	// at all (RFC 3986 section 3.2.1), so "S3cr3tP%40ss" is not a template,
+	// it is how a real password ending in "@ss" is spelled in a real DSN.
+	// The stronger the password, the likelier it needs encoding, so the
+	// rule was skipping precisely the credentials it existed to find.
+	//
+	// Found on 1 Nov 2026: postgres://admin:S3cr3tP%40ss@db.internal:5432/app
+	// reported nothing, and the mysql form of the same string reported only
+	// the host's address as pii.ip_address — the one span in it that the
+	// url-password rule's own comment calls context rather than a secret.
+	//
+	// So a percent sign is a placeholder only when it is not encoding
+	// anything: %PASSWORD% in full, or a stray percent with no hex pair
+	// after it. Note that the whole-value check cannot be replaced by the
+	// hex test, because "%DB_PASSWORD%" opens with %DB and D and B are
+	// both hex digits.
+	if isEnvVarReference(pw) || (strings.Contains(pw, "%") && !isPercentEncoded(pw)) {
 		return false
 	}
 
@@ -1496,6 +1709,89 @@ func realURLPassword(pw string) bool {
 		}
 	}
 	return true
+}
+
+// isEnvVarReference reports whether the value is a Windows-style variable
+// reference such as %DB_PASSWORD%, which something else substitutes before
+// the URL is used and which therefore carries no credential.
+func isEnvVarReference(pw string) bool {
+	if len(pw) < 3 || pw[0] != '%' || pw[len(pw)-1] != '%' {
+		return false
+	}
+	inner := pw[1 : len(pw)-1]
+	for _, r := range inner {
+		if r == '%' {
+			return false
+		}
+		if !(r == '_' || r == '-' || (r >= '0' && r <= '9') ||
+			(r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')) {
+			return false
+		}
+	}
+	return true
+}
+
+// isPercentEncoded reports whether every percent sign in the value opens a
+// valid percent-encoded octet. A password that satisfies this is a password
+// somebody encoded to put in a URL; one that does not is prose or a
+// placeholder that happens to contain the character.
+func isPercentEncoded(pw string) bool {
+	for i := 0; i < len(pw); i++ {
+		if pw[i] != '%' {
+			continue
+		}
+		if i+2 >= len(pw) || !isHex(pw[i+1]) || !isHex(pw[i+2]) {
+			return false
+		}
+		i += 2
+	}
+	return true
+}
+
+func isHex(b byte) bool {
+	return (b >= '0' && b <= '9') || (b >= 'a' && b <= 'f') || (b >= 'A' && b <= 'F')
+}
+
+// plausibleAWSSecretKey rejects the forty-character strings that are not
+// secrets.
+//
+// Every rule that reports this class matches on context rather than on the
+// value, so the value is where the false positives have to be stopped. The
+// three that matter, in the order they turn up:
+//
+//   - A Git SHA, an MD5 with eight characters after it, any hex digest:
+//     forty characters, and all of them hex. A real secret is base64 of
+//     thirty random bytes and is hex-only with probability near zero.
+//   - A string of one case, or of digits alone. Same argument: base64 of
+//     random bytes contains both cases essentially always, and anything
+//     that does not is a hash, an id or a redaction.
+//   - AWS's own documented example key, which appears in their
+//     documentation, in a thousand READMEs and in this repository's own
+//     fixtures. Flagging it teaches people the tool cries wolf, which is
+//     how a scanner ends up switched off.
+func plausibleAWSSecretKey(v string) bool {
+	if len(v) != 40 {
+		return false
+	}
+	// The one AWS publishes. Seven consecutive characters spelling it in a
+	// random key is not something to plan for.
+	if strings.Contains(v, "EXAMPLE") {
+		return false
+	}
+	var lower, upper, hexOnly = false, false, true
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		switch {
+		case c >= 'a' && c <= 'z':
+			lower = true
+		case c >= 'A' && c <= 'Z':
+			upper = true
+		}
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			hexOnly = false
+		}
+	}
+	return !hexOnly && lower && upper
 }
 
 // notAPlaceholderKey rejects a vendor-prefixed key whose body spells out
@@ -1531,6 +1827,30 @@ func notAPlaceholderKey(match string) bool {
 			"localhost", "dev", "development", "xxxx", "yourkey", "mykey":
 			return false
 		}
+	}
+
+	// A long run of one character is not a random value.
+	//
+	// The segment list above matches whole delimited words, so it catches
+	// "sk-test-..." and misses the two shapes a README actually uses:
+	// npm_example0000000000000000000 and hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxx,
+	// where the filler is joined to the word or is the whole body. Both
+	// were reported as credentials on 2 November 2026.
+	//
+	// Eight is far past coincidence: a random forty-character base62
+	// value repeats one character eight times running with probability
+	// around one in a hundred billion, so this costs no real key and
+	// removes a whole family of documented examples.
+	run, last := 0, rune(-1)
+	for _, r := range match {
+		if r == last {
+			run++
+			if run >= 8 {
+				return false
+			}
+			continue
+		}
+		last, run = r, 1
 	}
 	return true
 }

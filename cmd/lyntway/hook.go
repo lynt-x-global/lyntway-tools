@@ -610,21 +610,41 @@ func removeHooksEverywhere() (n int) {
 		}
 	}
 	if gitDir := findGitDir("."); gitDir != "" {
-		if removed, err := removeGitHook(gitDir); err != nil {
-			fmt.Fprintf(stdout, "  ✗ git pre-commit — %v\n", err)
-		} else if removed {
-			fmt.Fprintf(stdout, "  ✓ git pre-commit — hook removed\n")
-			n++
+		for _, h := range gitHooks {
+			removed, err := removeGitHook(gitDir, h.Name, h.Start, h.End)
+			if err != nil {
+				fmt.Fprintf(stdout, "  ✗ git %s — %v\n", h.Name, err)
+				continue
+			}
+			if removed {
+				fmt.Fprintf(stdout, "  ✓ git %s — hook removed\n", h.Name)
+				n++
+			}
 		}
 	}
 	return n
 }
 
-// Git pre-commit hook: a shell script that runs `lyntway scan` on staged
-// .env files before every commit. It is a shell script, not a Go binary,
-// because pre-commit hooks must start quickly and shell is what git
-// invokes by default. The script delegates to `lyntway scan`, which is
-// already the right tool for finding provider keys in files.
+// Git pre-commit hook: a shell script that runs `lyntway scan --staged`
+// before every commit. It is a shell script, not a Go binary, because
+// pre-commit hooks must start quickly and shell is what git invokes by
+// default. The script delegates to `lyntway scan`, which is already the
+// right tool for finding provider keys in files.
+//
+// It filtered the staged list to paths matching `\.env` until 2 November
+// 2026, which is where a developer most often leaves a key and nowhere
+// near the only place. A Stripe key in billing.py and an AWS secret in
+// terraform.tfvars both committed cleanly through this hook while
+// `lyntway scan` found each of them in milliseconds when pointed at the
+// same files — the scanner was never asked. A hook that refuses some
+// commits is read as a hook that refuses the wrong ones, which is worse
+// than no hook: it is the reason somebody stops checking by hand.
+//
+// `scan --staged` reads the staged content itself, so the shell no longer
+// walks a file list. That removes the quoting this block used to need —
+// an unquoted expansion once split "My Project/.env" into two paths that
+// did not exist, and the commit was refused without anything having been
+// read.
 
 const (
 	gitHookStart = "# >>> lyntway-scan >>>"
@@ -636,29 +656,79 @@ const (
 // in the same shell as `git commit`, so PATH is the developer's PATH.
 var gitHookBlock = strings.Join([]string{
 	gitHookStart,
-	"# lyntway: refuse a commit that carries a provider key in a .env file.",
+	"# lyntway: refuse a commit that carries a provider key.",
 	"# Remove this block or run `lyntway hook uninstall --git` to stop.",
-	`lyntway_staged=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.env' || true)`,
-	`if [ -n "$lyntway_staged" ]; then`,
-	`  lyntway_found=0`,
-	// One file per call, quoted. An unquoted expansion split
-	// "My Project/.env" into two paths that do not exist, so the scanner
-	// failed to stat the first and exited non-zero — the commit was
-	// refused without anything having been read. On Windows a path with a
-	// space is the default, not the exception.
-	`  while IFS= read -r lyntway_file; do`,
-	`    [ -n "$lyntway_file" ] || continue`,
-	`    lyntway scan "$lyntway_file" || lyntway_found=1`,
-	`  done <<LYNTWAY_STAGED`,
-	`$lyntway_staged`,
-	`LYNTWAY_STAGED`,
 	// Exit here rather than letting the block's status fall out of the
 	// script. The hook is appended to whatever was already there, and
 	// anything added after it would otherwise decide the commit.
-	`  [ "$lyntway_found" -eq 0 ] || exit 1`,
-	"fi",
+	`lyntway scan --staged || exit 1`,
 	gitHookEnd,
 }, "\n")
+
+const (
+	gitPushHookStart = "# >>> lyntway-push >>>"
+	gitPushHookEnd   = "# <<< lyntway-push <<<"
+)
+
+// gitPushHookBlock refuses a push that carries a provider key.
+//
+// # Why this exists when there is already a pre-commit hook
+//
+// A pre-commit hook checks one commit at the moment it is written, and it
+// is the easiest thing in git to skip: `--no-verify`, a rebase, a merge, a
+// commit made before the hook was installed, or a branch pushed from a
+// machine that never had it. Nothing about a repository's history is
+// guaranteed to have passed through it. The push is the last moment the
+// content is still private, and it is the one place a check is worth
+// having even if everything before it was bypassed.
+//
+// # Why it scans the range rather than the diff
+//
+// `--diff` compares two tips, so a key added in one commit and removed in
+// the next is invisible to it — the tips agree and the key is in the
+// middle, which is exactly the shape of somebody noticing and "fixing" it
+// before pushing. The key still publishes. `--history` over the range
+// reads what every commit in it added, which is what is actually about to
+// leave this machine.
+//
+// A branch git has never seen has no remote side to compare against, so
+// the whole branch is read. On a large repository's first push that is
+// slow, and it is also the one push where nothing has ever been checked.
+var gitPushHookBlock = strings.Join([]string{
+	gitPushHookStart,
+	"# lyntway: refuse a push that carries a provider key.",
+	"# Remove this block or run `lyntway hook uninstall --git` to stop.",
+	`lyntway_zero=0000000000000000000000000000000000000000`,
+	// git feeds one line per ref being pushed on stdin.
+	`while read -r lyntway_local_ref lyntway_local_sha lyntway_remote_ref lyntway_remote_sha; do`,
+	// Deleting a branch publishes nothing.
+	`  [ "$lyntway_local_sha" = "$lyntway_zero" ] && continue`,
+	`  if [ "$lyntway_remote_sha" = "$lyntway_zero" ]; then`,
+	`    lyntway_range="$lyntway_local_sha"`,
+	`  else`,
+	`    lyntway_range="$lyntway_remote_sha..$lyntway_local_sha"`,
+	`  fi`,
+	`  lyntway scan --history "$lyntway_range" || exit 1`,
+	`done`,
+	gitPushHookEnd,
+}, "\n")
+
+// gitHooks are the two guards `hook install --git` writes.
+//
+// Named in one place because every call site — install, uninstall and
+// undo — must agree about which files carry a lyntway block. A hook added
+// here and forgotten in undo is a block somebody cannot remove with the
+// command that promises to put everything back.
+var gitHooks = []struct {
+	Name  string
+	Block string
+	Start string
+	End   string
+	What  string
+}{
+	{"pre-commit", gitHookBlock, gitHookStart, gitHookEnd, "refuses a commit that carries a key"},
+	{"pre-push", gitPushHookBlock, gitPushHookStart, gitPushHookEnd, "refuses a push whose commits carry one"},
+}
 
 // findGitDir walks up from dir until it finds a .git directory.
 func findGitDir(dir string) string {
@@ -681,13 +751,12 @@ func findGitDir(dir string) string {
 
 // gitHookInstalled reports whether the pre-commit hook already contains
 // the lyntway block.
-func gitHookInstalled(gitDir string) bool {
-	path := filepath.Join(gitDir, "hooks", "pre-commit")
-	body, err := os.ReadFile(path)
+func gitHookInstalled(gitDir, name, marker string) bool {
+	body, err := os.ReadFile(filepath.Join(gitDir, "hooks", name))
 	if err != nil {
 		return false
 	}
-	return strings.Contains(string(body), gitHookStart)
+	return strings.Contains(string(body), marker)
 }
 
 // hookInstallGit adds the lyntway block to .git/hooks/pre-commit.
@@ -696,25 +765,38 @@ func hookInstallGit(yes bool) error {
 	if gitDir == "" {
 		return fmt.Errorf("not in a git repository")
 	}
-	if gitHookInstalled(gitDir) {
-		fmt.Fprintln(stdout, "  · git pre-commit hook already installed")
+	missing := gitHooks[:0:0]
+	for _, h := range gitHooks {
+		if !gitHookInstalled(gitDir, h.Name, h.Start) {
+			missing = append(missing, h)
+		}
+	}
+	if len(missing) == 0 {
+		fmt.Fprintln(stdout, "  · git hooks already installed")
 		return nil
 	}
 
-	hookPath := filepath.Join(gitDir, "hooks", "pre-commit")
-	fmt.Fprintf(stdout, "\nA pre-commit hook will run `lyntway scan` on staged .env files before\n")
-	fmt.Fprintf(stdout, "every commit. A commit that carries a provider key will be refused.\n")
-	fmt.Fprintf(stdout, "The check is local and sends nothing anywhere.\n\n")
-	if !yes && !ask(fmt.Sprintf("Add the hook to %s? [y/N] ", hookPath)) {
+	// Both, because they answer different questions. A pre-commit hook is
+	// the easiest thing in git to skip — --no-verify, a rebase, a commit
+	// made before it was installed — and the push is the last moment the
+	// content is still private.
+	fmt.Fprintf(stdout, "\nTwo git hooks will be added:\n\n")
+	for _, h := range missing {
+		fmt.Fprintf(stdout, "  %-12s %s\n", h.Name, h.What)
+	}
+	fmt.Fprintf(stdout, "\nBoth check locally and send nothing anywhere.\n\n")
+	if !yes && !ask(fmt.Sprintf("Add them to %s? [y/N] ", filepath.Join(gitDir, "hooks"))) {
 		fmt.Fprintln(stdout, "Nothing was changed.")
 		return nil
 	}
 
-	if err := writeGitHook(gitDir); err != nil {
-		return err
+	for _, h := range missing {
+		if err := writeGitHook(gitDir, h.Name, h.Block, h.Start); err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "  ✓ %s\n", filepath.Join(gitDir, "hooks", h.Name))
 	}
-	fmt.Fprintf(stdout, "  ✓ %s\n", hookPath)
-	fmt.Fprintln(stdout, "\nRemove it with `lyntway hook uninstall --git` or `lyntway undo`.")
+	fmt.Fprintln(stdout, "\nRemove them with `lyntway hook uninstall --git` or `lyntway undo`.")
 	return nil
 }
 
@@ -724,34 +806,39 @@ func hookUninstallGit() error {
 	if gitDir == "" {
 		return fmt.Errorf("not in a git repository")
 	}
-	removed, err := removeGitHook(gitDir)
-	if err != nil {
-		return err
+	any := false
+	for _, h := range gitHooks {
+		removed, err := removeGitHook(gitDir, h.Name, h.Start, h.End)
+		if err != nil {
+			return err
+		}
+		path := filepath.Join(gitDir, "hooks", h.Name)
+		if removed {
+			fmt.Fprintf(stdout, "  ✓ %s — hook removed\n", path)
+			any = true
+			continue
+		}
+		fmt.Fprintf(stdout, "  · %s — nothing to remove\n", path)
 	}
-	hookPath := filepath.Join(gitDir, "hooks", "pre-commit")
-	if !removed {
-		fmt.Fprintf(stdout, "  · %s — nothing to remove\n", hookPath)
-		return nil
-	}
-	fmt.Fprintf(stdout, "  ✓ %s — hook removed\n", hookPath)
+	_ = any
 	return nil
 }
 
 // writeGitHook appends the lyntway block to .git/hooks/pre-commit,
 // creating the file with a shebang when it does not exist.
-func writeGitHook(gitDir string) error {
+func writeGitHook(gitDir, name, block, marker string) error {
 	dir := filepath.Join(gitDir, "hooks")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	path := filepath.Join(dir, "pre-commit")
+	path := filepath.Join(dir, name)
 	body, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
 
 	text := string(body)
-	if strings.Contains(text, gitHookStart) {
+	if strings.Contains(text, marker) {
 		return nil // already present
 	}
 
@@ -760,7 +847,7 @@ func writeGitHook(gitDir string) error {
 	} else if !strings.HasSuffix(text, "\n") {
 		text += "\n"
 	}
-	text += "\n" + gitHookBlock + "\n"
+	text += "\n" + block + "\n"
 
 	if err := os.WriteFile(path, []byte(text), 0o755); err != nil {
 		return err
@@ -770,8 +857,8 @@ func writeGitHook(gitDir string) error {
 
 // removeGitHook takes the lyntway block out of .git/hooks/pre-commit.
 // If nothing meaningful remains, the file is removed.
-func removeGitHook(gitDir string) (bool, error) {
-	path := filepath.Join(gitDir, "hooks", "pre-commit")
+func removeGitHook(gitDir, name, start, end string) (bool, error) {
+	path := filepath.Join(gitDir, "hooks", name)
 	body, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -780,25 +867,25 @@ func removeGitHook(gitDir string) (bool, error) {
 		return false, err
 	}
 	text := string(body)
-	if !strings.Contains(text, gitHookStart) {
+	if !strings.Contains(text, start) {
 		return false, nil
 	}
 
-	start := strings.Index(text, gitHookStart)
-	end := strings.Index(text, gitHookEnd)
-	if end < 0 {
+	startAt := strings.Index(text, start)
+	endAt := strings.Index(text, end)
+	if endAt < 0 {
 		return false, nil
 	}
-	end += len(gitHookEnd)
+	endAt += len(end)
 	// Remove the block and any trailing newline.
-	if end < len(text) && text[end] == '\n' {
-		end++
+	if endAt < len(text) && text[endAt] == '\n' {
+		endAt++
 	}
 	// Remove a leading blank line before the block.
-	if start > 0 && text[start-1] == '\n' {
-		start--
+	if startAt > 0 && text[startAt-1] == '\n' {
+		startAt--
 	}
-	rest := text[:start] + text[end:]
+	rest := text[:startAt] + text[endAt:]
 
 	// If only the shebang remains, delete the file.
 	trimmed := strings.TrimSpace(rest)
@@ -830,10 +917,11 @@ func readJSONObject(path string) (map[string]json.RawMessage, error) {
 		// are all different problems with different answers.
 		// An empty array carries no configuration, so there is nothing to
 		// lose by replacing it, and this is the shape a scaffolded file
-		// most often has. Anything else is somebody's working
-		// configuration in a form we do not recognise, and the answer to
-		// that is instructions, never a rewrite.
-		if strings.TrimSpace(string(body)) == "[]" {
+		// most often has. An array of primitives ([1,2], [true], etc.)
+		// is equally not a hooks configuration — Cursor's hooks are an
+		// object with event names as keys, and no array of non-objects
+		// can be one.
+		if isHarmlessJSONArray(body) {
 			return map[string]json.RawMessage{}, nil
 		}
 		return nil, fmt.Errorf("%s: %s; nothing written.\n\n%s", path,
@@ -861,6 +949,25 @@ func hookByHand(path string) string {
 		"  \"" + event + "\": [" + entry + "]\n\n" +
 		"If the file holds something this does not understand, move it aside and run this\n" +
 		"again — a backup is written either way, and `lyntway undo` puts everything back."
+}
+
+// isHarmlessJSONArray returns true when body is a JSON array that
+// cannot be a valid hooks configuration: either empty or containing
+// only primitives (numbers, strings, booleans, nulls). An array of
+// objects might be someone's working config in an unexpected shape;
+// an array of integers never is.
+func isHarmlessJSONArray(body []byte) bool {
+	var arr []json.RawMessage
+	if json.Unmarshal(body, &arr) != nil {
+		return false
+	}
+	for _, elem := range arr {
+		trimmed := strings.TrimSpace(string(elem))
+		if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+			return false
+		}
+	}
+	return true
 }
 
 func describeJSON(body []byte, err error) string {

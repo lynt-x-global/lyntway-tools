@@ -33,15 +33,16 @@ func secureCommand(args []string) error {
 	fs.SetOutput(stdout)
 	var (
 		assumeYes = fs.Bool("yes", false, "do not ask before changing the editor configuration")
-		project   = fs.String("project", "", "also read the agent files kept inside this project directory")
+		project   = fs.String("project", "", "read this project instead of the directory this was run in")
 	)
 	fs.Usage = func() {
 		fmt.Fprint(stdout, "lyntway secure — find what your AI tools have already seen\n\n"+
 			"Usage:\n  lyntway secure [--project DIR] [--yes]\n\n"+
 			"Reads the transcripts, prompt histories, pasted buffers, shell snapshots and\n"+
-			"MCP configuration the coding agents on this machine wrote to disk, reports the\n"+
-			"credentials in them, and then — after asking once — makes your editor refuse a\n"+
-			"prompt carrying a credential before it is sent.\n\n"+
+			"MCP configuration the coding agents on this machine wrote to disk, then the\n"+
+			"project you are standing in, reports the credentials in both, and then — after\n"+
+			"asking once — makes your editor refuse a prompt carrying a credential before\n"+
+			"it is sent.\n\n"+
 			"Sends nothing. Prints no key. Changes nothing until you say yes, and\n"+
 			"`lyntway undo` puts every file back byte for byte.\n\n"+
 			"Exits non-zero when it found something, so it works as a check.\n\nFlags:\n")
@@ -61,12 +62,14 @@ func secureCommand(args []string) error {
 		AppData:      os.Getenv("APPDATA"),
 		LocalAppData: os.Getenv("LOCALAPPDATA"),
 	})
-	if *project != "" {
-		abs, err := filepath.Abs(*project)
-		if err != nil {
-			return err
-		}
-		sources = append(sources, agentsecrets.ProjectSources(abs)...)
+	// The project defaults to where the command was run. It used to need
+	// --project, which meant the common case — somebody standing in
+	// their repository — reported on transcripts and said nothing about
+	// the .env two lines away. The flag now overrides the default rather
+	// than enabling the behaviour.
+	projectDir, readProject := projectToRead(*project, home)
+	if readProject {
+		sources = append(sources, agentsecrets.ProjectSources(projectDir)...)
 	}
 
 	res := agentsecrets.ScanProgress(sources, agentsecrets.DefaultRules(), progressTo(false))
@@ -75,13 +78,122 @@ func secureCommand(args []string) error {
 		return fmt.Errorf("reading %s: %w", filepath.Join(home, ".lyntway", agentsecrets.AllowFile), err)
 	}
 	res = res.Excluding(allow)
+
+	in := secure.Input{Scan: res, ReadProject: readProject}
+	if readProject {
+		in.InFiles = projectKeys(projectDir)
+		// What to call it, not where it is. Somebody standing in the
+		// directory does not need its absolute path read back to them,
+		// and under --project the path they typed is the name they
+		// already recognise.
+		in.ProjectDir = "this project"
+		if *project != "" {
+			in.ProjectDir = *project
+		}
+	}
 	clearProgress()
 
-	out := secure.Run(stdout, res, editorInstaller{}, ask, *assumeYes)
-	if len(out.Found) > 0 {
-		return &historyFindings{n: len(out.Found)}
+	out := secure.Run(stdout, in, editorInstaller{}, ask, *assumeYes)
+	if len(out.Found) > 0 || len(out.InFiles) > 0 {
+		return &secureFindings{history: len(out.Found), inFiles: len(out.InFiles)}
 	}
 	return nil
+}
+
+// secureFindings is the non-zero exit, and it names the two sources
+// apart.
+//
+// `historyFindings` says "your agents have already seen", which is true
+// of a transcript and false of a .env. Summing the two under that
+// sentence told somebody with a clean history and two keys in a config
+// file that their agents had read both — a report claiming more than
+// happened, over the one subject this tool exists to be exact about.
+type secureFindings struct{ history, inFiles int }
+
+func (e *secureFindings) Error() string {
+	switch {
+	case e.history > 0 && e.inFiles > 0:
+		return fmt.Sprintf("%d credential%s your agents have already seen, and %d still in this project",
+			e.history, pluralS(e.history), e.inFiles)
+	case e.history > 0:
+		return fmt.Sprintf("%d credential%s your agents have already seen", e.history, pluralS(e.history))
+	default:
+		return fmt.Sprintf("%d key%s in this project's own files", e.inFiles, pluralS(e.inFiles))
+	}
+}
+
+// projectToRead decides which directory to walk for keys of its own.
+//
+// Refuses the home directory and anything above it. A recursive walk from
+// $HOME is every repository, cache and backup on the machine: minutes of
+// work, a wall of findings from other people's dependencies, and nothing
+// a person standing there asked for. `--project` is still honoured as
+// typed, because somebody naming a directory has decided.
+func projectToRead(flag, home string) (string, bool) {
+	if flag != "" {
+		abs, err := filepath.Abs(flag)
+		if err != nil {
+			return "", false
+		}
+		return abs, true
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", false
+	}
+	abs, err := filepath.Abs(wd)
+	if err != nil {
+		return "", false
+	}
+	if home != "" {
+		rel, err := filepath.Rel(abs, home)
+		// home is at or below here, so here is $HOME or a parent of it.
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return "", false
+		}
+	}
+	if abs == filepath.Dir(abs) { // the filesystem root
+		return "", false
+	}
+	return abs, true
+}
+
+// projectKeys walks the project for credentials in its own files.
+//
+// Declared values are dropped, not counted: a value sitting in a gitleaks
+// allowlist or a detect-secrets baseline is a claim the repository has
+// already made in a reviewable place, and counting them put 73 findings
+// in front of a first run in this very repository, 68 of them its own
+// fixtures. `lyntway scan` is where the full list including those lives.
+//
+// A walk that fails returns nothing rather than failing the command. The
+// history scan above it has already succeeded and is worth printing; a
+// project that cannot be read is a smaller fact than one this command
+// could not report at all.
+func projectKeys(dir string) []secure.InFile {
+	hits, _, _, err := scanPaths([]string{dir})
+	if err != nil {
+		return nil
+	}
+	found, _ := splitDeclared(hits)
+	out := make([]secure.InFile, 0, len(found))
+	for _, h := range found {
+		rel, err := filepath.Rel(dir, h.File)
+		if err != nil {
+			rel = h.File
+		}
+		out = append(out, secure.InFile{
+			Path:  filepath.ToSlash(rel),
+			Line:  h.Line,
+			Label: h.Label,
+			Last4: h.Last4,
+			// Upstream, not Catalog: the scanner keeps those apart
+			// precisely because a catalog match names a provider and
+			// never means the key can be moved.
+			Migratable: h.Upstream != "",
+		})
+	}
+	return out
 }
 
 // editorInstaller is the side-effecting half of `secure`, kept behind an

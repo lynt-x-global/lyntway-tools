@@ -21,14 +21,41 @@ import "github.com/lynt-x-global/lyntway-tools/detect"
 // revoke the wrong thing.
 var rotateAt = map[detect.Class]string{
 	detect.ClassAWSAccessKey: "https://console.aws.amazon.com/iam/home#/security_credentials",
+	detect.ClassAWSSecretKey: "https://console.aws.amazon.com/iam/home#/security_credentials",
 	detect.ClassGitHubToken:  "https://github.com/settings/tokens",
 	detect.ClassSlackToken:   "https://api.slack.com/apps",
+	detect.ClassSlackWebhook: "https://api.slack.com/apps",
 	detect.ClassStripeKey:    "https://dashboard.stripe.com/apikeys",
 	detect.ClassOpenAIKey:    "https://platform.openai.com/api-keys",
 	detect.ClassAnthropicKey: "https://console.anthropic.com/settings/keys",
 	detect.ClassSupabaseKey:  "https://supabase.com/dashboard/project/_/settings/api-keys",
 	detect.ClassLyntwayKey:   "https://lyntway.com/app/keys",
 	detect.ClassAzureConnStr: "https://portal.azure.com",
+
+	// The prefixed vendor credentials. Each points at the page that lists
+	// the reader's own keys, never a deep link into one: we do not know
+	// which key it is and cannot find out without sending the value
+	// somewhere, which this package does not do.
+	detect.ClassGoogleAPIKey:    "https://console.cloud.google.com/apis/credentials",
+	detect.ClassXAIKey:          "https://console.x.ai",
+	detect.ClassNPMToken:        "https://www.npmjs.com/settings/~/tokens",
+	detect.ClassSendGridKey:     "https://app.sendgrid.com/settings/api_keys",
+	detect.ClassDigitalOceanKey: "https://cloud.digitalocean.com/account/api/tokens",
+	detect.ClassShopifyToken:    "https://admin.shopify.com/settings/apps",
+	detect.ClassHuggingFaceKey:  "https://huggingface.co/settings/tokens",
+	detect.ClassGroqKey:         "https://console.groq.com/keys",
+	detect.ClassResendKey:       "https://resend.com/api-keys",
+	detect.ClassReplicateKey:    "https://replicate.com/account/api-tokens",
+	detect.ClassLinearKey:       "https://linear.app/settings/api",
+	detect.ClassDockerToken:     "https://app.docker.com/settings/personal-access-tokens",
+	detect.ClassPlanetScaleKey:  "https://app.planetscale.com/settings",
+	detect.ClassNewRelicKey:     "https://one.newrelic.com/admin-portal/api-keys/home",
+	detect.ClassAtlassianToken:  "https://id.atlassian.com/manage-profile/security/api-tokens",
+	detect.ClassSentryToken:     "https://sentry.io/settings/account/api/auth-tokens/",
+	detect.ClassGrafanaToken:    "https://grafana.com/profile/api-keys",
+	detect.ClassDopplerToken:    "https://dashboard.doppler.com",
+	detect.ClassSquareToken:     "https://developer.squareup.com/apps",
+	detect.ClassFigmaToken:      "https://www.figma.com/developers/api#access-tokens",
 
 	// Deliberately absent, each for a reason:
 	//
@@ -42,6 +69,15 @@ var rotateAt = map[detect.Class]string{
 	//   url_password  — the console for a database password is whoever
 	//                   runs the database, which may be nobody but the
 	//                   reader.
+	//   discord_webhook,
+	//   teams_webhook — both are configured per channel by whoever owns
+	//                   that channel, and there is no account-wide page
+	//                   that lists them. Slack has one, so Slack gets a
+	//                   link and these two do not; sending a reader to
+	//                   discord.com to revoke a webhook they can only
+	//                   remove from the channel it posts to would be the
+	//                   wrong console, which is what this table refuses
+	//                   to do.
 }
 
 // RotateURL returns the page where a credential of this class is revoked,
